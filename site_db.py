@@ -360,7 +360,10 @@ def update_test_status(db_path: str, test_id: str, status: str):
         c.execute("UPDATE tests SET status = ? WHERE id = ?", (status, test_id))
 
 def delete_test(db_path: str, test_id: str):
+    # sessions.test_id has no ON DELETE CASCADE — orphan any linked sessions
+    # so their measurements survive the test removal.
     with _conn(db_path) as c:
+        c.execute("UPDATE sessions SET test_id = NULL WHERE test_id = ?", (test_id,))
         c.execute("DELETE FROM tests WHERE id = ?", (test_id,))
 
 

@@ -16,8 +16,13 @@ instance (_active).  All API-level helpers acquire the lock.
 import threading
 import time
 
-import serial
-import serial.tools.list_ports
+try:
+    import serial
+    import serial.tools.list_ports
+    _SERIAL_IMPORT_ERROR: Exception | None = None
+except ImportError as _e:
+    serial = None  # type: ignore[assignment]
+    _SERIAL_IMPORT_ERROR = _e
 
 # ── Module-level connection state ─────────────────────────────────────────────
 
@@ -34,7 +39,12 @@ def list_ports():
     attached (hwid == "n/a") are excluded to keep the list clean.
     On Windows, all COMx ports are included.
     On Raspberry Pi, /dev/ttyAMA* and /dev/ttyUSB* are always included.
+
+    If pyserial is not installed, returns an empty list (PMM2 over TCP and
+    the simulator driver remain available).
     """
+    if serial is None:
+        return []
     ports = []
     for p in serial.tools.list_ports.comports():
         hwid = p.hwid or ""
@@ -87,8 +97,13 @@ class PMM1Driver:
     INTER_CMD_DELAY = 0.15   # seconds between retries
 
     def __init__(self, port: str):
+        if serial is None:
+            raise RuntimeError(
+                "pyserial is not installed — install it with `pip install pyserial` "
+                "to use the PMM1 driver."
+            )
         self.port = port
-        self._ser: serial.Serial | None = None
+        self._ser: "serial.Serial | None" = None
 
     # ── Low-level I/O ─────────────────────────────────────────────────────────
 

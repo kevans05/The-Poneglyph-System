@@ -704,11 +704,17 @@ class SCADAServer(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        except (ConnectionError, BrokenPipeError):
+            # Client disconnected before we finished — nothing to report
+            return
         except Exception as e:
             traceback.print_exc()
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            try:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            except (ConnectionError, BrokenPipeError):
+                pass
 
     def do_GET(self):
         try:
@@ -901,11 +907,17 @@ class SCADAServer(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        except (ConnectionError, BrokenPipeError):
+            # Client disconnected before we finished — nothing to report
+            return
         except Exception as e:
             traceback.print_exc()
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            try:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            except (ConnectionError, BrokenPipeError):
+                pass
 
     def log_message(self, format, *args):
         pass  # suppress per-request console noise
