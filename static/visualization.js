@@ -32,12 +32,19 @@ function getAnchorPoint(x, y, angle, bushing, offset, radialOffset = 55) {
 
 function getPathData(x1, y1, x2, y2, offset) {
   const dx = x2 - x1, dy = y2 - y1;
+  // When devices are tight together, the per-phase offset on the elbow
+  // midpoint pushes some phases past their anchors and the wires zig-zag
+  // back through device bodies. Collapse the whole bundle to clean parallel
+  // diagonals (each phase already starts and ends at its own perpendicular
+  // offset, so they stay separated). 4·PHASE_GAP covers the widest phase
+  // spread (wye: −PHASE_GAP to +2·PHASE_GAP, total 3·PHASE_GAP, plus margin).
+  const TIGHT = 4 * PHASE_GAP;
   if (Math.abs(dx) >= Math.abs(dy)) {
-    // Horizontal-dominant: horizontal elbow
+    if (Math.abs(dx) < TIGHT) return `M ${x1},${y1} L ${x2},${y2}`;
     const midX = (x1 + x2) / 2 + offset;
     return `M ${x1},${y1} L ${midX},${y1} L ${midX},${y2} L ${x2},${y2}`;
   } else {
-    // Vertical-dominant: vertical elbow
+    if (Math.abs(dy) < TIGHT) return `M ${x1},${y1} L ${x2},${y2}`;
     const midY = (y1 + y2) / 2 + offset;
     return `M ${x1},${y1} L ${x1},${midY} L ${x2},${midY} L ${x2},${y2}`;
   }
