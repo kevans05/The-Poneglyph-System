@@ -22,18 +22,12 @@ import uuid
 
 SITES_DIR = "sites"
 
-
-# ── Connection ────────────────────────────────────────────────────────────────
-
 def _conn(db_path: str) -> sqlite3.Connection:
     c = sqlite3.connect(db_path)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     return c
-
-
-# ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS site_info (
@@ -99,9 +93,20 @@ CREATE TABLE IF NOT EXISTS measurements (
 CREATE INDEX IF NOT EXISTS idx_meas_epoch      ON measurements(epoch DESC);
 CREATE INDEX IF NOT EXISTS idx_meas_device_key ON measurements(device_id, key);
 CREATE INDEX IF NOT EXISTS idx_meas_session    ON measurements(session_id);
+
+CREATE TABLE IF NOT EXISTS device_history (
+    id          TEXT    PRIMARY KEY,   -- UUID
+    device_id   TEXT    NOT NULL,
+    epoch       INTEGER NOT NULL,
+    type        TEXT,
+    status      TEXT,
+    config      TEXT,                  -- JSON blob of params
+    snapshot_id TEXT    REFERENCES snapshots(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_dev_hist_id    ON device_history(device_id);
+CREATE INDEX IF NOT EXISTS idx_dev_hist_epoch ON device_history(epoch DESC);
 """
 
-# Columns added after initial release — applied to existing DBs on open.
 _MIGRATIONS = [
     ("site_info",  "site_name",   "TEXT    DEFAULT ''"),
     ("site_info",  "number_code", "TEXT    DEFAULT ''"),
@@ -111,11 +116,9 @@ _MIGRATIONS = [
     ("sessions",   "test_id",     "TEXT"),
 ]
 
-
 def _init(db_path: str):
     with _conn(db_path) as c:
         c.executescript(_SCHEMA)
-        # Apply any new columns to pre-existing tables
         existing_cols: dict[str, set] = {}
         for table, col, typedef in _MIGRATIONS:
             if table not in existing_cols:
@@ -125,12 +128,8 @@ def _init(db_path: str):
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
                 existing_cols[table].add(col)
 
-
-# ── Site management ───────────────────────────────────────────────────────────
-
 def db_path_for(station: str) -> str:
     return os.path.join(SITES_DIR, f"{station}.db")
-
 
 def create_site(
     station: str,
@@ -141,7 +140,6 @@ def create_site(
     gps_lon: float | None = None,
     topology: dict | None = None,
 ) -> str:
-    """Create a new site DB. Returns its path. Raises if it already exists."""
     os.makedirs(SITES_DIR, exist_ok=True)
     path = db_path_for(station)
     if os.path.exists(path):
@@ -162,9 +160,7 @@ def create_site(
         save_snapshot(path, label="Initial topology", topology=topology)
     return path
 
-
 def list_sites() -> list[dict]:
-    """Return metadata for every site DB found in SITES_DIR."""
     if not os.path.exists(SITES_DIR):
         return []
     sites = []
@@ -195,7 +191,6 @@ def list_sites() -> list[dict]:
             pass
     return sorted(sites, key=lambda s: s["station"])
 
-
 def get_site_info(db_path: str) -> dict | None:
     try:
         with _conn(db_path) as c:
@@ -204,30 +199,48 @@ def get_site_info(db_path: str) -> dict | None:
     except Exception:
         return None
 
-
 def _touch(db_path: str):
-    """Update last_epoch to now."""
     try:
         with _conn(db_path) as c:
             c.execute("UPDATE site_info SET last_epoch = ? WHERE id = 1", (int(time.time()),))
     except Exception:
         pass
 
-
-# ── Snapshots ─────────────────────────────────────────────────────────────────
-
 def save_snapshot(db_path: str, label: str, topology: dict | str) -> str:
-    """Persist a topology snapshot. Returns the UUID row id."""
-    blob = topology if isinstance(topology, str) else json.dumps(topology, indent=2)
+    topo_dict = json.loads(topology) if isinstance(topology, str) else topology
+    blob = json.dumps(topo_dict, indent=2)
     row_id = str(uuid.uuid4())
+    now = int(time.time())
     with _conn(db_path) as c:
         c.execute(
             "INSERT INTO snapshots (id, epoch, label, topology) VALUES (?,?,?,?)",
-            (row_id, int(time.time()), label, blob),
+            (row_id, now, label, blob),
         )
+        devices = topo_dict.get("devices", [])
+        history_rows = []
+        for d in devices:
+            did = d.get("id")
+            if not did:
+                continue
+            config = {k: v for k, v in d.items() if k not in ("id", "type", "status")}
+            history_rows.append((
+                str(uuid.uuid4()),
+                did,
+                now,
+                d.get("type"),
+                d.get("status"),
+                json.dumps(config),
+                row_id
+            ))
+        if history_rows:
+            c.executemany(
+                """INSERT INTO device_history
+                   (id, device_id, epoch, type, status, config, snapshot_id)
+                   VALUES (?,?,?,?,?,?,?)""",
+                history_rows
+            )
     _touch(db_path)
     return row_id
-
 
 def list_snapshots(db_path: str, limit: int = 100) -> list[dict]:
     with _conn(db_path) as c:
@@ -237,7 +250,6 @@ def list_snapshots(db_path: str, limit: int = 100) -> list[dict]:
         ).fetchall()
     return [dict(r) for r in rows]
 
-
 def get_snapshot_topology(db_path: str, snapshot_id: str) -> dict | None:
     with _conn(db_path) as c:
         row = c.execute(
@@ -245,30 +257,18 @@ def get_snapshot_topology(db_path: str, snapshot_id: str) -> dict | None:
         ).fetchone()
     return json.loads(row["topology"]) if row else None
 
-
 def get_latest_topology(db_path: str) -> dict | None:
-    """Return the most recent snapshot topology, or None if none exist."""
     with _conn(db_path) as c:
         row = c.execute(
             "SELECT topology FROM snapshots ORDER BY epoch DESC LIMIT 1"
         ).fetchone()
     return json.loads(row["topology"]) if row else None
 
-
 def delete_snapshot(db_path: str, snapshot_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
 
-
-# ── Tests ─────────────────────────────────────────────────────────────────────
-
-def create_test(
-    db_path: str,
-    name: str,
-    description: str = "",
-    created_by: str = "",
-) -> str:
-    """Create a named test. Returns the UUID."""
+def create_test(db_path: str, name: str, description: str = "", created_by: str = "") -> str:
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
@@ -277,7 +277,6 @@ def create_test(
         )
     _touch(db_path)
     return row_id
-
 
 def list_tests(db_path: str) -> list[dict]:
     with _conn(db_path) as c:
@@ -293,34 +292,20 @@ def list_tests(db_path: str) -> list[dict]:
         ).fetchall()
     return [dict(r) for r in rows]
 
-
 def get_test(db_path: str, test_id: str) -> dict | None:
     with _conn(db_path) as c:
         row = c.execute("SELECT * FROM tests WHERE id = ?", (test_id,)).fetchone()
     return dict(row) if row else None
 
-
 def update_test_status(db_path: str, test_id: str, status: str):
     with _conn(db_path) as c:
         c.execute("UPDATE tests SET status = ? WHERE id = ?", (status, test_id))
-
 
 def delete_test(db_path: str, test_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM tests WHERE id = ?", (test_id,))
 
-
-# ── Test Drawings ──────────────────────────────────────────────────────────────
-
-def add_drawing(
-    db_path: str,
-    test_id: str,
-    title: str,
-    url: str = "",
-    revision: str = "",
-    notes: str = "",
-) -> str:
-    """Add a drawing reference to a test. Returns the UUID."""
+def add_drawing(db_path: str, test_id: str, title: str, url: str = "", revision: str = "", notes: str = "") -> str:
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
@@ -328,7 +313,6 @@ def add_drawing(
             (row_id, test_id, title, url or "", revision or "", notes or ""),
         )
     return row_id
-
 
 def list_drawings(db_path: str, test_id: str) -> list[dict]:
     with _conn(db_path) as c:
@@ -338,24 +322,11 @@ def list_drawings(db_path: str, test_id: str) -> list[dict]:
         ).fetchall()
     return [dict(r) for r in rows]
 
-
 def delete_drawing(db_path: str, drawing_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM test_drawings WHERE id = ?", (drawing_id,))
 
-
-# ── Sessions ──────────────────────────────────────────────────────────────────
-
-def start_session(
-    db_path: str,
-    label: str = "",
-    device: str = "",
-    instrument: str = "manual",
-    technician: str = "",
-    test_id: str | None = None,
-    snapshot_id: str | None = None,
-) -> str:
-    """Open a new measurement session. Returns the session UUID."""
+def start_session(db_path: str, label: str = "", device: str = "", instrument: str = "manual", technician: str = "", test_id: str | None = None, snapshot_id: str | None = None) -> str:
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
@@ -365,7 +336,6 @@ def start_session(
         )
     _touch(db_path)
     return row_id
-
 
 def list_sessions(db_path: str, limit: int = 100, test_id: str | None = None) -> list[dict]:
     where = "WHERE s.test_id = ?" if test_id else ""
@@ -387,70 +357,37 @@ def list_sessions(db_path: str, limit: int = 100, test_id: str | None = None) ->
         ).fetchall()
     return [dict(r) for r in rows]
 
-
 def get_session(db_path: str, session_id: str) -> dict | None:
     with _conn(db_path) as c:
         row = c.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
     return dict(row) if row else None
 
-
 def delete_session(db_path: str, session_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
-
-# ── Measurements ──────────────────────────────────────────────────────────────
-
-def record_measurements(
-    db_path: str,
-    session_id: str | None,
-    device_id: str,
-    measurements: dict[str, float],
-    epoch: int | None = None,
-):
+def record_measurements(db_path: str, session_id: str | None, device_id: str, measurements: dict, epoch: int | None = None):
     now = epoch or int(time.time())
-    rows = [
-        (str(uuid.uuid4()), session_id, now, device_id, k, float(v))
-        for k, v in measurements.items()
-        if isinstance(v, (int, float))
-    ]
-    if not rows:
-        return
+    rows = [(str(uuid.uuid4()), session_id, now, device_id, k, float(v)) for k, v in measurements.items() if isinstance(v, (int, float))]
+    if not rows: return
     with _conn(db_path) as c:
-        c.executemany(
-            "INSERT INTO measurements (id, session_id, epoch, device_id, key, value) VALUES (?,?,?,?,?,?)",
-            rows,
-        )
+        c.executemany("INSERT INTO measurements (id, session_id, epoch, device_id, key, value) VALUES (?,?,?,?,?,?)", rows)
     _touch(db_path)
 
-
 def get_session_measurements(db_path: str, session_id: str) -> dict:
-    """Return all measurements for a session, grouped by device_id → key → list of readings."""
     with _conn(db_path) as c:
-        rows = c.execute(
-            """SELECT epoch, device_id, key, value
-               FROM measurements WHERE session_id = ?
-               ORDER BY epoch ASC""",
-            (session_id,),
-        ).fetchall()
-    by_device: dict[str, dict[str, list]] = {}
+        rows = c.execute("SELECT epoch, device_id, key, value FROM measurements WHERE session_id = ? ORDER BY epoch ASC", (session_id,)).fetchall()
+    by_device = {}
     for r in rows:
-        by_device.setdefault(r["device_id"], {}).setdefault(r["key"], []).append(
-            {"epoch": r["epoch"], "value": r["value"]}
-        )
+        by_device.setdefault(r["device_id"], {}).setdefault(r["key"], []).append({"epoch": r["epoch"], "value": r["value"]})
     return by_device
 
-
 def get_device_history(db_path: str, device_id: str, key: str, limit: int = 200) -> list[dict]:
-    """Time-series of readings for one device+key across all sessions."""
     with _conn(db_path) as c:
-        rows = c.execute(
-            """SELECT m.epoch, m.value, m.session_id, s.label, s.instrument
-               FROM measurements m
-               LEFT JOIN sessions s ON s.id = m.session_id
-               WHERE m.device_id = ? AND m.key = ?
-               ORDER BY m.epoch DESC
-               LIMIT ?""",
-            (device_id, key, limit),
-        ).fetchall()
+        rows = c.execute("""SELECT m.epoch, m.value, m.session_id, s.label, s.instrument FROM measurements m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.device_id = ? AND m.key = ? ORDER BY m.epoch DESC LIMIT ?""", (device_id, key, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+def get_device_config_history(db_path: str, device_id: str, limit: int = 100) -> list[dict]:
+    with _conn(db_path) as c:
+        rows = c.execute("""SELECT h.epoch, h.type, h.status, h.config, h.snapshot_id, s.label as snapshot_label FROM device_history h LEFT JOIN snapshots s ON s.id = h.snapshot_id WHERE h.device_id = ? ORDER BY h.epoch DESC LIMIT ?""", (device_id, limit)).fetchall()
     return [dict(r) for r in rows]

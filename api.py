@@ -1,3 +1,4 @@
+import io
 import json
 import mimetypes
 import os
@@ -5,33 +6,33 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from phasors.devices.factory import DeviceFactory
 import power_meters as _pmm
 import site_db as _sdb
+from phasors.devices.factory import DeviceFactory
 
-STATE_FILE = "substation.json"
+# The substation configuration is now kept in-memory and persisted to the site DB.
+# The substation.json file is no longer used for active storage.
+_current_topology: dict | None = None
 
 # Active site DB path — set when a site is loaded via /api/sites/load
 _active_site: str | None = None
 _active_session_id: str | None = None
 
 
-def load_substation(path=STATE_FILE, data=None):
+def load_substation(data=None):
+    """Load the substation model from provided data or the current in-memory topology."""
     if data is None:
-        if not os.path.exists(path):
-            return [], {}, [], {}, {}
-        try:
-            with open(path, "r") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return [], {}, [], {}, {}
+        data = _current_topology
+
+    if data is None:
+        return [], {}, [], {}, {}
 
     devices = {}
     sources = []
-    for d in data["devices"]:
+    for d in data.get("devices", []):
         dev = DeviceFactory.create_device(d)
         if dev:
-            if d["type"] == "VoltageSource":
+            if d.get("type") == "VoltageSource":
                 sources.append(dev)
             if "gx" in d:
                 dev.gx = d["gx"]
@@ -41,7 +42,7 @@ def load_substation(path=STATE_FILE, data=None):
                 dev.rotation = d["rotation"]
             devices[dev.name] = dev
 
-    for d in data["devices"]:
+    for d in data.get("devices", []):
         did = d["id"]
         for c in d.get("connections", []):
             tid = c if isinstance(c, str) else c["id"]
@@ -68,20 +69,54 @@ def load_substation(path=STATE_FILE, data=None):
                 if hasattr(dev, "auto_configure"):
                     dev.auto_configure(host)
 
-    return sources, devices, data["devices"], data.get("reference", {}), data.get("project_info", {"station": "", "device": ""})
+    return (
+        sources,
+        devices,
+        data.get("devices", []),
+        data.get("reference", {}),
+        data.get("project_info", {"station": "", "device": ""}),
+    )
 
 
 _PARAM_KEYS = [
-    "nominal_voltage_kv", "nominal_power_mva", "pf", "continuous_amps",
-    "interrupt_ka", "pri_kv", "sec_kv", "h_winding", "x_winding",
-    "polarity_reversed", "load_mva", "ratio", "sec2_ratio", "bushing",
-    "location", "position", "polarity_facing", "polarity_normal",
-    "is_balanced", "phase_va", "phase_pf", "mode", "secondary_wiring",
-    "function", "tap_ratios", "selected_tap", "tap_configs", "selected_tap_index",
-    "phase_shift_deg", "winding_type",
-    "mvar_rating", "kv_rating", "impedance_ohm",
-    "mvar_min", "mvar_max", "mvar_setting",
-    "resistance_ohm", "carrier_frequency_hz",
+    "nominal_voltage_kv",
+    "nominal_power_mva",
+    "pf",
+    "continuous_amps",
+    "interrupt_ka",
+    "pri_kv",
+    "sec_kv",
+    "h_winding",
+    "x_winding",
+    "polarity_reversed",
+    "load_mva",
+    "ratio",
+    "sec2_ratio",
+    "bushing",
+    "location",
+    "position",
+    "polarity_facing",
+    "polarity_normal",
+    "is_balanced",
+    "phase_va",
+    "phase_pf",
+    "mode",
+    "secondary_wiring",
+    "function",
+    "tap_ratios",
+    "selected_tap",
+    "tap_configs",
+    "selected_tap_index",
+    "phase_shift_deg",
+    "winding_type",
+    "mvar_rating",
+    "kv_rating",
+    "impedance_ohm",
+    "mvar_min",
+    "mvar_max",
+    "mvar_setting",
+    "resistance_ohm",
+    "carrier_frequency_hz",
 ]
 
 
@@ -95,7 +130,6 @@ def _detect_sync_errors(sources, devices):
         return hasattr(dev, "is_closed") and not dev.is_closed
 
     # Build undirected adjacency through closed-switch paths only.
-    # Edges are skipped if either endpoint is an open switch.
     adj = {name: set() for name in devices}
     for name, dev in devices.items():
         for attr in ("connections", "h_connections", "x_connections"):
@@ -122,7 +156,7 @@ def _detect_sync_errors(sources, devices):
     checked = set()
     for i, s1 in enumerate(sources):
         comp = get_component(s1.name)
-        for s2 in sources[i + 1:]:
+        for s2 in sources[i + 1 :]:
             key = (min(s1.name, s2.name), max(s1.name, s2.name))
             if key in checked or s2.name not in comp:
                 continue
@@ -171,7 +205,6 @@ def _build_topology_response(sources, devices, raw_devices, reference):
                     break
 
     sync_errors = _detect_sync_errors(sources, devices)
-    # Build a lookup: source_id -> list of errors it's involved in
     source_error_map = {}
     for err in sync_errors:
         for sid in err["sources"]:
@@ -190,65 +223,106 @@ def _build_topology_response(sources, devices, raw_devices, reference):
 
         raw = raw_map.get(did, {})
         status = str(summary.get("Status", "UNKNOWN")).split(" ")[0]
-        nodes.append({
-            "id": dev.name,
-            "type": dev.__class__.__name__,
-            "status": status,
-            "summary": summary,
-            "params": {k: raw[k] for k in _PARAM_KEYS if k in raw},
-            "gx": getattr(dev, "gx", None),
-            "gy": getattr(dev, "gy", None),
-            "rotation": getattr(dev, "rotation", 0),
-            "inputs": [inp.name for inp in getattr(dev, "inputs", [])],
-            "sync_errors": source_error_map.get(dev.name, []),
-        })
+        nodes.append(
+            {
+                "id": dev.name,
+                "type": dev.__class__.__name__,
+                "status": status,
+                "summary": summary,
+                "params": {k: raw[k] for k in _PARAM_KEYS if k in raw},
+                "gx": getattr(dev, "gx", None),
+                "gy": getattr(dev, "gy", None),
+                "rotation": getattr(dev, "rotation", 0),
+                "inputs": [inp.name for inp in getattr(dev, "inputs", [])],
+                "sync_errors": source_error_map.get(dev.name, []),
+            }
+        )
 
     for did, dev in devices.items():
         if hasattr(dev, "h_connections"):
             for conn in dev.h_connections:
-                edges.append({"source": dev.name, "target": conn.name, "type": "primary", "source_bushing": "H"})
+                edges.append(
+                    {
+                        "source": dev.name,
+                        "target": conn.name,
+                        "type": "primary",
+                        "source_bushing": "H",
+                    }
+                )
         if hasattr(dev, "x_connections"):
             for conn in dev.x_connections:
-                edges.append({"source": dev.name, "target": conn.name, "type": "primary", "source_bushing": "X"})
+                edges.append(
+                    {
+                        "source": dev.name,
+                        "target": conn.name,
+                        "type": "primary",
+                        "source_bushing": "X",
+                    }
+                )
         if hasattr(dev, "downstream_device") and dev.downstream_device:
             bushing = None
-            if hasattr(dev, "h_connections") and dev.downstream_device in dev.h_connections:
+            if (
+                hasattr(dev, "h_connections")
+                and dev.downstream_device in dev.h_connections
+            ):
                 bushing = "H"
-            elif hasattr(dev, "x_connections") and dev.downstream_device in dev.x_connections:
+            elif (
+                hasattr(dev, "x_connections")
+                and dev.downstream_device in dev.x_connections
+            ):
                 bushing = "X"
-            if not any(e["source"] == dev.name and e["target"] == dev.downstream_device.name for e in edges):
-                edges.append({"source": dev.name, "target": dev.downstream_device.name, "type": "primary", "source_bushing": bushing})
+            if not any(
+                e["source"] == dev.name and e["target"] == dev.downstream_device.name
+                for e in edges
+            ):
+                edges.append(
+                    {
+                        "source": dev.name,
+                        "target": dev.downstream_device.name,
+                        "type": "primary",
+                        "source_bushing": bushing,
+                    }
+                )
         if hasattr(dev, "connections"):
             for c in dev.connections:
-                if not any(e["source"] == dev.name and e["target"] == c.name for e in edges):
-                    edges.append({"source": dev.name, "target": c.name, "type": "primary"})
+                if not any(
+                    e["source"] == dev.name and e["target"] == c.name for e in edges
+                ):
+                    edges.append(
+                        {"source": dev.name, "target": c.name, "type": "primary"}
+                    )
         if hasattr(dev, "secondary_connections"):
             for s in dev.secondary_connections:
-                edges.append({"source": dev.name, "target": s.name, "type": "protection"})
+                edges.append(
+                    {"source": dev.name, "target": s.name, "type": "protection"}
+                )
 
-    return {"nodes": nodes, "edges": edges, "reference": reference, "sync_errors": sync_errors}
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "reference": reference,
+        "sync_errors": sync_errors,
+    }
 
 
 def save_substation(devices, reference=None):
-    if not os.path.exists(STATE_FILE):
+    """Update the in-memory topology and persist it to the site DB."""
+    global _current_topology
+    if _current_topology is None:
         return
-    with open(STATE_FILE, "r") as f:
-        data = json.load(f)
-    for d in data["devices"]:
+
+    data = _current_topology
+    for d in data.get("devices", []):
         did = d["id"]
         if did in devices:
             dev = devices[did]
             if hasattr(dev, "is_closed"):
                 d["status"] = "CLOSED" if dev.is_closed else "OPEN"
+
     if reference is not None:
         data["reference"] = reference
-    with open(STATE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
 
-
-def _write_state_file(data: dict):
-    with open(STATE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _autosave(data, label="auto:toggle")
 
 
 def _autosave(data: dict, label: str = "auto"):
@@ -257,7 +331,7 @@ def _autosave(data: dict, label: str = "auto"):
         try:
             _sdb.save_snapshot(_active_site, label=label, topology=data)
         except Exception:
-            pass
+            traceback.print_exc()
 
 
 def _require_site(handler) -> bool:
@@ -286,7 +360,7 @@ class SCADAServer(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        global _active_site, _active_session_id
+        global _active_site, _active_session_id, _current_topology
         try:
             content_length = int(self.headers["Content-Length"])
             post_data = self.rfile.read(content_length)
@@ -294,16 +368,22 @@ class SCADAServer(BaseHTTPRequestHandler):
 
             # ── PMM endpoints ──────────────────────────────────────────────────
             if self.path == "/api/pmm/connect":
-                return _json_response(self, _pmm.api_connect(
-                    port=req.get("port", ""),
-                    model=req.get("model", "pmm1"),
-                ))
+                return _json_response(
+                    self,
+                    _pmm.api_connect(
+                        port=req.get("port", ""),
+                        model=req.get("model", "pmm1"),
+                    ),
+                )
 
             if self.path == "/api/pmm/configure":
-                return _json_response(self, _pmm.api_configure(
-                    chan1=int(req.get("chan1", 0)),
-                    chan2=int(req.get("chan2", 6)),
-                ))
+                return _json_response(
+                    self,
+                    _pmm.api_configure(
+                        chan1=int(req.get("chan1", 0)),
+                        chan2=int(req.get("chan2", 6)),
+                    ),
+                )
 
             if self.path == "/api/pmm/disconnect":
                 return _json_response(self, _pmm.api_disconnect())
@@ -314,10 +394,8 @@ class SCADAServer(BaseHTTPRequestHandler):
                 if not station:
                     return _json_response(self, {"error": "station name required"}, 400)
                 seed_topology = None
-                if req.get("seed_current") and os.path.exists(STATE_FILE):
-                    with open(STATE_FILE) as f:
-                        seed_topology = json.load(f)
-                    seed_topology["project_info"] = {"station": station, "device": ""}
+                if req.get("seed_current"):
+                    seed_topology = _current_topology
                 gps_lat = req.get("gps_lat")
                 gps_lon = req.get("gps_lon")
                 try:
@@ -331,30 +409,38 @@ class SCADAServer(BaseHTTPRequestHandler):
                         topology=seed_topology,
                     )
                 except FileExistsError:
-                    return _json_response(self, {"error": f"Site '{station}' already exists"}, 409)
-                return _json_response(self, {"ok": True, "db_path": path, "station": station})
+                    return _json_response(
+                        self, {"error": f"Site '{station}' already exists"}, 409
+                    )
+                return _json_response(
+                    self, {"ok": True, "db_path": path, "station": station}
+                )
 
             if self.path == "/api/sites/load":
                 station = req.get("station", "").strip()
                 db_path = _sdb.db_path_for(station)
                 if not os.path.exists(db_path):
-                    return _json_response(self, {"error": f"Site '{station}' not found"}, 404)
+                    return _json_response(
+                        self, {"error": f"Site '{station}' not found"}, 404
+                    )
+                _sdb._init(db_path)
                 _active_site = db_path
                 _active_session_id = None
                 topology = _sdb.get_latest_topology(db_path)
                 if topology:
                     topology.setdefault("project_info", {})
                     topology["project_info"]["station"] = station
-                    _write_state_file(topology)
+                    _current_topology = topology
                 else:
-                    blank = {
+                    _current_topology = {
                         "devices": [],
                         "reference": {"device_id": None, "phase": None},
                         "project_info": {"station": station, "device": ""},
                     }
-                    _write_state_file(blank)
                 info = _sdb.get_site_info(db_path)
-                return _json_response(self, {"ok": True, "station": station, "info": info})
+                return _json_response(
+                    self, {"ok": True, "station": station, "info": info}
+                )
 
             # ── DB / session endpoints ─────────────────────────────────────────
             if self.path == "/api/tests/create":
@@ -377,7 +463,9 @@ class SCADAServer(BaseHTTPRequestHandler):
             if self.path == "/api/tests/status":
                 if not _require_site(self):
                     return
-                _sdb.update_test_status(_active_site, req.get("id", ""), req.get("status", "IN PROGRESS"))
+                _sdb.update_test_status(
+                    _active_site, req.get("id", ""), req.get("status", "IN PROGRESS")
+                )
                 return _json_response(self, {"ok": True})
 
             if self.path == "/api/tests/drawings/add":
@@ -426,9 +514,10 @@ class SCADAServer(BaseHTTPRequestHandler):
                 return _json_response(self, {"ok": True})
 
             if self.path == "/api/reconfigure":
-                with open(STATE_FILE, "r") as f:
-                    data = json.load(f)
+                if _current_topology is None:
+                    return _json_response(self, {"error": "No site loaded"}, 409)
 
+                data = _current_topology
                 target_id = req.get("id")
                 action = req.get("action")
 
@@ -460,7 +549,8 @@ class SCADAServer(BaseHTTPRequestHandler):
                     for d in data["devices"]:
                         if "connections" in d:
                             d["connections"] = [
-                                c for c in d["connections"]
+                                c
+                                for c in d["connections"]
                                 if (c if isinstance(c, str) else c["id"]) != target_id
                             ]
                         if "secondary_connections" in d:
@@ -497,7 +587,9 @@ class SCADAServer(BaseHTTPRequestHandler):
                                 d["connections"] = [
                                     (new_id if c == old_id else c)
                                     if isinstance(c, str)
-                                    else ({**c, "id": new_id} if c["id"] == old_id else c)
+                                    else (
+                                        {**c, "id": new_id} if c["id"] == old_id else c
+                                    )
                                     for c in d["connections"]
                                 ]
                             if "secondary_connections" in d:
@@ -555,9 +647,6 @@ class SCADAServer(BaseHTTPRequestHandler):
                         topology=data,
                     )
 
-                with open(STATE_FILE, "w") as f:
-                    json.dump(data, f, indent=2)
-
                 # Auto-save to site DB on every structural change
                 if action not in ("create_snapshot", "record_measurement"):
                     _autosave(data, label=f"auto:{action}")
@@ -566,6 +655,17 @@ class SCADAServer(BaseHTTPRequestHandler):
                 if action == "create_snapshot":
                     resp_body["snapshot_id"] = snap_id
                 return _json_response(self, resp_body)
+
+            if self.path == "/api/topology/import":
+                if not _require_site(self):
+                    return
+                try:
+                    _current_topology = json.loads(post_data)
+                    _autosave(_current_topology, label="Imported topology")
+                    return _json_response(self, {"status": "success"})
+                except Exception as e:
+                    return _json_response(self, {"error": str(e)}, 400)
+
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -604,24 +704,35 @@ class SCADAServer(BaseHTTPRequestHandler):
                 return _json_response(self, {"tests": _sdb.list_tests(_active_site)})
 
             if self.path.startswith("/api/tests/") and not any(
-                self.path.startswith(p) for p in ("/api/tests/create", "/api/tests/delete",
-                                                   "/api/tests/status", "/api/tests/drawings")
+                self.path.startswith(p)
+                for p in (
+                    "/api/tests/create",
+                    "/api/tests/delete",
+                    "/api/tests/status",
+                    "/api/tests/drawings",
+                )
             ):
                 if not _require_site(self):
                     return
                 test_id = self.path.split("/")[3]
                 test = _sdb.get_test(_active_site, test_id)
                 if test is None:
-                    self.send_response(404); self.end_headers(); return
+                    self.send_response(404)
+                    self.end_headers()
+                    return
                 drawings = _sdb.list_drawings(_active_site, test_id)
                 sessions = _sdb.list_sessions(_active_site, test_id=test_id)
-                return _json_response(self, {"test": test, "drawings": drawings, "sessions": sessions})
+                return _json_response(
+                    self, {"test": test, "drawings": drawings, "sessions": sessions}
+                )
 
             # ── DB GET endpoints ───────────────────────────────────────────────
             if self.path == "/api/db/snapshots":
                 if not _require_site(self):
                     return
-                return _json_response(self, {"snapshots": _sdb.list_snapshots(_active_site)})
+                return _json_response(
+                    self, {"snapshots": _sdb.list_snapshots(_active_site)}
+                )
 
             if self.path.startswith("/api/db/snapshots/"):
                 if not _require_site(self):
@@ -629,16 +740,28 @@ class SCADAServer(BaseHTTPRequestHandler):
                 snap_id = self.path.split("/")[-1]
                 topology = _sdb.get_snapshot_topology(_active_site, snap_id)
                 if topology is None:
-                    self.send_response(404); self.end_headers(); return
-                sources, devices, raw_devices, reference, _ = load_substation(data=topology)
-                return _json_response(self, _build_topology_response(sources, devices, raw_devices, reference))
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                sources, devices, raw_devices, reference, _ = load_substation(
+                    data=topology
+                )
+                return _json_response(
+                    self,
+                    _build_topology_response(sources, devices, raw_devices, reference),
+                )
 
             if self.path == "/api/db/sessions":
                 if not _require_site(self):
                     return
-                return _json_response(self, {"sessions": _sdb.list_sessions(_active_site)})
+                return _json_response(
+                    self, {"sessions": _sdb.list_sessions(_active_site)}
+                )
 
-            if self.path.startswith("/api/db/sessions/") and "/measurements" in self.path:
+            if (
+                self.path.startswith("/api/db/sessions/")
+                and "/measurements" in self.path
+            ):
                 if not _require_site(self):
                     return
                 sess_id = self.path.split("/")[4]
@@ -652,17 +775,39 @@ class SCADAServer(BaseHTTPRequestHandler):
                 parts = self.path.split("/")
                 device_id = parts[4] if len(parts) > 4 else ""
                 key = "/".join(parts[5:]) if len(parts) > 5 else ""
-                return _json_response(self, {
-                    "history": _sdb.get_device_history(_active_site, device_id, key)
-                })
+                return _json_response(
+                    self,
+                    {"history": _sdb.get_device_history(_active_site, device_id, key)},
+                )
 
             if self.path == "/api/topology":
-                sources, devices, raw_devices, reference, project_info = load_substation()
-                resp = _build_topology_response(sources, devices, raw_devices, reference)
+                sources, devices, raw_devices, reference, project_info = (
+                    load_substation()
+                )
+                resp = _build_topology_response(
+                    sources, devices, raw_devices, reference
+                )
                 resp["project_info"] = project_info
-                resp["site"] = _sdb.get_site_info(_active_site) if _active_site else None
+                resp["site"] = (
+                    _sdb.get_site_info(_active_site) if _active_site else None
+                )
                 return _json_response(self, resp)
-            elif self.path.startswith("/api/toggle/"):
+
+            if self.path == "/api/topology/export":
+                if _current_topology is None:
+                    return _json_response(self, {"error": "No topology loaded"}, 404)
+                body = json.dumps(_current_topology, indent=2).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.send_header(
+                    "Content-Disposition", 'attachment; filename="substation.json"'
+                )
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if self.path.startswith("/api/toggle/"):
                 _, devices, _, _, _ = load_substation()
                 device_name = self.path.split("/")[-1].replace("%20", " ")
                 toggled = False
@@ -676,11 +821,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                         save_substation(devices)
                         toggled = True
                 if toggled:
-                    # Auto-save switch state to DB
-                    if os.path.exists(STATE_FILE):
-                        with open(STATE_FILE) as f:
-                            topo = json.load(f)
-                        _autosave(topo, label=f"auto:toggle:{device_name}")
+                    # _autosave is called inside save_substation
                     return _json_response(self, {"status": "toggled"})
                 else:
                     self.send_response(404)
@@ -697,7 +838,9 @@ class SCADAServer(BaseHTTPRequestHandler):
                     content_type, _ = mimetypes.guess_type(local_path)
                     with open(local_path, "rb") as f:
                         self.send_response(200)
-                        self.send_header("Content-type", content_type or "application/octet-stream")
+                        self.send_header(
+                            "Content-type", content_type or "application/octet-stream"
+                        )
                         self.end_headers()
                         self.wfile.write(f.read())
                 else:
