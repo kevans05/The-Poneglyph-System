@@ -30,6 +30,18 @@ function getAnchorPoint(x, y, angle, bushing, offset, radialOffset = 55) {
   return { x: x + rotX, y: y + rotY };
 }
 
+// Phase rows run along each device's local +Y axis. When the two devices
+// face roughly opposite directions, the same canonical offset value lands
+// on opposite world-sides of the bundle, so phase A at one end would line
+// up with phase C/N at the other. Returns -1 to negate the target end's
+// offset and keep each phase on a consistent world-side; +1 otherwise.
+// At ±90° the axes are orthogonal and there's no consistent flip — return
+// +1 so the existing routing handles the perpendicular bend.
+function _phaseFlipFactor(srcAngle, tgtAngle) {
+  const rad = ((srcAngle - tgtAngle) * Math.PI) / 180;
+  return Math.cos(rad) < -0.5 ? -1 : 1;
+}
+
 function getPathData(x1, y1, x2, y2, offset) {
   const dx = x2 - x1, dy = y2 - y1;
   // When devices are tight together, the per-phase offset on the elbow
@@ -171,9 +183,10 @@ function render3LD(data) {
           ? ["phase-a", "phase-b", "phase-c"]
           : ["phase-a", "phase-b", "phase-c", "neutral"];
 
+      const phaseFlip = _phaseFlipFactor(src.rotation || 0, tgt.rotation || 0);
       offsets.forEach((off, i) => {
         const a1 = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, off),
-          a2 = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, off);
+          a2 = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, off * phaseFlip);
         linkGroup
           .append("path")
           .attr("class", "link-wire " + classes[i])
@@ -538,7 +551,8 @@ function updateLinksDuringDrag(nodeId, newX, newY, angle, data, linkGroup) {
       if (el.classed("link-wire")) {
         const src = data.nodes.find((n) => n.id === el.attr("data-src"));
         const b = facingBushing(newX, newY, angle, src.gx, src.gy);
-        const a = getAnchorPoint(newX, newY, angle, b, off);
+        const flip = _phaseFlipFactor(src.rotation || 0, angle);
+        const a = getAnchorPoint(newX, newY, angle, b, off * flip);
         x2 = a.x;
         y2 = a.y;
       } else {
