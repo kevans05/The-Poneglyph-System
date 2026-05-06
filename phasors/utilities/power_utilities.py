@@ -57,33 +57,51 @@ def append_3phase_details(stats_dict: dict, voltage_obj, current_obj, is_delta: 
     if not voltage_obj and not current_obj: return stats_dict
 
     if is_delta:
-        # Delta has no neutral — voltages are line-to-line: A-B, B-C, C-A.
-        # Line currents remain A, B, C (flow into each delta node).
-        ll_pairs = [('A-B', 'a', 'b'), ('B-C', 'b', 'c'), ('C-A', 'c', 'a')]
-        i_phases  = [('A', 'a'), ('B', 'b'), ('C', 'c')]
-        for (ll_label, from_attr, to_attr), (i_label, i_attr) in zip(ll_pairs, i_phases):
+        # Delta: voltages are line-to-line (V_AB = V_A − V_B, etc); the
+        # measurable currents are the LINE currents I_A, I_B, I_C flowing into
+        # each terminal of the delta. The internal per-leg currents I_AB, I_BC,
+        # I_CA are not directly measurable (any zero-sequence circulating
+        # current is invisible from outside the delta). Under the standard
+        # assumption that the circulating zero-sequence component is zero:
+        #     I_AB = (I_A − I_B) / 3
+        #     I_BC = (I_B − I_C) / 3
+        #     I_CA = (I_C − I_A) / 3
+        # Per-leg complex power is then  S_leg = V_LL · conj(I_leg). Summing
+        # the three legs reproduces the same total 3-phase power you would get
+        # from V_LN · conj(I_line) summed over A, B, C.
+        leg_specs = [
+            # (display label, V_from, V_to, line label, line attr, next line attr)
+            ('A-B', 'a', 'b', 'A', 'a', 'b'),
+            ('B-C', 'b', 'c', 'B', 'b', 'c'),
+            ('C-A', 'c', 'a', 'C', 'c', 'a'),
+        ]
+        for ll_label, v_from, v_to, line_lbl, i_from_attr, i_to_attr in leg_specs:
             stats_dict[f'--- PHASE {ll_label} ---'] = 'HEADER'
             v_ll = None
             if voltage_obj:
-                # V_AB = V_A − V_B  (VoltagePhasor supports __sub__)
-                v_ll = getattr(voltage_obj, from_attr) - getattr(voltage_obj, to_attr)
+                v_ll = getattr(voltage_obj, v_from) - getattr(voltage_obj, v_to)
                 stats_dict[f'Phase {ll_label} Voltage'] = v_ll.magnitude
                 stats_dict[f'Phase {ll_label} V-Angle'] = v_ll.angle_degrees
-            i_phasor = None
+            i_leg = None
             if current_obj:
-                i_phasor = getattr(current_obj, i_attr)
-                stats_dict[f'Phase {i_label} Current'] = i_phasor.magnitude
-                stats_dict[f'Phase {i_label} I-Angle'] = i_phasor.angle_degrees
-            # Reference single-phase S = V_LL · I_line* — informative only,
-            # not a textbook delta per-leg power. Keys are tagged "(LL·I)".
-            if v_ll is not None and i_phasor is not None:
+                # Line current at terminal A/B/C — keep original key names
+                i_line = getattr(current_obj, i_from_attr)
+                stats_dict[f'Phase {line_lbl} Current'] = i_line.magnitude
+                stats_dict[f'Phase {line_lbl} I-Angle'] = i_line.angle_degrees
+                # Computed per-leg current (no zero-sequence assumption)
+                i_a = getattr(current_obj, i_from_attr)
+                i_b = getattr(current_obj, i_to_attr)
+                i_leg = (i_a - i_b) / 3.0
+                stats_dict[f'Leg {ll_label} Current'] = i_leg.magnitude
+                stats_dict[f'Leg {ll_label} I-Angle'] = i_leg.angle_degrees
+            if v_ll is not None and i_leg is not None:
                 pqs = _phase_pqs(v_ll.magnitude, v_ll.angle_degrees,
-                                 i_phasor.magnitude, i_phasor.angle_degrees)
+                                 i_leg.magnitude, i_leg.angle_degrees)
                 if pqs is not None:
                     p, q, s = pqs
-                    stats_dict[f'Phase {i_label} Active Power (LL·I)']   = p
-                    stats_dict[f'Phase {i_label} Reactive Power (LL·I)'] = q
-                    stats_dict[f'Phase {i_label} Apparent Power (LL·I)'] = s
+                    stats_dict[f'Phase {ll_label} Active Power']   = p
+                    stats_dict[f'Phase {ll_label} Reactive Power'] = q
+                    stats_dict[f'Phase {ll_label} Apparent Power'] = s
     else:
         for phase_label, attr in [('A', 'a'), ('B', 'b'), ('C', 'c')]:
             stats_dict[f'--- PHASE {phase_label} ---'] = 'HEADER'
