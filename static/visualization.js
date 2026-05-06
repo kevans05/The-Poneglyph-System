@@ -481,7 +481,14 @@ function render3LD(data) {
     }
 
     const labelText = d.id;
-    const labelG = el.append("g").attr("class", "node-label");
+    // Counter-rotate so the device name stays horizontal in world coordinates
+    // regardless of how the device symbol is rotated. The label sits 100px
+    // below the device center in world space (parent translate is preserved,
+    // parent rotate is cancelled by this rotate-back).
+    const labelG = el
+      .append("g")
+      .attr("class", "node-label")
+      .attr("transform", `rotate(${-(d.rotation || 0)})`);
     const textEl = labelG.append("text").attr("dy", 100).text(labelText);
     const bbox = textEl.node().getBBox();
     labelG
