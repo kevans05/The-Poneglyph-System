@@ -1,0 +1,949 @@
+/*
+   SCADA Pro Console - Global Styles
+   This file controls the "look and feel" of the application.
+*/
+
+/*
+   Root layout - The 'body' is the container for everything.
+   We use 'flex-direction: column' so the header stays at the top
+   and the canvas-container takes up the remaining space.
+*/
+body {
+    /* Consolas is a fixed-width font, great for alignment in data displays */
+    font-family: "Consolas", "Courier New", monospace;
+    margin: 0;
+    /* Dark background for a high-tech "dark mode" feel */
+    background-color: #050505;
+    color: #ccc;
+    /* Prevents the browser from showing scrollbars on the main page */
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/*
+   The Header Bar
+   'z-index: 1000' ensures it stays on top of the map/drawing.
+*/
+#header {
+    background-color: #0c0c0c;
+    padding: 4px 15px;
+    border-bottom: 1px solid #222;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 1000;
+}
+
+h1 {
+    margin: 0;
+    font-size: 11px;
+    color: #888;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    font-weight: normal;
+}
+
+/*
+   The main drawing area.
+   'flex: 1' tells it to grow and fill all available space in the body.
+*/
+#canvas-container {
+    flex: 1;
+    position: relative;
+    background-color: #080808;
+    cursor: crosshair; /* Changes mouse cursor to a '+' sign over the map */
+}
+
+svg {
+    width: 100%;
+    height: 100%;
+}
+
+/*
+   SLD (Single Line Diagram) Phase Colors
+   Standard electrical colors: A=Red, B=Yellow, C=Blue
+*/
+.phase-a {
+    stroke: #ff3333;
+    filter: drop-shadow(0 0 3px #ff333388);
+}
+.phase-b {
+    stroke: #ffff22;
+    filter: drop-shadow(0 0 3px #ffff2288);
+}
+.phase-c {
+    stroke: #3366ff;
+    filter: drop-shadow(0 0 3px #3366ff88);
+}
+.neutral {
+    stroke: #555;
+    stroke-dasharray: 5, 3;
+    stroke-width: 1.5px;
+}
+
+/* Primary circuit conductors */
+.link-wire {
+    stroke-width: 2px;
+    fill: none;
+    stroke-linecap: round;
+}
+
+/* Secondary / protection circuit wire (CT → CTTB → Relay) */
+.secondary-wire {
+    stroke: #bbb;
+    stroke-width: 1.5px;
+    stroke-dasharray: 7, 4;
+    stroke-linecap: round;
+    fill: none;
+    filter: drop-shadow(0 0 2px #ffffff55);
+}
+
+/* 'bushing' describes the connection points on transformers/breakers */
+.bushing {
+    fill: #333;
+    stroke: #666;
+    stroke-width: 1px;
+}
+
+/* CT (Current Transformer) coils - The circles in the drawing */
+.ct-coil {
+    fill: none;
+    stroke-width: 1.5px;
+}
+
+/* Breaker box styling */
+.breaker-frame {
+    fill: #000;
+    stroke: #888;
+    stroke-width: 1px;
+}
+
+/* The actual contact line inside the breaker */
+.breaker-contact {
+    stroke-width: 3px;
+}
+
+/*
+   Floating Windows (The popup boxes for device data)
+   'position: absolute' allows them to be moved anywhere.
+*/
+.window {
+    position: absolute;
+    width: 400px;
+    min-width: 260px;
+    max-width: min(580px, 94vw);
+    background-color: #111;
+    border: 1px solid #444;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.9);
+    z-index: 5000;
+    display: flex;
+    flex-direction: column;
+    border-radius: 4px;
+    overflow: hidden;
+    resize: both;
+}
+
+/* The drag bar at the top of windows */
+.window-header {
+    background-color: #222;
+    padding: 6px 12px;
+    cursor: move; /* Indicates the window can be dragged */
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: bold;
+    border-bottom: 1px solid #333;
+}
+
+.window-title {
+    color: #ffff00; /* Yellow title for high visibility */
+}
+
+.window-content {
+    padding: 12px;
+    max-height: 58vh;
+    overflow-y: auto;
+    background: #080808;
+    flex: 1;
+}
+
+/* Section labels like "TELEMETRY DATA" */
+.section-title {
+    color: #fff;
+    font-size: 10px;
+    text-transform: uppercase;
+    border-bottom: 1px solid #444;
+    margin: 15px 0 5px 0;
+    padding-bottom: 2px;
+}
+
+/* A single row of data (label on left, value on right) */
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    margin-bottom: 3px;
+    border-bottom: 1px solid #111;
+}
+
+.stat-label {
+    color: #888;
+}
+
+.stat-value {
+    color: #0f0; /* Green for data values, classic terminal style */
+    font-family: monospace;
+}
+
+/* The black box where the phasor diagram is drawn */
+.phasor-box {
+    width: 100%;
+    height: 260px;
+    background: #000;
+    margin-top: 5px;
+    border: 1px solid #222;
+}
+
+/*
+   Context Menu (Right-click menu)
+   Hidden by default (display: none)
+*/
+#context-menu {
+    position: absolute;
+    display: none;
+    background: #222;
+    border: 1px solid #555;
+    z-index: 10000;
+    box-shadow: 5px 5px 15px rgba(0, 0, 0, 0.5);
+    min-width: 180px;
+    max-height: 72vh;
+    overflow-y: auto;
+}
+
+.menu-item {
+    padding: 8px 15px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #ddd;
+}
+
+.menu-item:hover {
+    background: #333;
+    color: #fff;
+    border-left: 3px solid #ffff00; /* Highlight bar on the left */
+}
+
+/*
+   Config Modal (The centered popup for editing)
+*/
+.config-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #111;
+    border: 2px solid #ffff00;
+    z-index: 11000;
+    display: none;
+    flex-direction: column;
+    min-width: 320px;
+    max-width: min(500px, 92vw);
+    max-height: 85vh;
+    overflow: hidden;
+}
+
+/* Input fields inside the modal */
+.config-modal input,
+.config-modal select {
+    background: #000;
+    color: #0f0;
+    border: 1px solid #444;
+    padding: 5px;
+    font-family: inherit;
+}
+
+/* Buttons inside the modal */
+.config-modal button {
+    background: #222;
+    color: #ffff00;
+    border: 1px solid #ffff00;
+    padding: 8px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+/* Text labels for devices on the map */
+.node text {
+    font-size: 11px;
+    fill: #fff;
+    text-anchor: middle;
+    font-weight: bold;
+    pointer-events: none;
+    letter-spacing: 0.04em;
+}
+
+/* Dark pill behind each device label so it reads cleanly over wires/nodes */
+.label-bg {
+    fill: rgba(0, 0, 0, 0.82);
+    stroke: #333;
+    stroke-width: 0.5px;
+    pointer-events: none;
+}
+
+/*
+   The 'Hit-box' - An invisible area that makes small objects easier to click.
+   We set it to 'fill: transparent' and 'pointer-events: all' so it's
+   invisible to the eye but detectable by the mouse.
+*/
+.node-hitbox {
+    fill: transparent;
+    pointer-events: all;
+    cursor: pointer;
+}
+
+/* Command buttons (Trip/Close) */
+.cmd-btn {
+    margin-top: 15px;
+    background: #333;
+    color: #0f0;
+    border: 1px solid #0f0;
+    padding: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: bold;
+    width: 100%;
+}
+
+.cmd-btn.open-state {
+    color: #f00;
+    border-color: #f00;
+}
+
+/* Engineering Action Buttons - For configuration tasks */
+.eng-btn {
+    margin-top: 5px;
+    background: #1a1a1a;
+    color: #ffff00;
+    border: 1px solid #444;
+    padding: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: bold;
+    width: 100%;
+    text-align: left;
+    display: flex;
+    justify-content: space-between;
+}
+
+.eng-btn:hover {
+    background: #222;
+    border-color: #ffff00;
+}
+
+/* Status Bar for "Connection Mode" */
+#status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #ffff00;
+    color: #000;
+    padding: 5px 20px;
+    font-size: 11px;
+    font-weight: bold;
+    display: none; /* Hidden by default */
+    z-index: 10000;
+}
+
+/* Specific sensor wiring colors */
+.ct-wire {
+    stroke: #ffff22;
+    stroke-width: 1.5px;
+    stroke-dasharray: 6, 3;
+    stroke-linecap: round;
+    fill: none;
+    filter: drop-shadow(0 0 2px #ffff2255);
+}
+
+.vt-wire {
+    stroke: #ff3333;
+    stroke-width: 1.5px;
+    stroke-dasharray: 6, 3;
+    stroke-linecap: round;
+    fill: none;
+    filter: drop-shadow(0 0 2px #ff333355);
+}
+
+/* ── Measurement Wizard ───────────────────────────────────────────── */
+
+.measure-wizard {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #111;
+    border: 2px solid #ffff00;
+    z-index: 11000;
+    display: none;
+    flex-direction: column;
+    width: 740px;
+    max-height: 82vh;
+}
+
+.wizard-header {
+    background: #1a1a1a;
+    padding: 9px 14px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: bold;
+    color: #ffff00;
+    letter-spacing: 2px;
+    flex-shrink: 0;
+}
+
+.wizard-close-btn {
+    background: none;
+    border: 1px solid #555;
+    color: #888;
+    cursor: pointer;
+    padding: 2px 7px;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+.wizard-close-btn:hover { border-color: #f00; color: #f00; }
+
+.wizard-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 14px;
+    background: #0a0a0a;
+}
+
+.wizard-footer {
+    padding: 8px 14px;
+    border-top: 1px solid #333;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: #111;
+    flex-shrink: 0;
+}
+
+.wizard-footer button {
+    background: #1a1a1a;
+    color: #ffff00;
+    border: 1px solid #ffff00;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.wizard-footer button:hover { background: #2a2a2a; }
+
+.wizard-footer .wiz-secondary {
+    color: #666;
+    border-color: #444;
+}
+
+.wizard-footer .wiz-secondary:hover { color: #aaa; border-color: #666; background: #181818; }
+
+.wizard-footer .wiz-save {
+    color: #0f0;
+    border-color: #0f0;
+}
+
+.wizard-footer .wiz-save:hover { background: #001800; }
+
+/* Step 1 — device selection table */
+.wizard-select-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+
+.wizard-select-table th {
+    background: #181818;
+    color: #ffff00;
+    font-size: 10px;
+    letter-spacing: 1px;
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid #333;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.wizard-select-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid #161616;
+    color: #ccc;
+}
+
+.wizard-select-table tr:hover td { background: #141414; }
+
+.wizard-select-table input[type=checkbox] { cursor: pointer; accent-color: #ffff00; }
+
+/* Step 2 — per-device measurement blocks */
+.wizard-device-block {
+    border: 1px solid #252525;
+    margin-bottom: 10px;
+}
+
+.wizard-device-hdr {
+    background: #181818;
+    padding: 5px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.wizard-dev-id { color: #ffff00; font-size: 11px; font-weight: bold; }
+.wizard-dev-type { color: #666; font-size: 10px; }
+
+.wizard-entry-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+
+.wizard-entry-table th {
+    background: #111;
+    color: #555;
+    font-size: 9px;
+    letter-spacing: 1px;
+    padding: 4px 10px;
+    text-align: left;
+    border-bottom: 1px solid #1e1e1e;
+}
+
+.wizard-entry-table td {
+    padding: 3px 10px;
+    border-bottom: 1px solid #111;
+    vertical-align: middle;
+}
+
+.wiz-col-label { color: #777; width: 38%; }
+.wiz-col-pred  { color: #3af; font-family: monospace; width: 28%; }
+.wiz-col-input { width: 34%; }
+
+.wizard-meas-input {
+    background: #000;
+    color: #0f0;
+    border: 1px solid #2a2a2a;
+    padding: 3px 6px;
+    font-family: inherit;
+    font-size: 11px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.wizard-meas-input:focus { border-color: #ffff00; outline: none; }
+.wizard-meas-input.has-value { border-color: #0a3a0a; }
+
+/* ── Field Report ─────────────────────────────────────────────────────────── */
+
+.report-device-block {
+    border: 1px solid #1e1e1e;
+    margin-bottom: 14px;
+    background: #090909;
+}
+
+.report-device-hdr {
+    background: #141414;
+    padding: 6px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #2a2a2a;
+    gap: 12px;
+}
+
+.report-dev-id  { color: #ffff00; font-size: 12px; font-weight: bold; flex: 1; }
+.report-dev-type { color: #666; font-size: 10px; }
+
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+}
+
+.report-table th {
+    background: #0e0e0e;
+    color: #555;
+    font-size: 9px;
+    letter-spacing: 1px;
+    padding: 4px 8px;
+    text-align: left;
+    border-bottom: 1px solid #1e1e1e;
+}
+
+.report-table td { padding: 3px 8px; border-bottom: 1px solid #111; vertical-align: middle; }
+.report-table tr:hover td { background: #0f0f0f; }
+
+.report-td-label  { color: #777; width: 160px; }
+.report-td-pred   { color: #3af; font-family: monospace; width: 110px; }
+.report-td-meas   { color: #0f0; font-family: monospace; font-weight: bold; width: 110px; }
+.report-td-raw    { color: #555; font-family: monospace; font-size: 9px; width: 110px; }
+.report-td-delta  { color: #aaa; font-family: monospace; width: 90px; }
+.report-td-pct    { color: #aaa; font-family: monospace; width: 70px; }
+.report-td-status { width: 80px; }
+
+.report-status-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    border-radius: 2px;
+}
+
+.report-status-pass  { background: #002200; color: #0f0; border: 1px solid #0a0; }
+.report-status-warn  { background: #1a1000; color: #fa0; border: 1px solid #a70; }
+.report-status-fault { background: #220000; color: #f44; border: 1px solid #a00; }
+.report-status-info  { background: #001133; color: #3af; border: 1px solid #069; }
+
+.report-sanity-section {
+    padding: 8px 12px;
+    background: #060606;
+    border-top: 1px solid #161616;
+}
+
+.report-sanity-title {
+    font-size: 9px;
+    color: #444;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+
+.report-sanity-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.report-sanity-item {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    background: #0d0d0d;
+    border: 1px solid #1a1a1a;
+    padding: 3px 8px;
+    font-size: 10px;
+}
+
+.report-sanity-label { color: #555; }
+.report-sanity-msg   { color: #aaa; }
+
+.report-sub-section {
+    padding: 6px 12px;
+    border-top: 1px solid #111;
+    background: #070707;
+}
+
+.report-sub-row {
+    display: flex;
+    align-items: center;
+    padding: 2px 0;
+    font-size: 10px;
+    gap: 4px;
+}
+/* Splash Screen */
+#splash-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #050505;
+    z-index: 20000;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    transition: opacity 0.8s ease-out, visibility 0.8s;
+}
+
+.splash-logo-container {
+    transform: scale(3);
+    margin-bottom: 80px;
+}
+
+.splash-text {
+    color: #0f0;
+    font-family: monospace;
+    font-size: 12px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    animation: blink 1.5s infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+.rescan-btn {
+    padding: 3px 8px;
+    font-size: 10px;
+}
+
+/* ── Tests ────────────────────────────────────────────────────────────────── */
+
+.test-row {
+    padding: 10px 14px;
+    border-bottom: 1px solid #111;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.test-row:hover { background: #0f0f0f; }
+
+.test-row-active {
+    background: #001a00 !important;
+    border-left: 2px solid #0f0;
+}
+
+.test-row-name {
+    font-size: 12px;
+    color: #ddd;
+    margin-bottom: 3px;
+}
+
+.test-row-meta {
+    font-size: 10px;
+    color: #555;
+}
+
+/* ── Site Selector ────────────────────────────────────────────────────────── */
+
+.site-row {
+    padding: 10px 14px;
+    border-bottom: 1px solid #111;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.site-row:hover { background: #0f0f0f; }
+
+.site-row-active {
+    background: #001a00 !important;
+    border-left: 2px solid #0f0;
+}
+
+.site-row-name {
+    font-size: 13px;
+    color: #eee;
+    letter-spacing: 1px;
+    margin-bottom: 3px;
+}
+
+.site-row-meta {
+    font-size: 10px;
+    color: #555;
+}
+
+/* ── Config modal sub-sections (draggable header + scrollable body) ─────── */
+
+.config-modal-header {
+    padding: 8px 12px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: move;
+    flex-shrink: 0;
+    user-select: none;
+    font-size: 11px;
+    font-weight: bold;
+    color: #ffff00;
+    letter-spacing: 1px;
+}
+
+.config-modal-header .modal-close {
+    cursor: pointer;
+    color: #555;
+    font-size: 11px;
+    padding: 0 4px;
+}
+
+.config-modal-header .modal-close:hover { color: #f00; }
+
+.config-modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.config-modal-footer {
+    padding: 8px 16px;
+    border-top: 1px solid #222;
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+    background: #111;
+}
+
+/* ── Canvas overlay controls (bottom-right corner) ─────────────────────── */
+
+#canvas-controls {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    z-index: 4000;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+    pointer-events: none;
+}
+
+#canvas-controls > * { pointer-events: all; }
+
+.canvas-ctrl-row {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+}
+
+.canvas-btn {
+    background: rgba(8,8,8,0.93);
+    border: 1px solid #333;
+    color: #777;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 11px;
+    padding: 5px 11px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    min-width: 34px;
+    text-align: center;
+}
+
+.canvas-btn:hover {
+    border-color: #ffff00;
+    color: #ffff00;
+    background: rgba(20,20,8,0.97);
+}
+
+.find-wrap { position: relative; }
+
+#find-device-input {
+    background: rgba(8,8,8,0.93);
+    border: 1px solid #333;
+    color: #0f0;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 11px;
+    padding: 5px 8px;
+    width: 170px;
+    outline: none;
+}
+
+#find-device-input:focus { border-color: #0f0; }
+#find-device-input::placeholder { color: #2a2a2a; }
+
+#find-device-results {
+    position: absolute;
+    bottom: calc(100% + 2px);
+    right: 0;
+    background: #111;
+    border: 1px solid #444;
+    min-width: 230px;
+    max-height: 230px;
+    overflow-y: auto;
+    z-index: 4500;
+    display: none;
+}
+
+.find-result-item {
+    padding: 5px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    color: #bbb;
+    border-bottom: 1px solid #181818;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.find-result-item:hover { background: #1a1a1a; color: #ffff00; }
+
+.find-result-type { color: #3a3a3a; font-size: 9px; }
+
+/* ── All Devices slide-in panel (left edge of canvas) ───────────────────── */
+
+#all-devices-panel {
+    position: absolute;
+    top: 0;
+    left: -272px;
+    width: 272px;
+    height: 100%;
+    background: #0c0c0c;
+    border-right: 1px solid #1c1c1c;
+    z-index: 3500;
+    display: flex;
+    flex-direction: column;
+    transition: left 0.18s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.7);
+}
+
+#all-devices-panel.open { left: 0; }
+
+#adp-header {
+    padding: 8px 12px;
+    background: #111;
+    border-bottom: 1px solid #1c1c1c;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    color: #ffff00;
+    letter-spacing: 1px;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+#adp-count { color: #444; font-size: 9px; margin-left: 5px; }
+#adp-close { cursor: pointer; color: #555; font-size: 11px; }
+#adp-close:hover { color: #f00; }
+
+#all-devices-list { flex: 1; overflow-y: auto; padding: 2px 0; }
+
+.adp-group {
+    padding: 5px 10px 3px;
+    font-size: 9px;
+    color: #3a3a3a;
+    letter-spacing: 1px;
+    background: #0a0a0a;
+    border-top: 1px solid #161616;
+    text-transform: uppercase;
+}
+
+.adp-item {
+    padding: 5px 14px;
+    font-size: 11px;
+    cursor: pointer;
+    color: #888;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #101010;
+}
+
+.adp-item:hover { background: #181818; color: #ffff00; }
+.adp-item-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

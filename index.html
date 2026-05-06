@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>The Poneglyph System</title>
+
+        <!-- Third-party Libraries -->
+        <script src="https://d3js.org/d3.v7.min.js"></script>
+
+        <!-- Modular Styles -->
+        <link rel="stylesheet" href="/static/styles.css" />
+    </head>
+    <body>
+        <!-- Splash Screen -->
+        <div id="splash-screen">
+            <div class="splash-logo-container">
+                <svg
+                    width="40"
+                    height="40"
+                    viewBox="0 0 40 40"
+                    style="
+                        background: #000;
+                        border-radius: 50%;
+                        border: 1px solid #333;
+                    "
+                >
+                    <circle
+                        cx="20"
+                        cy="20"
+                        r="18"
+                        fill="none"
+                        stroke="#222"
+                        stroke-width="0.5"
+                    />
+                    <line
+                        x1="20"
+                        y1="2"
+                        x2="20"
+                        y2="38"
+                        stroke="#111"
+                        stroke-width="0.5"
+                    />
+                    <line
+                        x1="2"
+                        y1="20"
+                        x2="38"
+                        y2="20"
+                        stroke="#111"
+                        stroke-width="0.5"
+                    />
+                    <circle
+                        cx="20"
+                        cy="20"
+                        r="15"
+                        fill="none"
+                        stroke="#0f0"
+                        stroke-width="0.5"
+                        opacity="0.3"
+                    >
+                        <animate
+                            attributeName="r"
+                            values="12;18;12"
+                            dur="3s"
+                            repeatCount="indefinite"
+                        />
+                        <animate
+                            attributeName="opacity"
+                            values="0.1;0.4;0.1"
+                            dur="3s"
+                            repeatCount="indefinite"
+                        />
+                    </circle>
+                    <g transform="translate(20,20)">
+                        <g>
+                            <animateTransform
+                                attributeName="transform"
+                                type="rotate"
+                                from="0"
+                                to="360"
+                                dur="10s"
+                                repeatCount="indefinite"
+                            />
+                            <line
+                                x1="0"
+                                y1="0"
+                                x2="16"
+                                y2="0"
+                                stroke="#0f0"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                            />
+                            <circle cx="16" cy="0" r="2" fill="#0f0" />
+                        </g>
+                        <g transform="rotate(-120)">
+                            <animateTransform
+                                attributeName="transform"
+                                type="rotate"
+                                from="-120"
+                                to="240"
+                                dur="10s"
+                                repeatCount="indefinite"
+                            />
+                            <line
+                                x1="0"
+                                y1="0"
+                                x2="14"
+                                y2="0"
+                                stroke="#ff0"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                opacity="0.7"
+                            />
+                        </g>
+                        <g transform="rotate(-240)">
+                            <animateTransform
+                                attributeName="transform"
+                                type="rotate"
+                                from="-240"
+                                to="120"
+                                dur="10s"
+                                repeatCount="indefinite"
+                            />
+                            <line
+                                x1="0"
+                                y1="0"
+                                x2="14"
+                                y2="0"
+                                stroke="#00f"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                opacity="0.7"
+                            />
+                        </g>
+                    </g>
+                    <circle cx="20" cy="20" r="2.5" fill="#fff" />
+                </svg>
+            </div>
+            <div class="splash-text">Charting Course...</div>
+        </div>
+        <!-- Top Navigation / Branding -->
+        <div id="header">
+            <h1>The Poneglyph System</h1>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <span id="active-site-indicator"
+                    onclick="showSiteSelector()"
+                    style="font-size:10px; border:1px solid #f00; color:#f00; padding:3px 8px;
+                           letter-spacing:1px; cursor:pointer; user-select:none;"
+                    title="Click to switch dock">NO DOCK</span>
+                <button
+                    onclick="initBrainPointSequence()"
+                    class="rescan-btn"
+                    style="border-color: #ff0000; color: #ff0000"
+                >
+                    [ Initialize Brain Point ]
+                </button>
+                <button
+                    onclick="showTestsModal()"
+                    class="rescan-btn"
+                    style="border-color: #0f0; color: #0f0"
+                >
+                    TESTS
+                </button>
+                <button
+                    onclick="showHistoryModal()"
+                    class="rescan-btn"
+                    style="border-color: #0af; color: #0af"
+                >
+                    HISTORY
+                </button>
+                <button onclick="refreshData()" class="rescan-btn">
+                    RESCAN BUS
+                </button>
+            </div>
+        </div>
+
+        <div id="status-bar"></div>
+
+        <!-- Main Visualization Area -->
+
+        <div id="canvas-container">
+            <svg id="sld-svg">
+                <!-- The 'zoom-group' is where all D3 elements are drawn -->
+                <g id="zoom-group"></g>
+            </svg>
+
+            <!-- Hidden by default, shown on right-click -->
+            <div id="context-menu"></div>
+
+            <!-- All Devices slide-in panel -->
+            <div id="all-devices-panel">
+                <div id="adp-header">
+                    <span>ALL DEVICES<span id="adp-count"></span></span>
+                    <span id="adp-close" onclick="toggleAllDevices()">[ CLOSE ]</span>
+                </div>
+                <div id="all-devices-list"></div>
+            </div>
+
+            <!-- Canvas overlay controls (bottom-right) -->
+            <div id="canvas-controls">
+                <div class="find-wrap">
+                    <div id="find-device-results"></div>
+                    <div class="canvas-ctrl-row">
+                        <input id="find-device-input" type="text" placeholder="FIND DEVICE..."
+                               oninput="onFindInput(this.value)"
+                               onkeydown="onFindKey(event)"
+                               onfocus="onFindInput(this.value)"
+                               onblur="setTimeout(clearFindResults, 200)" />
+                    </div>
+                </div>
+                <div class="canvas-ctrl-row">
+                    <button class="canvas-btn" onclick="toggleAllDevices()" title="Device List">LIST</button>
+                    <button class="canvas-btn" onclick="zoomOut()" title="Zoom Out">&#x2212;</button>
+                    <button class="canvas-btn" onclick="zoomIn()" title="Zoom In">+</button>
+                    <button class="canvas-btn" onclick="zoomToFit()" title="Fit All Devices">FIT</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Shared Dialog for Reconfiguration -->
+        <div id="config-modal" class="config-modal">
+            <div class="config-modal-header" id="config-modal-drag">
+                <span id="modal-title">RECONFIGURE DEVICE</span>
+                <span class="modal-close" onclick="d3.select('#config-modal').style('display','none')">[X]</span>
+            </div>
+            <div class="config-modal-body" id="modal-body"></div>
+            <div class="config-modal-footer">
+                <button id="modal-save">APPLY</button>
+                <button onclick="d3.select('#config-modal').style('display','none')"
+                        style="border-color:#888; color:#888">CANCEL</button>
+            </div>
+        </div>
+
+        <!-- PMM Connection Modal -->
+        <div
+            id="brain-point-module"
+            class="measure-wizard"
+            style="display: none; width: 600px; height: 500px"
+        >
+            <div class="wizard-header">
+                <span>BRAIN POINT — TELEMETRY INTERFACE</span>
+                <button
+                    class="wizard-close-btn"
+                    onclick="d3.select('#brain-point-module').style('display', 'none')"
+                >
+                    ✕
+                </button>
+            </div>
+            <div
+                id="brain-point-body"
+                class="wizard-body"
+                style="
+                    background: #000;
+                    font-family: &quot;Courier New&quot;, monospace;
+                    padding: 10px;
+                    overflow-y: auto;
+                    height: 380px;
+                    color: #0f0;
+                    border: 1px solid #333;
+                    margin: 10px;
+                "
+            >
+                <div id="brain-point-terminal"></div>
+                <div
+                    style="
+                        display: flex;
+                        gap: 5px;
+                        margin-top: 10px;
+                        border-top: 1px solid #222;
+                        padding-top: 5px;
+                    "
+                >
+                    <span>&gt;</span>
+                    <input
+                        id="brain-point-cmd-input"
+                        type="text"
+                        style="
+                            flex: 1;
+                            background: transparent;
+                            border: none;
+                            color: #0f0;
+                            outline: none;
+                            font-family: inherit;
+                        "
+                        placeholder="ENTER COMMAND..."
+                    />
+                </div>
+            </div>
+            <div
+                id="brain-point-footer"
+                class="wizard-footer"
+                style="
+                    padding: 10px;
+                    display: flex;
+                    gap: 10px;
+                    background: #1a1a1a;
+                "
+            >
+                <div style="flex: 1; font-size: 10px; color: #888">
+                    COM SETTINGS: 19200 BAUD, 8-N-1 (9-PIN DELTA)
+                </div>
+                <button
+                    id="brain-point-connect-btn"
+                    class="wiz-save"
+                    onclick="initBrainPointSequence()"
+                >
+                    ESTABLISH LINK
+                </button>
+                <button
+                    class="wiz-secondary"
+                    onclick="d3.select('#brain-point-module').style('display', 'none')"
+                >
+                    DISCONNECT
+                </button>
+            </div>
+        </div>
+        <!-- Generic text-input dialog (replaces all prompt() calls) -->
+        <div id="input-dialog"
+            style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8);
+                   z-index:10000; align-items:center; justify-content:center;">
+            <div style="background:#0c0c0c; border:1px solid #0f0; padding:24px; min-width:340px;
+                        font-family:'Consolas','Courier New',monospace; display:flex; flex-direction:column; gap:14px;">
+                <div id="input-dialog-label" style="font-size:10px; color:#888; letter-spacing:1px;"></div>
+                <input id="input-dialog-field" type="text"
+                    style="background:#111; border:1px solid #333; color:#eee; padding:8px 10px;
+                           font-family:inherit; font-size:12px; width:100%; box-sizing:border-box;" />
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                    <button id="input-dialog-cancel"
+                        style="background:#0a0a0a; border:1px solid #333; color:#555;
+                               font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer;">
+                        CANCEL
+                    </button>
+                    <button id="input-dialog-ok"
+                        style="background:#001a00; border:1px solid #0f0; color:#0f0;
+                               font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer;">
+                        OK
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- History / Snapshot Modal -->
+        <div
+            id="history-modal"
+            class="measure-wizard"
+            style="display: none; width: 600px"
+        >
+            <div class="wizard-header">
+                <span>SYSTEM HISTORY & SNAPSHOTS</span>
+                <button
+                    class="wizard-close-btn"
+                    onclick="
+                        d3.select('#history-modal').style('display', 'none')
+                    "
+                >
+                    ✕
+                </button>
+            </div>
+            <div id="history-body" class="wizard-body"></div>
+            <div id="history-footer" class="wizard-footer"></div>
+        </div>
+
+        <!-- Tests Manager Modal -->
+        <div id="tests-modal"
+            style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85);
+                   z-index:8000; align-items:center; justify-content:center;">
+            <div style="background:#0c0c0c; border:1px solid #0f0; width:680px; max-height:85vh;
+                        display:flex; flex-direction:column; font-family:'Consolas','Courier New',monospace;">
+                <div style="background:#050505; border-bottom:1px solid #1a1a1a; padding:10px 14px;
+                            display:flex; justify-content:space-between; align-items:center;">
+                    <span id="tests-modal-header" style="font-size:11px; color:#0f0; letter-spacing:2px;">TESTS</span>
+                    <button onclick="hideTestsModal()"
+                        style="background:none; border:none; color:#555; font-size:14px;
+                               cursor:pointer; font-family:inherit; padding:0 4px;">&times;</button>
+                </div>
+                <div id="tests-modal-body" style="overflow-y:auto; flex:1; min-height:180px; position:relative;"></div>
+                <div id="tests-modal-footer"
+                    style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; background:#050505;"></div>
+            </div>
+        </div>
+
+        <!-- Test Picker Modal (used by wizard and PLUG sequence) -->
+        <div id="test-picker-modal"
+            style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88);
+                   z-index:9500; align-items:center; justify-content:center;">
+            <div style="background:#0c0c0c; border:1px solid #fa0; width:560px; max-height:80vh;
+                        display:flex; flex-direction:column; font-family:'Consolas','Courier New',monospace;">
+                <div style="background:#050505; border-bottom:1px solid #1a1a1a; padding:10px 14px;
+                            display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:11px; color:#fa0; letter-spacing:2px;">ATTACH TO TEST</span>
+                    <button onclick="document.getElementById('test-picker-modal').style.display='none'"
+                        style="background:none; border:none; color:#555; font-size:14px;
+                               cursor:pointer; font-family:inherit; padding:0 4px;">&times;</button>
+                </div>
+                <div id="test-picker-body" style="overflow-y:auto; flex:1; min-height:140px;"></div>
+                <div id="test-picker-footer"
+                    style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; background:#050505;"></div>
+            </div>
+        </div>
+
+        <!-- Site Selector Modal -->
+        <div id="site-selector-modal"
+            style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85);
+                   z-index:9000; align-items:center; justify-content:center;">
+            <div style="background:#0c0c0c; border:1px solid #0f0; width:520px; max-height:80vh;
+                        display:flex; flex-direction:column; font-family:'Consolas','Courier New',monospace;">
+                <!-- Header -->
+                <div style="background:#050505; border-bottom:1px solid #1a1a1a; padding:10px 14px;
+                            display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:11px; color:#0f0; letter-spacing:2px;">DOCK SELECTION</span>
+                    <button onclick="hideSiteSelector()"
+                        style="background:none; border:none; color:#555; font-size:14px;
+                               cursor:pointer; font-family:inherit; padding:0 4px;">&times;</button>
+                </div>
+                <!-- Body — site list or create form renders here -->
+                <div id="site-selector-body"
+                    style="overflow-y:auto; flex:1; min-height:120px;"></div>
+                <!-- Footer -->
+                <div style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; background:#050505;">
+                    <button id="site-new-btn"
+                        onclick="_showCreateForm()"
+                        style="background:#0a0a0a; border:1px solid #333; color:#888;
+                               font-family:inherit; font-size:10px; padding:6px 12px;
+                               cursor:pointer; letter-spacing:1px;">
+                        + NEW DOCK
+                    </button>
+                    <div style="flex:1;"></div>
+                    <button id="site-load-btn" disabled
+                        style="background:#001a00; border:1px solid #0f0; color:#0f0;
+                               font-family:inherit; font-size:10px; padding:6px 16px;
+                               cursor:pointer; letter-spacing:1px; opacity:0.5;"
+                        onmouseover="if(!this.disabled)this.style.opacity='1'"
+                        onmouseout="if(!this.disabled)this.style.opacity='0.9'">
+                        LOAD DOCK
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modular Scripts (Loaded in order of dependency) -->
+        <script src="/static/utils.js"></script>
+        <script src="/static/api-client.js"></script>
+        <script src="/static/sites.js"></script>
+        <script src="/static/tests.js"></script>
+        <script src="/static/visualization.js"></script>
+        <script src="/static/ui.js"></script>
+        <script src="/static/splash.js"></script>
+
+        <script>
+            // Initialize the application once all scripts are loaded
+            window.onload = () => {
+                mountAnalFramework();
+            };
+        </script>
+    </body>
+</html>
