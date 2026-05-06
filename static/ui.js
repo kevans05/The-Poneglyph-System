@@ -858,13 +858,31 @@ function _predKey(node, phase, qty) {
   return null;
 }
 
-// 360 lag angle convention (default on — relays show 0–360°, no negative angles)
-let _use360Lag = true;
-function _lagAngle(deg) {
-  return _use360Lag ? ((deg % 360) + 360) % 360 : deg;
-}
-function _fmtAngle(deg) {
-  return _lagAngle(deg).toFixed(1) + "°";
+// 360° lag toggle lives in utils.js so formatSI() can apply it to every "deg"
+// value across the dashboard (header button drives it).
+
+function toggleLagConvention() {
+  _use360Lag = !_use360Lag;
+  const btn = document.getElementById("lag-toggle-btn");
+  if (btn) {
+    btn.textContent = _use360Lag ? "360° LAG" : "±180°";
+    btn.style.borderColor = _use360Lag ? "#3af" : "#888";
+    btn.style.color = _use360Lag ? "#3af" : "#888";
+  }
+  // Re-render any open device windows so their angle rows pick up the change.
+  if (currentData) {
+    Object.keys(openWindows).forEach((id) => {
+      const node = currentData.nodes.find((n) => n.id === id);
+      if (node) updateWindow(id, node);
+    });
+  }
+  // If the brain-point wizard is open, re-render the active step.
+  if (d3.select("#brain-point-module").style("display") !== "none") {
+    if (typeof _bpRenderStep5 === "function") {
+      const inPMM = _bpInstrumentType === "pmm1" || _bpInstrumentType === "sim";
+      (inPMM ? _bpRenderPMMStep5 : _bpRenderStep5)();
+    }
+  }
 }
 
 // Device selection filter groups
@@ -1551,7 +1569,19 @@ function _bpDeviceExpectedType(deviceType) {
     )
   )
     return "voltage";
+  // Multi-analog device: honour the active pass marker first (set by the
+  // wizard during the V → I sequence), then fall back to the channel cfg.
+  if (_bpDeviceMeasStep === "voltage") return "voltage";
+  if (_bpDeviceMeasStep === "current") return "current";
   return _bpChan2 >= 6 ? "current" : "voltage";
+}
+
+// True when manual entry should display BOTH voltage and current rows on a
+// single screen for multi-analog devices (no channel switching is needed for
+// hand-entered readings, so the V → I two-pass dance is skipped).
+function _bpIsManualMultiAnalog(node) {
+  if (!node || _bpInstrumentType !== "manual") return false;
+  return _deviceShowsVoltage(node.type) && _deviceShowsCurrent(node.type);
 }
 
 const PMM_SOURCES = [
@@ -2982,14 +3012,16 @@ function _bpRenderStep5() {
     if (d3.select("#brain-point-module").style("display") === "none") return;
 
     if (e.key === "Enter") {
-      const magIn = document.getElementById("bp-mag-in");
-      if (magIn && document.activeElement === magIn) {
-        // If focusing magnitude, move to angle
-        const angIn = document.getElementById("bp-ang-in");
-        if (angIn) angIn.focus();
+      // Walk through any of the focusable inputs (single-row legacy or dual-row
+      // multi-analog manual). Order: mag-v → ang-v → mag-i → ang-i → mag-in → ang-in.
+      const seq = ["bp-mag-v", "bp-ang-v", "bp-mag-i", "bp-ang-i", "bp-mag-in", "bp-ang-in"]
+        .map((id) => document.getElementById(id))
+        .filter(Boolean);
+      const idx = seq.indexOf(document.activeElement);
+      if (idx >= 0 && idx < seq.length - 1) {
+        seq[idx + 1].focus();
         e.preventDefault();
       } else {
-        // Log if on angle or button
         _bpLogCurrentPoint();
         e.preventDefault();
       }
@@ -3211,46 +3243,60 @@ function _bpRenderStep5() {
     .text("BRAIN POINT MODE: " + _bpSelectedMode.toUpperCase());
 
   {
-    // Channel type indicator banner
-    const isVoltage = expectedType === "voltage";
-    plugDisplay
-      .append("div")
-      .style("margin-bottom", "14px")
-      .style("padding", "5px 10px")
-      .style("border-radius", "3px")
-      .style("font-size", "9px")
-      .style("text-align", "center")
-      .style("letter-spacing", "1px")
-      .style("border", `1px solid ${isVoltage ? "#226" : "#060"}`)
-      .style("color", isVoltage ? "#66f" : "#0f0")
-      .style("background", isVoltage ? "#000011" : "#001100")
-      .text(
-        `CHAN 2: ${isVoltage ? "VOLTAGE (V) INPUT" : "CURRENT (A) INPUT"}` +
-          (_bpLastMeasType === null ? "  —  FIRST READING: CONNECT NOW" : ""),
-      );
-
-    const qty = expectedType === "current" ? "Current" : "Voltage";
-    const unit = expectedType === "current" ? "A" : "V";
     const isNeutralPhase = _bpTargetPhase === "N";
-    const storeKey = isNeutralPhase
-      ? "Neutral Current"
-      : `Phase ${_bpTargetPhase} ${qty}`;
-    const angKey = isNeutralPhase
-      ? "Neutral I-Angle"
-      : `Phase ${_bpTargetPhase} ${qty === "Voltage" ? "V-Angle" : "I-Angle"}`;
     const phaseLabel = isNeutralPhase ? "NEUTRAL" : `PHASE ${_bpTargetPhase}`;
+    const isManualMulti = _bpIsManualMultiAnalog(node);
+    // Neutral-current pass is current-only even on multi-analog manual.
+    const showVoltRow =
+      !isNeutralPhase &&
+      (isManualMulti || expectedType === "voltage");
+    const showCurrRow =
+      isManualMulti || expectedType === "current" || isNeutralPhase;
+
+    // Channel type banner — only meaningful when one row at a time.
+    if (!isManualMulti) {
+      const isVoltage = expectedType === "voltage";
+      plugDisplay
+        .append("div")
+        .style("margin-bottom", "14px")
+        .style("padding", "5px 10px")
+        .style("border-radius", "3px")
+        .style("font-size", "9px")
+        .style("text-align", "center")
+        .style("letter-spacing", "1px")
+        .style("border", `1px solid ${isVoltage ? "#226" : "#060"}`)
+        .style("color", isVoltage ? "#66f" : "#0f0")
+        .style("background", isVoltage ? "#000011" : "#001100")
+        .text(
+          `CHAN 2: ${isVoltage ? "VOLTAGE (V) INPUT" : "CURRENT (A) INPUT"}` +
+            (_bpLastMeasType === null ? "  —  FIRST READING: CONNECT NOW" : ""),
+        );
+    } else {
+      plugDisplay
+        .append("div")
+        .style("margin-bottom", "14px")
+        .style("padding", "5px 10px")
+        .style("border-radius", "3px")
+        .style("font-size", "9px")
+        .style("text-align", "center")
+        .style("letter-spacing", "1px")
+        .style("border", "1px solid #444")
+        .style("color", "#aaa")
+        .style("background", "#0a0a0a")
+        .text("MANUAL MULTI-ANALOG  —  ENTER VOLTAGE & CURRENT FOR THIS PHASE");
+    }
 
     const measBox = plugDisplay
       .append("div")
       .style("border", isNeutralPhase ? "2px solid #660" : "2px solid #1a1a1a")
-      .style("padding", "20px")
+      .style("padding", "16px")
       .style("background", isNeutralPhase ? "#0a0a00" : "#050505");
     measBox
       .append("div")
       .text(`MEASUREMENT: ${node.id} — ${phaseLabel}`)
       .style("font-size", "12px")
       .style("color", isNeutralPhase ? "#aa0" : "#0a0")
-      .style("margin-bottom", "16px");
+      .style("margin-bottom", "12px");
     if (isNeutralPhase) {
       measBox
         .append("div")
@@ -3261,89 +3307,153 @@ function _bpRenderStep5() {
         .style("letter-spacing", "1px");
     }
 
-    const valRow = measBox
-      .append("div")
-      .style("display", "flex")
-      .style("align-items", "center")
-      .style("gap", "25px")
-      .style("padding", "5px 0");
-    valRow
-      .append("span")
-      .text("MAG")
-      .style("font-size", "14px")
-      .style("color", "#0a0")
-      .style("font-weight", "bold")
-      .style("width", "50px");
-    valRow
-      .append("input")
-      .attr("type", "number")
-      .attr("id", "bp-mag-in")
-      .property("value", node.summary?.[`Manual ${storeKey}`] || "")
-      .style("background", "#111")
-      .style("border", "2px solid #040")
-      .style("color", "#0f0")
-      .style("font-size", "48px")
-      .style("width", "250px")
-      .style("padding", "10px")
-      .style("text-align", "center")
-      .style("font-family", "'Courier New', monospace")
-      .on("focus", function () {
-        d3.select(this)
-          .style("border-color", "#0f0")
-          .style("background", "#000");
-      })
-      .on("blur", function () {
-        d3.select(this)
-          .style("border-color", "#040")
-          .style("background", "#111");
-      });
-    valRow
-      .append("span")
-      .text(unit)
-      .style("color", "#0a0")
-      .style("font-size", "24px");
+    function buildEntryRow(kind, idSuffix) {
+      const qty = kind === "current" ? "Current" : "Voltage";
+      const unit = kind === "current" ? "A" : "V";
+      const accent = kind === "current" ? "#0a0" : "#66f";
+      const accentDim = kind === "current" ? "#040" : "#225";
+      const accentHi = kind === "current" ? "#0f0" : "#9af";
+      const storeKey = isNeutralPhase
+        ? "Neutral Current"
+        : `Phase ${_bpTargetPhase} ${qty}`;
+      const angKey = isNeutralPhase
+        ? "Neutral I-Angle"
+        : `Phase ${_bpTargetPhase} ${kind === "current" ? "I-Angle" : "V-Angle"}`;
 
-    const angRow = measBox
-      .append("div")
-      .style("display", "flex")
-      .style("align-items", "center")
-      .style("gap", "25px")
-      .style("margin-top", "20px");
-    angRow
-      .append("span")
-      .text("ANG")
-      .style("font-size", "14px")
-      .style("color", "#0a0")
-      .style("font-weight", "bold")
-      .style("width", "50px");
-    angRow
-      .append("input")
-      .attr("type", "number")
-      .attr("id", "bp-ang-in")
-      .property("value", node.summary?.[`Manual ${angKey}`] || "")
-      .style("background", "#111")
-      .style("border", "2px solid #040")
-      .style("color", "#0f0")
-      .style("font-size", "36px")
-      .style("width", "200px")
-      .style("padding", "10px")
-      .style("text-align", "center")
-      .style("font-family", "'Courier New', monospace")
-      .on("focus", function () {
-        d3.select(this)
-          .style("border-color", "#0f0")
-          .style("background", "#000");
-      })
-      .on("blur", function () {
-        d3.select(this)
-          .style("border-color", "#040")
-          .style("background", "#111");
-      });
-    angRow
-      .append("span")
-      .text("°")
-      .style("color", "#0a0")
-      .style("font-size", "24px");
+      const block = measBox
+        .append("div")
+        .style("margin-top", "10px")
+        .style("padding-top", "10px")
+        .style("border-top", "1px dashed #222");
+      block
+        .append("div")
+        .text(`${kind === "current" ? "CURRENT (I)" : "VOLTAGE (V)"}`)
+        .style("font-size", "10px")
+        .style("color", accent)
+        .style("letter-spacing", "1px")
+        .style("margin-bottom", "6px");
+
+      const valRow = block
+        .append("div")
+        .style("display", "flex")
+        .style("align-items", "center")
+        .style("gap", "18px")
+        .style("padding", "3px 0");
+      valRow.append("span").text("MAG")
+        .style("font-size", "13px").style("color", accent)
+        .style("font-weight", "bold").style("width", "44px");
+      const magVal = node.summary?.[`Manual ${storeKey}`];
+      valRow
+        .append("input")
+        .attr("type", "number")
+        .attr("id", `bp-mag-${idSuffix}`)
+        .property("value", magVal !== undefined && magVal !== "" ? magVal : "")
+        .style("background", "#111").style("border", `2px solid ${accentDim}`)
+        .style("color", accentHi).style("font-size", "32px")
+        .style("width", "200px").style("padding", "8px")
+        .style("text-align", "center").style("font-family", "'Courier New', monospace")
+        .on("focus", function () {
+          d3.select(this).style("border-color", accentHi).style("background", "#000");
+        })
+        .on("blur", function () {
+          d3.select(this).style("border-color", accentDim).style("background", "#111");
+        });
+      valRow.append("span").text(unit).style("color", accent).style("font-size", "20px");
+
+      const angRow = block
+        .append("div")
+        .style("display", "flex").style("align-items", "center")
+        .style("gap", "18px").style("margin-top", "10px");
+      angRow.append("span").text("ANG")
+        .style("font-size", "13px").style("color", accent)
+        .style("font-weight", "bold").style("width", "44px");
+      const angVal = node.summary?.[`Manual ${angKey}`];
+      angRow
+        .append("input")
+        .attr("type", "number")
+        .attr("id", `bp-ang-${idSuffix}`)
+        .property(
+          "value",
+          angVal !== undefined && angVal !== "" ? _lagAngle(angVal).toFixed(2) : "",
+        )
+        .style("background", "#111").style("border", `2px solid ${accentDim}`)
+        .style("color", accentHi).style("font-size", "26px")
+        .style("width", "180px").style("padding", "8px")
+        .style("text-align", "center").style("font-family", "'Courier New', monospace")
+        .on("focus", function () {
+          d3.select(this).style("border-color", accentHi).style("background", "#000");
+        })
+        .on("blur", function () {
+          d3.select(this).style("border-color", accentDim).style("background", "#111");
+        });
+      angRow.append("span").text("°").style("color", accent).style("font-size", "20px");
+    }
+
+    if (isManualMulti) {
+      // Two stacked rows; legacy single inputs are absent — _bpLogCurrentPoint
+      // detects this case via the dual-input IDs.
+      if (showVoltRow) buildEntryRow("voltage", "v");
+      if (showCurrRow) buildEntryRow("current", "i");
+    } else {
+      // Single row using the legacy IDs so existing keyboard nav keeps working.
+      const kind = expectedType === "current" || isNeutralPhase ? "current" : "voltage";
+      const qty = kind === "current" ? "Current" : "Voltage";
+      const unit = kind === "current" ? "A" : "V";
+      const storeKey = isNeutralPhase
+        ? "Neutral Current"
+        : `Phase ${_bpTargetPhase} ${qty}`;
+      const angKey = isNeutralPhase
+        ? "Neutral I-Angle"
+        : `Phase ${_bpTargetPhase} ${kind === "current" ? "I-Angle" : "V-Angle"}`;
+
+      const valRow = measBox
+        .append("div").style("display", "flex").style("align-items", "center")
+        .style("gap", "25px").style("padding", "5px 0");
+      valRow.append("span").text("MAG")
+        .style("font-size", "14px").style("color", "#0a0")
+        .style("font-weight", "bold").style("width", "50px");
+      valRow
+        .append("input")
+        .attr("type", "number").attr("id", "bp-mag-in")
+        .property("value", node.summary?.[`Manual ${storeKey}`] || "")
+        .style("background", "#111").style("border", "2px solid #040")
+        .style("color", "#0f0").style("font-size", "48px")
+        .style("width", "250px").style("padding", "10px")
+        .style("text-align", "center").style("font-family", "'Courier New', monospace")
+        .on("focus", function () {
+          d3.select(this).style("border-color", "#0f0").style("background", "#000");
+        })
+        .on("blur", function () {
+          d3.select(this).style("border-color", "#040").style("background", "#111");
+        });
+      valRow.append("span").text(unit).style("color", "#0a0").style("font-size", "24px");
+
+      const angRow = measBox
+        .append("div").style("display", "flex").style("align-items", "center")
+        .style("gap", "25px").style("margin-top", "20px");
+      angRow.append("span").text("ANG")
+        .style("font-size", "14px").style("color", "#0a0")
+        .style("font-weight", "bold").style("width", "50px");
+      const angVal = node.summary?.[`Manual ${angKey}`];
+      angRow
+        .append("input")
+        .attr("type", "number").attr("id", "bp-ang-in")
+        .property(
+          "value",
+          angVal !== undefined && angVal !== "" ? _lagAngle(angVal).toFixed(2) : "",
+        )
+        .style("background", "#111").style("border", "2px solid #040")
+        .style("color", "#0f0").style("font-size", "36px")
+        .style("width", "200px").style("padding", "10px")
+        .style("text-align", "center").style("font-family", "'Courier New', monospace")
+        .on("focus", function () {
+          d3.select(this).style("border-color", "#0f0").style("background", "#000");
+        })
+        .on("blur", function () {
+          d3.select(this).style("border-color", "#040").style("background", "#111");
+        });
+      angRow.append("span").text("°").style("color", "#0a0").style("font-size", "24px");
+    }
 
     plugDisplay
       .append("div")
@@ -3351,11 +3461,7 @@ function _bpRenderStep5() {
       .style("color", "#444")
       .style("font-size", "10px")
       .style("text-align", "center")
-      .html(
-        "ENTER: LOG & NEXT  ·  ARROWS: NAVIGATE  ·  MAG: " +
-          unit +
-          "  ANG: DEG",
-      );
+      .html("ENTER: LOG & NEXT  ·  ARROWS: NAVIGATE  ·  ANG: DEG");
 
     plugDisplay
       .append("button")
@@ -3374,7 +3480,10 @@ function _bpRenderStep5() {
       .on("click", _bpLogCurrentPoint);
 
     setTimeout(() => {
-      const el = document.getElementById("bp-mag-in");
+      const el =
+        document.getElementById("bp-mag-v") ||
+        document.getElementById("bp-mag-in") ||
+        document.getElementById("bp-mag-i");
       if (el) el.focus();
     }, 100);
   } // end channel measurement block
@@ -3427,21 +3536,47 @@ function _bpRenderStep5() {
 function _bpLogCurrentPoint() {
   const node = currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   if (!node) return;
-  const expectedType = _bpDeviceExpectedType(node.type);
-  const qty = expectedType === "current" ? "Current" : "Voltage";
   const isNeutralPhase = _bpTargetPhase === "N";
-  const storeKey = isNeutralPhase
-    ? "Neutral Current"
-    : `Phase ${_bpTargetPhase} ${qty}`;
-  const angKey = isNeutralPhase
-    ? "Neutral I-Angle"
-    : `Phase ${_bpTargetPhase} ${qty === "Voltage" ? "V-Angle" : "I-Angle"}`;
-
-  const mag = parseFloat(document.getElementById("bp-mag-in").value);
-  const ang = parseFloat(document.getElementById("bp-ang-in").value);
   const measurements = {};
-  if (!isNaN(mag)) measurements[storeKey] = mag;
-  if (!isNaN(ang)) measurements[angKey] = ang;
+
+  function pull(idMag, idAng, qty) {
+    const magEl = document.getElementById(idMag);
+    const angEl = document.getElementById(idAng);
+    if (!magEl && !angEl) return;
+    const storeKey = isNeutralPhase
+      ? "Neutral Current"
+      : `Phase ${_bpTargetPhase} ${qty}`;
+    const angKey = isNeutralPhase
+      ? "Neutral I-Angle"
+      : `Phase ${_bpTargetPhase} ${qty === "Voltage" ? "V-Angle" : "I-Angle"}`;
+    if (magEl) {
+      const mag = parseFloat(magEl.value);
+      if (!isNaN(mag)) measurements[storeKey] = mag;
+    }
+    if (angEl) {
+      const ang = parseFloat(angEl.value);
+      if (!isNaN(ang)) measurements[angKey] = ang;
+    }
+  }
+
+  // Manual multi-analog mode renders dual rows (bp-mag-v / bp-mag-i); legacy
+  // single-row mode renders bp-mag-in. Pull whichever exists.
+  pull("bp-mag-v", "bp-ang-v", "Voltage");
+  pull("bp-mag-i", "bp-ang-i", "Current");
+  // Single-row legacy fallback uses _bpDeviceExpectedType to decide V vs I.
+  const legacyType = _bpDeviceExpectedType(node.type);
+  pull(
+    "bp-mag-in",
+    "bp-ang-in",
+    legacyType === "current" || isNeutralPhase ? "Current" : "Voltage",
+  );
+
+  if (Object.keys(measurements).length === 0) {
+    // Nothing entered — just advance, don't write an empty record.
+    if (isNeutralPhase) _bpCheckNeutralBalance(node);
+    else _bpMoveToNextPhase();
+    return;
+  }
 
   // Track locally for balance check
   if (!_bpSessionMeasurements[node.id])
@@ -3449,7 +3584,12 @@ function _bpLogCurrentPoint() {
   Object.assign(_bpSessionMeasurements[node.id], measurements);
 
   reconfigureAPI(node.id, "record_measurement", { measurements }).then(() => {
-    _bpLastMeasType = expectedType;
+    // For multi-analog manual we entered both V and I in one shot, so the
+    // "last meas type" is the heavier one (current) for the disconnect prompt
+    // logic; for single-row mode preserve the previous behaviour.
+    _bpLastMeasType = _bpIsManualMultiAnalog(node)
+      ? "current"
+      : _bpDeviceExpectedType(node.type);
 
     // Success feedback (BIG FLASH)
     d3.select("#brain-point-module")
@@ -3484,11 +3624,14 @@ function _bpMoveToNextPhase() {
   const showsV = node && _deviceShowsVoltage(node.type);
   const isMultiAnalog = showsV && showsI;
   const wantsNeutral = showsI && (_bpSelectedMode === "m3y" || _bpSelectedMode === "m1");
+  // Manual multi-analog enters V & I together on each phase, so we skip the
+  // separate "current pass" that hardware modes need for channel switching.
+  const manualMulti = isMultiAnalog && _bpInstrumentType === "manual";
 
   if (idx < 2) {
     _bpTargetPhase = phases[idx + 1];
     (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
-  } else if (isMultiAnalog && _bpDeviceMeasStep === "voltage") {
+  } else if (isMultiAnalog && !manualMulti && _bpDeviceMeasStep === "voltage") {
     // Done with voltage pass of multi-analog — switch to current
     _bpDeviceMeasStep = "current";
     _bpTargetPhase = "A";
@@ -3496,8 +3639,13 @@ function _bpMoveToNextPhase() {
       (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
     });
   } else {
-    // At phase C — go to N for wye current devices, otherwise next device
-    const inCurrentPass = _bpDeviceMeasStep === "current" || (!isMultiAnalog && showsI);
+    // At phase C — go to N for wye current devices, otherwise next device.
+    // Manual multi-analog has no separate current pass but still wants the
+    // neutral reading when applicable.
+    const inCurrentPass =
+      _bpDeviceMeasStep === "current" ||
+      (!isMultiAnalog && showsI) ||
+      manualMulti;
     if (wantsNeutral && inCurrentPass) {
       _bpTargetPhase = "N";
       (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();

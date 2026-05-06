@@ -60,6 +60,24 @@ const unitsMap = {
   "Phase A I-Angle": "deg",
   "Phase B I-Angle": "deg",
   "Phase C I-Angle": "deg",
+  "Phase A Active Power":   "W",
+  "Phase B Active Power":   "W",
+  "Phase C Active Power":   "W",
+  "Phase A Reactive Power": "var",
+  "Phase B Reactive Power": "var",
+  "Phase C Reactive Power": "var",
+  "Phase A Apparent Power": "VA",
+  "Phase B Apparent Power": "VA",
+  "Phase C Apparent Power": "VA",
+  "Phase A Active Power (LL·I)":   "W",
+  "Phase B Active Power (LL·I)":   "W",
+  "Phase C Active Power (LL·I)":   "W",
+  "Phase A Reactive Power (LL·I)": "var",
+  "Phase B Reactive Power (LL·I)": "var",
+  "Phase C Reactive Power (LL·I)": "var",
+  "Phase A Apparent Power (LL·I)": "VA",
+  "Phase B Apparent Power (LL·I)": "VA",
+  "Phase C Apparent Power (LL·I)": "VA",
   "Pri Phase A Voltage": "V",
   "Pri Phase B Voltage": "V",
   "Pri Phase C Voltage": "V",
@@ -114,13 +132,26 @@ const unitsMap = {
 };
 
 /**
+ * 360° lag-angle convention. When true, all angle displays are normalised to
+ * [0, 360) — relays and protection engineers prefer this since negative angles
+ * never appear. When false, raw signed values from the engine are shown.
+ */
+let _use360Lag = true;
+function _lagAngle(deg) {
+  return _use360Lag ? ((deg % 360) + 360) % 360 : deg;
+}
+function _fmtAngle(deg) {
+  return _lagAngle(deg).toFixed(1) + "°";
+}
+
+/**
  * Formats numbers into human-readable SI notation (k, M, G, etc.)
  * @param {number} value - The raw number
  * @param {string} unit - The unit string (e.g., 'V', 'A')
  * @returns {string} Formatted string (e.g., "132.79 kV")
  */
 function formatSI(value, unit) {
-  if (unit === "deg") return value.toFixed(1) + "°";
+  if (unit === "deg") return _lagAngle(value).toFixed(1) + "°";
   if (value === 0 || value === undefined || isNaN(value))
     return "0.00 " + (unit || "");
 

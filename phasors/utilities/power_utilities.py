@@ -42,6 +42,17 @@ def print_device_summary(device_name: str, values_dict: dict, custom_units_map: 
         else: print(f'{key:<30} | {str(value).upper():>17}')
     print('=' * 50 + '\n')
     
+def _phase_pqs(v_mag: float, v_ang_deg: float, i_mag: float, i_ang_deg: float):
+    """Single-phase complex power S = V · I*  (returns P [W], Q [var], |S| [VA])."""
+    if v_mag is None or i_mag is None:
+        return None
+    s_mag = v_mag * i_mag
+    if s_mag == 0:
+        return (0.0, 0.0, 0.0)
+    delta = math.radians(v_ang_deg - i_ang_deg)
+    return (s_mag * math.cos(delta), s_mag * math.sin(delta), s_mag)
+
+
 def append_3phase_details(stats_dict: dict, voltage_obj, current_obj, is_delta: bool = False):
     if not voltage_obj and not current_obj: return stats_dict
 
@@ -52,18 +63,32 @@ def append_3phase_details(stats_dict: dict, voltage_obj, current_obj, is_delta: 
         i_phases  = [('A', 'a'), ('B', 'b'), ('C', 'c')]
         for (ll_label, from_attr, to_attr), (i_label, i_attr) in zip(ll_pairs, i_phases):
             stats_dict[f'--- PHASE {ll_label} ---'] = 'HEADER'
+            v_ll = None
             if voltage_obj:
                 # V_AB = V_A − V_B  (VoltagePhasor supports __sub__)
                 v_ll = getattr(voltage_obj, from_attr) - getattr(voltage_obj, to_attr)
                 stats_dict[f'Phase {ll_label} Voltage'] = v_ll.magnitude
                 stats_dict[f'Phase {ll_label} V-Angle'] = v_ll.angle_degrees
+            i_phasor = None
             if current_obj:
                 i_phasor = getattr(current_obj, i_attr)
                 stats_dict[f'Phase {i_label} Current'] = i_phasor.magnitude
                 stats_dict[f'Phase {i_label} I-Angle'] = i_phasor.angle_degrees
+            # Reference single-phase S = V_LL · I_line* — informative only,
+            # not a textbook delta per-leg power. Keys are tagged "(LL·I)".
+            if v_ll is not None and i_phasor is not None:
+                pqs = _phase_pqs(v_ll.magnitude, v_ll.angle_degrees,
+                                 i_phasor.magnitude, i_phasor.angle_degrees)
+                if pqs is not None:
+                    p, q, s = pqs
+                    stats_dict[f'Phase {i_label} Active Power (LL·I)']   = p
+                    stats_dict[f'Phase {i_label} Reactive Power (LL·I)'] = q
+                    stats_dict[f'Phase {i_label} Apparent Power (LL·I)'] = s
     else:
         for phase_label, attr in [('A', 'a'), ('B', 'b'), ('C', 'c')]:
             stats_dict[f'--- PHASE {phase_label} ---'] = 'HEADER'
+            v_phasor = None
+            i_phasor = None
             if voltage_obj:
                 v_phasor = getattr(voltage_obj, attr)
                 stats_dict[f'Phase {phase_label} Voltage (LN)'] = v_phasor.magnitude
@@ -72,4 +97,12 @@ def append_3phase_details(stats_dict: dict, voltage_obj, current_obj, is_delta: 
                 i_phasor = getattr(current_obj, attr)
                 stats_dict[f'Phase {phase_label} Current'] = i_phasor.magnitude
                 stats_dict[f'Phase {phase_label} I-Angle'] = i_phasor.angle_degrees
+            if v_phasor is not None and i_phasor is not None:
+                pqs = _phase_pqs(v_phasor.magnitude, v_phasor.angle_degrees,
+                                 i_phasor.magnitude, i_phasor.angle_degrees)
+                if pqs is not None:
+                    p, q, s = pqs
+                    stats_dict[f'Phase {phase_label} Active Power']   = p
+                    stats_dict[f'Phase {phase_label} Reactive Power'] = q
+                    stats_dict[f'Phase {phase_label} Apparent Power'] = s
     return stats_dict
