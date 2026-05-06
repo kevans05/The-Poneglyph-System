@@ -1,4 +1,3 @@
-import io
 import json
 import mimetypes
 import os
@@ -305,7 +304,7 @@ def _build_topology_response(sources, devices, raw_devices, reference):
     }
 
 
-def save_substation(devices, reference=None):
+def save_substation(devices, reference=None, label: str = "auto:toggle"):
     """Update the in-memory topology and persist it to the site DB."""
     global _current_topology
     if _current_topology is None:
@@ -322,14 +321,25 @@ def save_substation(devices, reference=None):
     if reference is not None:
         data["reference"] = reference
 
-    _autosave(data, label="auto:toggle")
+    _autosave(data, label=label)
 
 
 def _autosave(data: dict, label: str = "auto"):
-    """Save the current topology to the active site DB."""
+    """Save the current topology to the active site DB.
+
+    Auto-saves run on every structural change, so we skip writing per-device
+    history rows for them — `device_history` would otherwise grow by N rows
+    per click. Explicit named snapshots still record the full per-device audit.
+    """
     if _active_site:
         try:
-            _sdb.save_snapshot(_active_site, label=label, topology=data)
+            is_auto = label.startswith("auto")
+            _sdb.save_snapshot(
+                _active_site,
+                label=label,
+                topology=data,
+                record_device_history=not is_auto,
+            )
         except Exception:
             traceback.print_exc()
 
@@ -423,7 +433,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                     return _json_response(
                         self, {"error": f"Site '{station}' not found"}, 404
                     )
-                _sdb._init(db_path)
+                _sdb.init_db(db_path)
                 _active_site = db_path
                 _active_session_id = None
                 topology = _sdb.get_latest_topology(db_path)
@@ -659,12 +669,37 @@ class SCADAServer(BaseHTTPRequestHandler):
             if self.path == "/api/topology/import":
                 if not _require_site(self):
                     return
-                try:
-                    _current_topology = json.loads(post_data)
-                    _autosave(_current_topology, label="Imported topology")
-                    return _json_response(self, {"status": "success"})
-                except Exception as e:
-                    return _json_response(self, {"error": str(e)}, 400)
+                # `req` was already JSON-parsed at the top of do_POST; if it's
+                # a {"topology": {...}} envelope unwrap it, otherwise treat the
+                # whole body as the topology payload.
+                payload = req.get("topology") if isinstance(req, dict) and "topology" in req else req
+                if not isinstance(payload, dict) or not isinstance(payload.get("devices"), list):
+                    return _json_response(
+                        self,
+                        {"error": "Invalid topology: expected an object with a 'devices' list"},
+                        400,
+                    )
+                payload.setdefault("reference", {"device_id": None, "phase": None})
+                payload.setdefault("project_info", {"station": "", "device": ""})
+                _current_topology = payload
+                # Imports are user-initiated milestones — record per-device history.
+                if _active_site:
+                    try:
+                        _sdb.save_snapshot(
+                            _active_site,
+                            label="Imported topology",
+                            topology=_current_topology,
+                            record_device_history=True,
+                        )
+                    except Exception:
+                        traceback.print_exc()
+                return _json_response(self, {"status": "success"})
+
+            if self.path == "/api/sites/update":
+                if not _require_site(self):
+                    return
+                info = _sdb.update_site_info(_active_site, req or {})
+                return _json_response(self, {"ok": True, "info": info})
 
             else:
                 self.send_response(404)
@@ -780,6 +815,21 @@ class SCADAServer(BaseHTTPRequestHandler):
                     {"history": _sdb.get_device_history(_active_site, device_id, key)},
                 )
 
+            if self.path.startswith("/api/db/device-config-history/"):
+                if not _require_site(self):
+                    return
+                device_id = self.path.split("/", 4)[-1]
+                rows = _sdb.get_device_config_history(_active_site, device_id)
+                # Decode the stored JSON config blob so the client gets an object.
+                for r in rows:
+                    cfg = r.get("config")
+                    if isinstance(cfg, str):
+                        try:
+                            r["config"] = json.loads(cfg)
+                        except Exception:
+                            pass
+                return _json_response(self, {"history": rows})
+
             if self.path == "/api/topology":
                 sources, devices, raw_devices, reference, project_info = (
                     load_substation()
@@ -818,10 +868,9 @@ class SCADAServer(BaseHTTPRequestHandler):
                             dev.open()
                         else:
                             dev.close()
-                        save_substation(devices)
+                        save_substation(devices, label=f"auto:toggle:{device_name}")
                         toggled = True
                 if toggled:
-                    # _autosave is called inside save_substation
                     return _json_response(self, {"status": "toggled"})
                 else:
                     self.send_response(404)
