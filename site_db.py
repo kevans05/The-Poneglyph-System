@@ -22,12 +22,18 @@ import uuid
 
 SITES_DIR = "sites"
 
+
+# ── Connection ────────────────────────────────────────────────────────────────
+
 def _conn(db_path: str) -> sqlite3.Connection:
     c = sqlite3.connect(db_path)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     return c
+
+
+# ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS site_info (
@@ -107,6 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_dev_hist_id    ON device_history(device_id);
 CREATE INDEX IF NOT EXISTS idx_dev_hist_epoch ON device_history(epoch DESC);
 """
 
+# Columns added after initial release — applied to existing DBs on open.
 _MIGRATIONS = [
     ("site_info",  "site_name",   "TEXT    DEFAULT ''"),
     ("site_info",  "number_code", "TEXT    DEFAULT ''"),
@@ -116,7 +123,9 @@ _MIGRATIONS = [
     ("sessions",   "test_id",     "TEXT"),
 ]
 
-def _init(db_path: str):
+
+def init_db(db_path: str):
+    """Create tables / apply column migrations on an existing or new DB file."""
     with _conn(db_path) as c:
         c.executescript(_SCHEMA)
         existing_cols: dict[str, set] = {}
@@ -127,6 +136,9 @@ def _init(db_path: str):
             if col not in existing_cols[table]:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
                 existing_cols[table].add(col)
+
+
+# ── Site management ───────────────────────────────────────────────────────────
 
 def db_path_for(station: str) -> str:
     return os.path.join(SITES_DIR, f"{station}.db")
@@ -140,11 +152,12 @@ def create_site(
     gps_lon: float | None = None,
     topology: dict | None = None,
 ) -> str:
+    """Create a new site DB. Returns its path. Raises if it already exists."""
     os.makedirs(SITES_DIR, exist_ok=True)
     path = db_path_for(station)
     if os.path.exists(path):
         raise FileExistsError(f"Site '{station}' already exists")
-    _init(path)
+    init_db(path)
     now = int(time.time())
     with _conn(path) as c:
         c.execute(
@@ -161,6 +174,7 @@ def create_site(
     return path
 
 def list_sites() -> list[dict]:
+    """Return metadata for every site DB found in SITES_DIR."""
     if not os.path.exists(SITES_DIR):
         return []
     sites = []
@@ -199,14 +213,54 @@ def get_site_info(db_path: str) -> dict | None:
     except Exception:
         return None
 
+
+_EDITABLE_SITE_FIELDS = {
+    "site_name", "description", "number_code", "gps_lat", "gps_lon",
+}
+
+
+def update_site_info(db_path: str, fields: dict) -> dict | None:
+    """Patch editable site_info columns. Returns the new row or None on failure.
+
+    `station` is the immutable primary identifier (it's also the filename) and
+    is never updated here.
+    """
+    keep = {k: v for k, v in fields.items() if k in _EDITABLE_SITE_FIELDS}
+    if not keep:
+        return get_site_info(db_path)
+    cols = ", ".join(f"{k} = ?" for k in keep)
+    params = list(keep.values()) + [int(time.time())]
+    with _conn(db_path) as c:
+        c.execute(
+            f"UPDATE site_info SET {cols}, last_epoch = ? WHERE id = 1",
+            params,
+        )
+    return get_site_info(db_path)
+
+
 def _touch(db_path: str):
+    """Update last_epoch to now."""
     try:
         with _conn(db_path) as c:
             c.execute("UPDATE site_info SET last_epoch = ? WHERE id = 1", (int(time.time()),))
     except Exception:
         pass
 
-def save_snapshot(db_path: str, label: str, topology: dict | str) -> str:
+
+# ── Snapshots ─────────────────────────────────────────────────────────────────
+
+def save_snapshot(
+    db_path: str,
+    label: str,
+    topology: dict | str,
+    record_device_history: bool = True,
+) -> str:
+    """Persist a topology snapshot. Returns the UUID row id.
+
+    When `record_device_history` is True, also writes one row per device to
+    `device_history` for long-term per-device config audit trail. Disable for
+    high-frequency auto-saves to keep the table from ballooning.
+    """
     topo_dict = json.loads(topology) if isinstance(topology, str) else topology
     blob = json.dumps(topo_dict, indent=2)
     row_id = str(uuid.uuid4())
@@ -216,29 +270,29 @@ def save_snapshot(db_path: str, label: str, topology: dict | str) -> str:
             "INSERT INTO snapshots (id, epoch, label, topology) VALUES (?,?,?,?)",
             (row_id, now, label, blob),
         )
-        devices = topo_dict.get("devices", [])
-        history_rows = []
-        for d in devices:
-            did = d.get("id")
-            if not did:
-                continue
-            config = {k: v for k, v in d.items() if k not in ("id", "type", "status")}
-            history_rows.append((
-                str(uuid.uuid4()),
-                did,
-                now,
-                d.get("type"),
-                d.get("status"),
-                json.dumps(config),
-                row_id
-            ))
-        if history_rows:
-            c.executemany(
-                """INSERT INTO device_history
-                   (id, device_id, epoch, type, status, config, snapshot_id)
-                   VALUES (?,?,?,?,?,?,?)""",
-                history_rows
-            )
+        if record_device_history:
+            history_rows = []
+            for d in topo_dict.get("devices", []):
+                did = d.get("id")
+                if not did:
+                    continue
+                config = {k: v for k, v in d.items() if k not in ("id", "type", "status")}
+                history_rows.append((
+                    str(uuid.uuid4()),
+                    did,
+                    now,
+                    d.get("type"),
+                    d.get("status"),
+                    json.dumps(config),
+                    row_id,
+                ))
+            if history_rows:
+                c.executemany(
+                    """INSERT INTO device_history
+                       (id, device_id, epoch, type, status, config, snapshot_id)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    history_rows,
+                )
     _touch(db_path)
     return row_id
 
@@ -258,6 +312,7 @@ def get_snapshot_topology(db_path: str, snapshot_id: str) -> dict | None:
     return json.loads(row["topology"]) if row else None
 
 def get_latest_topology(db_path: str) -> dict | None:
+    """Return the most recent snapshot topology, or None if none exist."""
     with _conn(db_path) as c:
         row = c.execute(
             "SELECT topology FROM snapshots ORDER BY epoch DESC LIMIT 1"
@@ -267,6 +322,9 @@ def get_latest_topology(db_path: str) -> dict | None:
 def delete_snapshot(db_path: str, snapshot_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
+
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
 
 def create_test(db_path: str, name: str, description: str = "", created_by: str = "") -> str:
     row_id = str(uuid.uuid4())
@@ -305,6 +363,9 @@ def delete_test(db_path: str, test_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM tests WHERE id = ?", (test_id,))
 
+
+# ── Test Drawings ─────────────────────────────────────────────────────────────
+
 def add_drawing(db_path: str, test_id: str, title: str, url: str = "", revision: str = "", notes: str = "") -> str:
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
@@ -325,6 +386,9 @@ def list_drawings(db_path: str, test_id: str) -> list[dict]:
 def delete_drawing(db_path: str, drawing_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM test_drawings WHERE id = ?", (drawing_id,))
+
+
+# ── Sessions ──────────────────────────────────────────────────────────────────
 
 def start_session(db_path: str, label: str = "", device: str = "", instrument: str = "manual", technician: str = "", test_id: str | None = None, snapshot_id: str | None = None) -> str:
     row_id = str(uuid.uuid4())
@@ -365,6 +429,9 @@ def get_session(db_path: str, session_id: str) -> dict | None:
 def delete_session(db_path: str, session_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
+# ── Measurements ──────────────────────────────────────────────────────────────
 
 def record_measurements(db_path: str, session_id: str | None, device_id: str, measurements: dict, epoch: int | None = None):
     now = epoch or int(time.time())

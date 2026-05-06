@@ -186,3 +186,32 @@ function loadSite(station) {
         body: JSON.stringify({ station }),
     }).then(r => r.json());
 }
+
+function updateSiteInfo(fields) {
+    return fetch("/api/sites/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields || {}),
+    }).then(r => r.json());
+}
+
+/**
+ * Topology Import / Export
+ * The site DB is the source of truth; JSON is only an interchange format.
+ */
+function exportTopology() {
+    window.location.href = "/api/topology/export";
+}
+
+function importTopology(topology) {
+    return fetch("/api/topology/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topology }),
+    }).then(r => r.json());
+}
+
+function fetchDeviceConfigHistory(deviceId) {
+    return fetch("/api/db/device-config-history/" + encodeURIComponent(deviceId))
+        .then(r => r.json());
+}
