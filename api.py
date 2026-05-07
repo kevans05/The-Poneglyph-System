@@ -116,6 +116,7 @@ _PARAM_KEYS = [
     "mvar_setting",
     "resistance_ohm",
     "carrier_frequency_hz",
+    "input_polarities",
 ]
 
 
@@ -737,6 +738,24 @@ class SCADAServer(BaseHTTPRequestHandler):
                 if not _require_site(self):
                     return
                 return _json_response(self, {"tests": _sdb.list_tests(_active_site)})
+
+            if self.path.startswith("/api/tests/") and self.path.endswith("/devices"):
+                if not _require_site(self):
+                    return
+                test_id = self.path.split("/")[3]
+                device_ids = _sdb.get_test_device_ids(_active_site, test_id)
+                return _json_response(self, {"device_ids": device_ids})
+
+            if self.path.startswith("/api/tests/") and self.path.endswith("/report-data"):
+                if not _require_site(self):
+                    return
+                test_id = self.path.split("/")[3]
+                report = _sdb.get_test_report_data(_active_site, test_id)
+                if not report:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                return _json_response(self, report)
 
             if self.path.startswith("/api/tests/") and not any(
                 self.path.startswith(p)

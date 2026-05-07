@@ -346,9 +346,13 @@ function openWindow(node) {
   win.innerHTML =
     '<div class="window-header"><span class="window-title">' +
     node.id +
-    '</span><span style="cursor:pointer" onclick="closeWindow(\'' +
+    '</span><span style="display:flex;gap:8px;align-items:center;">' +
+    '<button class="ang-conv-btn" onclick="_toggleAngleConv()" title="Toggle angle convention">' +
+    (_use360Lag ? "360°" : "±180°") +
+    '</button>' +
+    '<span style="cursor:pointer" onclick="closeWindow(\'' +
     node.id +
-    '\')">[X]</span></div><div class="window-content" id="win-' +
+    '\')">[X]</span></span></div><div class="window-content" id="win-' +
     safeId +
     '"></div>';
   document.body.appendChild(win);
@@ -374,13 +378,16 @@ function _renderSummaryRows(entries, compNode) {
     } else {
       let valDisplay = "", compDisplay = "";
       if (typeof value === "number") {
-        valDisplay = formatSI(value, unitsMap[key] || "");
+        const isAngle = unitsMap[key] === "deg";
+        valDisplay = isAngle ? _fmtAngle(value) : formatSI(value, unitsMap[key] || "");
         if (compNode?.summary?.[key] !== undefined) {
           const histVal = compNode.summary[key];
           const delta = value - histVal;
           const deltaColor = delta > 0 ? "#0f0" : delta < 0 ? "#f00" : "#888";
           const deltaSign = delta > 0 ? "+" : "";
-          compDisplay = `<div style="font-size:9px; color:#666; margin-top:-2px;">Historic: ${formatSI(histVal, unitsMap[key] || "")} <span style="color:${deltaColor}">(${deltaSign}${formatSI(delta, unitsMap[key] || "")})</span></div>`;
+          const hd = isAngle ? _fmtAngle(histVal) : formatSI(histVal, unitsMap[key] || "");
+          const dd = isAngle ? (deltaSign + delta.toFixed(1) + "°") : formatSI(delta, unitsMap[key] || "");
+          compDisplay = `<div style="font-size:9px; color:#666; margin-top:-2px;">Historic: ${hd} <span style="color:${deltaColor}">(${dd})</span></div>`;
         }
       } else {
         valDisplay = value;
@@ -443,21 +450,44 @@ function updateWindow(id, node) {
 
     if (inputNodes.length > 0) {
       html += '<div class="section-title">INPUT SOURCES</div>';
+      const isRelay = node.type === "Relay";
+      const polarities = (isRelay && node.params?.input_polarities) ? node.params.input_polarities : {};
       inputNodes.forEach((inp) => {
         const s = inp.summary || {};
-        html += `<div style="background:#0d0d0d; margin:3px 0; padding:6px 10px; border-left:3px solid #444;">`;
-        html += `<div style="font-size:9px; color:#888; margin-bottom:5px; display:flex; justify-content:space-between;"><span style="color:#aaa;">${inp.id}</span><span style="color:#555;">[${inp.type}]</span></div>`;
+        const pol = polarities[inp.id] === -1 ? -1 : 1;
+        const polLabel = pol === 1 ? "+" : "−";
+        const polColor = pol === 1 ? "#0a0" : "#f44";
+        const borderColor = pol === 1 ? "#1a4" : "#611";
+        html += `<div style="background:#0d0d0d; margin:3px 0; padding:6px 10px; border-left:3px solid ${borderColor};">`;
+        html += `<div style="font-size:9px; color:#888; margin-bottom:5px; display:flex; justify-content:space-between; align-items:center;">`;
+        html += `<span style="color:#aaa;">${inp.id}</span>`;
+        html += `<span style="color:#555;">[${inp.type}]</span>`;
+        if (isRelay) {
+          html += `<button onclick="toggleRelayInputPolarity('${node.id}', '${inp.id}', ${pol})" style="margin-left:8px; background:#111; border:1px solid ${polColor}; color:${polColor}; font-size:11px; font-weight:bold; width:22px; height:18px; cursor:pointer; line-height:1;">${polLabel}</button>`;
+        }
+        html += `</div>`;
         ["A", "B", "C"].forEach((p) => {
           const iMag = s[`Sec Current Phase ${p}`], iAng = s[`Phase ${p} I-Angle`];
           const vMag = s[`Sec Voltage Phase ${p}`], vAng = s[`Phase ${p} V-Angle`];
-          if (iMag !== undefined) html += `<div style="display:flex; justify-content:space-between; font-size:10px; padding:1px 0; color:#aaa;"><span style="color:#0a0; width:50px;">Ph${p} I</span><span>${formatSI(iMag, "A")} &nbsp;∠&nbsp;${_fmtAngle(iAng || 0)}</span></div>`;
+          if (iMag !== undefined) html += `<div style="display:flex; justify-content:space-between; font-size:10px; padding:1px 0; color:#aaa;"><span style="color:#0a0; width:50px;">Ph${p} I</span><span>${pol === -1 ? '<span style="color:#f66">−</span>' : ''}${formatSI(iMag, "A")} &nbsp;∠&nbsp;${_fmtAngle(iAng || 0)}</span></div>`;
           if (vMag !== undefined) html += `<div style="display:flex; justify-content:space-between; font-size:10px; padding:1px 0; color:#aaa;"><span style="color:#66f; width:50px;">Ph${p} V</span><span>${formatSI(vMag, "V")} &nbsp;∠&nbsp;${_fmtAngle(vAng || 0)}</span></div>`;
         });
         html += `</div>`;
       });
-      const mathOp = node.type === "CTTB"
-        ? (node.params?.mode === "DIFFERENTIAL" ? "DIFFERENTIAL (I₁ − I₂)" : "VECTOR SUM (Σ I)")
-        : node.type === "Relay" ? "AGGREGATED INPUTS" : "SUM";
+      let mathOp;
+      if (node.type === "CTTB") {
+        mathOp = node.params?.mode === "DIFFERENTIAL" ? "DIFFERENTIAL (I₁ − I₂)" : "VECTOR SUM (Σ I)";
+      } else if (isRelay) {
+        const signs = inputNodes.map((inp) => (polarities[inp.id] === -1 ? "−" : "+"));
+        const allPos = signs.every((s) => s === "+");
+        if (allPos) {
+          mathOp = "VECTOR SUM (Σ I)";
+        } else {
+          mathOp = signs.map((s, i) => `${i === 0 && s === "+" ? "" : s + " "}I${i + 1}`).join(" ").trim();
+        }
+      } else {
+        mathOp = "SUM";
+      }
       html += `<div style="font-size:9px; color:#555; text-align:center; padding:4px; margin-bottom:2px; border:1px dashed #222;">MATH: ${mathOp}</div>`;
       html += '<div class="section-title">COMBINED RESULT</div>';
     } else {
@@ -865,6 +895,20 @@ function _lagAngle(deg) {
 }
 function _fmtAngle(deg) {
   return _lagAngle(deg).toFixed(1) + "°";
+}
+function _toggleAngleConv() {
+  _use360Lag = !_use360Lag;
+  const label = _use360Lag ? "360°" : "±180°";
+  const col   = _use360Lag ? "#3af" : "#888";
+  document.querySelectorAll(".ang-conv-btn").forEach(btn => {
+    btn.textContent = label;
+    btn.style.color = col;
+    btn.style.borderColor = _use360Lag ? "#3af" : "#555";
+  });
+  Object.keys(openWindows).forEach(id => {
+    const node = currentData?.nodes.find(n => n.id === id);
+    if (node) updateWindow(id, node);
+  });
 }
 
 // Device selection filter groups
@@ -1531,9 +1575,10 @@ let _bpVoltChan2 = 0;   // saved voltage measurement channel
 let _bpCurrChan1 = 0;   // saved current reference channel
 let _bpCurrChan2 = 6;   // saved current measurement channel (default Ia)
 let _bpDeviceMeasStep = null; // "voltage"|"current" for multi-analog V→I split
-let _bpVoltDevices  = []; // ordered selected voltage-only device IDs
-let _bpCurrDevices  = []; // ordered selected current-only device IDs
-let _bpMultiDevices = []; // ordered selected multi-analog device IDs
+let _bpVoltDevices   = []; // ordered selected voltage-only device IDs
+let _bpCurrDevices   = []; // ordered selected current-only device IDs
+let _bpRelayDevices  = []; // ordered selected relay device IDs
+let _bpMultiDevices  = []; // ordered selected multi-analog (primary) device IDs
 
 // Instrument type for this session
 let _bpInstrumentType = "manual"; // "pmm1" | "pmm2" | "manual"
@@ -2377,12 +2422,14 @@ function _bpRenderStep4() {
   const allNodes = (currentData?.nodes || []).filter((n) => WIZARD_MEASURABLE.has(n.type));
   const voltNodes  = allNodes.filter((n) => !_deviceShowsCurrent(n.type));
   const currNodes  = allNodes.filter((n) => !_deviceShowsVoltage(n.type));
+  const relayNodes = allNodes.filter((n) => n.type === "Relay");
   const multiNodes = allNodes.filter(
-    (n) => _deviceShowsVoltage(n.type) && _deviceShowsCurrent(n.type),
+    (n) => n.type !== "Relay" && _deviceShowsVoltage(n.type) && _deviceShowsCurrent(n.type),
   );
 
   _bpVoltDevices  = _bpVoltDevices.filter((id) => voltNodes.some((n) => n.id === id));
   _bpCurrDevices  = _bpCurrDevices.filter((id) => currNodes.some((n) => n.id === id));
+  _bpRelayDevices = _bpRelayDevices.filter((id) => relayNodes.some((n) => n.id === id));
   _bpMultiDevices = _bpMultiDevices.filter((id) => multiNodes.some((n) => n.id === id));
 
   function renderGroup(label, nodes, getOrdered, setOrdered) {
@@ -2495,7 +2542,13 @@ function _bpRenderStep4() {
     (arr) => { _bpCurrDevices = arr; },
   );
   renderGroup(
-    "MULTI-ANALOG — Relay · Primary Equipment",
+    "RELAY — Protection Devices",
+    relayNodes,
+    () => _bpRelayDevices,
+    (arr) => { _bpRelayDevices = arr; },
+  );
+  renderGroup(
+    "MULTI-ANALOG — Primary Equipment",
     multiNodes,
     () => _bpMultiDevices,
     (arr) => { _bpMultiDevices = arr; },
@@ -2513,13 +2566,13 @@ function _bpRenderStep4() {
     });
   footer.append("div").style("flex", 1);
 
-  const totalSelected = _bpVoltDevices.length + _bpCurrDevices.length + _bpMultiDevices.length;
+  const totalSelected = _bpVoltDevices.length + _bpCurrDevices.length + _bpRelayDevices.length + _bpMultiDevices.length;
   footer
     .append("button")
     .attr("class", "wiz-save")
     .text("OPEN INSTRUMENT →" + (totalSelected > 0 ? ` (${totalSelected})` : ""))
     .on("click", () => {
-      _bpSelectedDevices = [..._bpVoltDevices, ..._bpCurrDevices, ..._bpMultiDevices];
+      _bpSelectedDevices = [..._bpVoltDevices, ..._bpCurrDevices, ..._bpRelayDevices, ..._bpMultiDevices];
       if (_bpSelectedDevices.length === 0) return;
 
       _bpTargetDeviceId = _bpSelectedDevices[0];
@@ -4339,6 +4392,17 @@ function onFindKey(e) {
 function clearFindResults() {
   const r = document.getElementById("find-device-results");
   if (r) r.style.display = "none";
+}
+
+// ── Relay input polarity toggle ────────────────────────────────────────────
+
+function toggleRelayInputPolarity(relayId, inputId, currentPol) {
+  const relay = currentData?.nodes.find((n) => n.id === relayId);
+  if (!relay) return;
+  const polarities = Object.assign({}, relay.params?.input_polarities || {});
+  polarities[inputId] = currentPol === 1 ? -1 : 1;
+  reconfigureAPI(relayId, "update_device", { properties: { input_polarities: polarities } })
+    .then(() => refreshData());
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────

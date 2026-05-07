@@ -19,6 +19,8 @@ function refreshData() {
     .then((data) => {
       currentData = data;
       render3LD(data);
+      updateMinimap();
+      if (typeof onTopologyRefreshed === "function") onTopologyRefreshed();
       updateStatusBar(data.reference, data.sync_errors || []);
       Object.keys(openWindows).forEach((id) => {
         const node = data.nodes.find((n) => n.id === id);

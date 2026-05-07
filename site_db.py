@@ -454,6 +454,55 @@ def get_device_history(db_path: str, device_id: str, key: str, limit: int = 200)
         rows = c.execute("""SELECT m.epoch, m.value, m.session_id, s.label, s.instrument FROM measurements m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.device_id = ? AND m.key = ? ORDER BY m.epoch DESC LIMIT ?""", (device_id, key, limit)).fetchall()
     return [dict(r) for r in rows]
 
+def get_test_device_ids(db_path: str, test_id: str) -> list[str]:
+    with _conn(db_path) as c:
+        rows = c.execute("""
+            SELECT DISTINCT m.device_id FROM measurements m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE s.test_id = ?
+        """, (test_id,)).fetchall()
+    return [r["device_id"] for r in rows]
+
+def get_test_report_data(db_path: str, test_id: str) -> dict | None:
+    with _conn(db_path) as c:
+        test = c.execute("SELECT * FROM tests WHERE id = ?", (test_id,)).fetchone()
+        if not test:
+            return None
+        site_row  = c.execute("SELECT * FROM site_info LIMIT 1").fetchone()
+        drawings  = c.execute(
+            "SELECT * FROM test_drawings WHERE test_id = ? ORDER BY rowid", (test_id,)
+        ).fetchall()
+        sessions  = c.execute(
+            "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC", (test_id,)
+        ).fetchall()
+
+        session_data = []
+        for sess in sessions:
+            rows = c.execute("""
+                SELECT m.device_id, m.key, m.value, m.epoch
+                FROM measurements m
+                WHERE m.session_id = ?
+                ORDER BY m.device_id, m.epoch DESC
+            """, (sess["id"],)).fetchall()
+            by_device: dict = {}
+            seen: set = set()
+            for row in rows:
+                dk = (row["device_id"], row["key"])
+                if dk not in seen:
+                    seen.add(dk)
+                    by_device.setdefault(row["device_id"], {})[row["key"]] = {
+                        "value": row["value"],
+                        "epoch": row["epoch"],
+                    }
+            session_data.append({**dict(sess), "by_device": by_device})
+
+        return {
+            "site":     dict(site_row) if site_row else {},
+            "test":     dict(test),
+            "drawings": [dict(d) for d in drawings],
+            "sessions": session_data,
+        }
+
 def get_device_config_history(db_path: str, device_id: str, limit: int = 100) -> list[dict]:
     with _conn(db_path) as c:
         rows = c.execute("""SELECT h.epoch, h.type, h.status, h.config, h.snapshot_id, s.label as snapshot_label FROM device_history h LEFT JOIN snapshots s ON s.id = h.snapshot_id WHERE h.device_id = ? ORDER BY h.epoch DESC LIMIT ?""", (device_id, limit)).fetchall()

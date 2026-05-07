@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Field Test Report</title>
+  <style id="page-style">
+    @page { size: letter portrait; margin: 0.65in 0.75in; }
+  </style>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11pt;
+      color: #111;
+      background: #d8d8d8;
+    }
+
+    /* ── Controls bar ──────────────────────────────────────────────────── */
+    #controls {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: #0a0a0a;
+      border-bottom: 2px solid #1c1c1c;
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      z-index: 100;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 10px;
+      color: #888;
+    }
+
+    .ctrl-title { color: #ffff00; letter-spacing: 2px; font-size: 11px; }
+    .ctrl-sep   { color: #2a2a2a; font-size: 16px; line-height: 1; }
+
+    .ctrl-group { display: flex; align-items: center; gap: 7px; }
+    .ctrl-group label { color: #666; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+    .ctrl-group label:hover { color: #aaa; }
+
+    #controls select {
+      background: #111; border: 1px solid #333; color: #aaa;
+      font-family: inherit; font-size: 10px; padding: 3px 6px; cursor: pointer; outline: none;
+    }
+    #controls select:focus { border-color: #555; }
+
+    #controls input[type="checkbox"] { width: 13px; height: 13px; cursor: pointer; accent-color: #ffff00; }
+
+    #ctrl-print-btn {
+      margin-left: auto;
+      background: #001a00; border: 1px solid #0a0; color: #0a0;
+      font-family: inherit; font-size: 11px; padding: 6px 22px;
+      cursor: pointer; letter-spacing: 1px;
+    }
+    #ctrl-print-btn:hover { background: #002800; border-color: #0f0; color: #0f0; }
+
+    /* ── Report wrapper ────────────────────────────────────────────────── */
+    .report-wrap {
+      padding: 52px 20px 48px;
+      display: flex; flex-direction: column; align-items: center;
+    }
+
+    .report {
+      background: #fff;
+      width: 7in;
+      min-height: 9.5in;
+      box-shadow: 0 3px 24px rgba(0,0,0,0.35);
+    }
+
+    /* ── Report header block ───────────────────────────────────────────── */
+    .rpt-header {
+      background: #111;
+      color: #fff;
+      padding: 26px 34px 20px;
+    }
+
+    .rh-system {
+      font-family: 'Courier New', monospace;
+      font-size: 8pt; color: #666; letter-spacing: 3px; margin-bottom: 8px;
+    }
+
+    .rh-station {
+      font-size: 17pt; font-weight: bold; color: #fff; letter-spacing: 0.5px; margin-bottom: 2px;
+    }
+
+    .rh-station-sub { font-size: 9.5pt; color: #777; margin-bottom: 14px; }
+
+    .rh-doctype {
+      font-family: 'Courier New', monospace;
+      font-size: 8pt; color: #ffff00; letter-spacing: 4px;
+      border-top: 1px solid #2a2a2a; padding-top: 10px;
+    }
+
+    /* ── Meta grid ─────────────────────────────────────────────────────── */
+    .meta-block {
+      display: grid; grid-template-columns: 110px 1fr;
+      gap: 5px 14px; padding: 16px 34px; border-bottom: 1px solid #ddd;
+      font-size: 10pt;
+    }
+
+    .meta-label {
+      font-family: 'Courier New', monospace;
+      font-size: 7.5pt; color: #999; letter-spacing: 0.5px;
+      text-transform: uppercase; padding-top: 2px;
+    }
+
+    .meta-value { color: #111; }
+
+    .status-badge {
+      display: inline-block; font-family: 'Courier New', monospace;
+      font-size: 8pt; letter-spacing: 1px; border: 1px solid currentColor; padding: 1px 8px;
+    }
+    .status-complete { color: #0a6b0a; }
+    .status-progress { color: #7a5500; }
+    .status-archived { color: #666; }
+
+    /* ── Section headings ──────────────────────────────────────────────── */
+    .sec-heading {
+      font-family: 'Courier New', monospace;
+      font-size: 7.5pt; letter-spacing: 3px; color: #777; text-transform: uppercase;
+      padding: 12px 34px 7px; border-bottom: 1px solid #ddd; margin-top: 4px;
+    }
+
+    /* ── Drawings table ────────────────────────────────────────────────── */
+    .drawings-wrap { padding: 6px 34px 14px; }
+
+    table.drw-table {
+      width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 4px;
+    }
+    .drw-table th {
+      background: #f3f3f3; text-align: left; padding: 5px 8px;
+      font-family: 'Courier New', monospace; font-size: 7.5pt; letter-spacing: 1px;
+      color: #666; border-bottom: 2px solid #ccc; font-weight: normal;
+    }
+    .drw-table td { padding: 6px 8px; border-bottom: 1px solid #ebebeb; vertical-align: top; }
+    .drw-table tr:last-child td { border-bottom: none; }
+    .td-rev  { font-family: 'Courier New', monospace; color: #774400; white-space: nowrap; }
+    .td-url  { color: #1a4a9c; word-break: break-all; font-size: 8pt; }
+    .td-note { color: #888; font-size: 8.5pt; }
+
+    /* ── Sessions ──────────────────────────────────────────────────────── */
+    .session-block { break-inside: avoid-page; }
+
+    .session-meta {
+      background: #f5f5f5; border-top: 2px solid #bbb; border-bottom: 1px solid #ddd;
+      padding: 9px 34px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+      font-size: 9pt;
+    }
+    .sm-lbl { font-family: 'Courier New', monospace; font-size: 7.5pt; color: #aaa; letter-spacing: 1px; margin-right: -10px; }
+    .sm-val { color: #333; font-weight: 500; }
+
+    /* ── Device measurement tables ─────────────────────────────────────── */
+    .device-block { padding: 10px 34px 0; break-inside: avoid; }
+
+    .dev-title {
+      font-family: 'Courier New', monospace; font-size: 8.5pt;
+      margin-bottom: 4px; display: flex; gap: 8px; align-items: baseline;
+    }
+    .dev-id   { font-weight: bold; color: #111; }
+    .dev-type { font-size: 7.5pt; color: #aaa; }
+
+    table.meas-table {
+      width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 12px;
+    }
+    .meas-table th {
+      background: #f7f7f7; text-align: left; padding: 4px 8px;
+      font-family: 'Courier New', monospace; font-size: 7.5pt; letter-spacing: 1px;
+      color: #888; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd;
+      font-weight: normal;
+    }
+    .meas-table th.r { text-align: right; }
+    .meas-table td { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; }
+    .meas-table tr:last-child td { border-bottom: 1px solid #ddd; }
+    .meas-table tr:nth-child(even) td { background: #fafafa; }
+    .meas-table tr:nth-child(even) td.r { background: #fafafa; }
+
+    .td-param { color: #555; font-size: 8.5pt; }
+    .r { font-family: 'Courier New', monospace; text-align: right; }
+    .td-measured { font-weight: bold; color: #111; }
+    .td-predicted { color: #666; }
+    .td-delta { font-size: 8.5pt; }
+
+    .dg { color: #0a5a0a; }  /* good  ≤2% / ≤1° */
+    .dw { color: #7a4400; }  /* warn  2–5% / 1–3° */
+    .db { color: #8a0000; }  /* bad   >5% / >3° */
+    .dn { color: #bbb;    }  /* n/a */
+
+    /* ── Report footer ─────────────────────────────────────────────────── */
+    .rpt-footer {
+      margin-top: 28px; padding: 12px 34px;
+      border-top: 1px solid #ddd; font-size: 7.5pt; color: #aaa;
+      font-family: 'Courier New', monospace;
+      display: flex; justify-content: space-between;
+    }
+
+    /* ── Helpers ───────────────────────────────────────────────────────── */
+    .no-data { padding: 16px 34px; font-size: 9.5pt; color: #aaa; }
+
+    /* ── Column visibility toggles ─────────────────────────────────────── */
+    body.hide-predicted .pred-col  { display: none; }
+    body.hide-predicted .delta-col { display: none; }
+    body.hide-pct .delta-col       { display: none; }
+
+    /* ── Print overrides ───────────────────────────────────────────────── */
+    @media print {
+      #controls    { display: none !important; }
+      body         { background: #fff; }
+      .report-wrap { padding: 0; }
+      .report      { width: 100%; box-shadow: none; min-height: auto; }
+      .session-block { break-inside: avoid; }
+      .device-block  { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Controls (screen only) ─────────────────────────────────────────────── -->
+<div id="controls">
+  <span class="ctrl-title">PRINT REPORT</span>
+  <span class="ctrl-sep">|</span>
+
+  <div class="ctrl-group">
+    <span style="color:#555;">PAPER</span>
+    <select id="paper-size" onchange="setPaperSize(this.value)">
+      <option value="letter">Letter  (8.5 × 11")</option>
+      <option value="legal">Legal   (8.5 × 14")</option>
+      <option value="a4">A4      (210 × 297 mm)</option>
+      <option value="a3">A3      (297 × 420 mm)</option>
+      <option value="tabloid">Tabloid (11 × 17")</option>
+    </select>
+  </div>
+
+  <span class="ctrl-sep">|</span>
+
+  <div class="ctrl-group">
+    <label><input type="checkbox" id="show-pred" checked onchange="applyOptions()"> Show Predictions</label>
+    <label><input type="checkbox" id="show-pct"  checked onchange="applyOptions()"> Show % Deviation</label>
+  </div>
+
+  <button id="ctrl-print-btn" onclick="window.print()">⎙ &nbsp;PRINT / SAVE PDF</button>
+</div>
+
+<!-- ── Report ──────────────────────────────────────────────────────────────── -->
+<div class="report-wrap">
+  <div class="report" id="report-root">
+    <div class="no-data" style="padding:40px;">Loading report…</div>
+  </div>
+</div>
+
+<script>
+// ── Paper sizes ──────────────────────────────────────────────────────────────
+
+const PAPER = {
+  letter:  { page: '8.5in 11in',   w: '7in'   },
+  legal:   { page: '8.5in 14in',   w: '7in'   },
+  a4:      { page: '210mm 297mm',  w: '170mm' },
+  a3:      { page: '297mm 420mm',  w: '257mm' },
+  tabloid: { page: '11in 17in',    w: '9.5in' },
+};
+
+function setPaperSize(key) {
+  const p = PAPER[key] || PAPER.letter;
+  document.getElementById('page-style').textContent =
+    `@page { size: ${p.page} portrait; margin: 0.65in 0.75in; }`;
+  document.querySelector('.report').style.width = p.w;
+}
+
+// ── Option toggles ───────────────────────────────────────────────────────────
+
+function applyOptions() {
+  const showPred = document.getElementById('show-pred').checked;
+  const showPct  = document.getElementById('show-pct').checked;
+  document.body.classList.toggle('hide-predicted', !showPred);
+  document.body.classList.toggle('hide-pct', !showPct || !showPred);
+}
+
+// ── Value formatting ─────────────────────────────────────────────────────────
+
+function isAngle(key) { return /angle/i.test(key); }
+
+function fmtVal(v, key) {
+  if (v === null || v === undefined) return '—';
+  if (isAngle(key)) return v.toFixed(2) + '°';
+  const isV = /voltage/i.test(key);
+  const isA = /current/i.test(key);
+  const abs = Math.abs(v);
+  if (isV) {
+    if (abs >= 1e6) return (v / 1e6).toFixed(4) + ' MV';
+    if (abs >= 1e3) return (v / 1e3).toFixed(4) + ' kV';
+    return v.toFixed(3) + ' V';
+  }
+  if (isA) {
+    if (abs >= 1e3) return (v / 1e3).toFixed(4) + ' kA';
+    if (abs < 0.001 && abs > 0) return (v * 1e3).toFixed(4) + ' mA';
+    return v.toFixed(4) + ' A';
+  }
+  return v.toFixed(4);
+}
+
+function fmtDelta(measured, predicted, key) {
+  if (predicted === null || predicted === undefined) return { text: '—', cls: 'dn' };
+  if (isAngle(key)) {
+    const d   = measured - predicted;
+    const cls = Math.abs(d) <= 1 ? 'dg' : Math.abs(d) <= 3 ? 'dw' : 'db';
+    return { text: (d >= 0 ? '+' : '') + d.toFixed(2) + '°', cls };
+  }
+  if (predicted === 0) {
+    return { text: measured === 0 ? '0.00%' : '—', cls: 'dn' };
+  }
+  const pct = (measured - predicted) / Math.abs(predicted) * 100;
+  const cls = Math.abs(pct) <= 2 ? 'dg' : Math.abs(pct) <= 5 ? 'dw' : 'db';
+  return { text: (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls };
+}
+
+function fmtDateLong(epoch) {
+  if (!epoch) return '—';
+  return new Date(epoch * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function fmtDateTime(epoch) {
+  if (!epoch) return '—';
+  return new Date(epoch * 1000).toLocaleString();
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Key ordering ─────────────────────────────────────────────────────────────
+
+const KEY_ORDER = [
+  'Phase A Voltage (LN)', 'Phase B Voltage (LN)', 'Phase C Voltage (LN)',
+  'Phase A Voltage (LL)', 'Phase B Voltage (LL)', 'Phase C Voltage (LL)',
+  'Phase A Current',      'Phase B Current',      'Phase C Current',
+  'Sec Current Phase A',  'Sec Current Phase B',  'Sec Current Phase C',
+  'Sec Voltage Phase A',  'Sec Voltage Phase B',  'Sec Voltage Phase C',
+  'Phase A V-Angle',      'Phase B V-Angle',      'Phase C V-Angle',
+  'Phase A I-Angle',      'Phase B I-Angle',      'Phase C I-Angle',
+];
+
+function sortedKeys(obj) {
+  const inOrder = KEY_ORDER.filter(k => k in obj);
+  const rest    = Object.keys(obj).filter(k => !KEY_ORDER.includes(k)).sort();
+  return [...inOrder, ...rest];
+}
+
+// ── Build report ─────────────────────────────────────────────────────────────
+
+async function buildReport() {
+  const params = new URLSearchParams(window.location.search);
+  const testId = params.get('test_id');
+  const root   = document.getElementById('report-root');
+
+  if (!testId) {
+    root.innerHTML = '<div class="no-data">No test_id in URL. Open this page from the Tests panel.</div>';
+    return;
+  }
+
+  let reportData, topoData;
+  try {
+    [reportData, topoData] = await Promise.all([
+      fetch(`/api/tests/${testId}/report-data`).then(r => r.json()),
+      fetch('/api/topology').then(r => r.json()),
+    ]);
+  } catch (e) {
+    root.innerHTML = '<div class="no-data" style="color:#c00;">Failed to load data — is the server running?</div>';
+    return;
+  }
+
+  if (reportData.error) {
+    root.innerHTML = `<div class="no-data" style="color:#c00;">${esc(reportData.error)}</div>`;
+    return;
+  }
+
+  const { site, test, drawings, sessions } = reportData;
+
+  // Node map for predictions
+  const nodeMap = {};
+  (topoData.nodes || []).forEach(n => { nodeMap[n.id] = n; });
+
+  document.title = `Report — ${test.name}`;
+
+  // Status badge class
+  const statusCls = { 'COMPLETE': 'status-complete', 'IN PROGRESS': 'status-progress', 'ARCHIVED': 'status-archived' }[test.status] || '';
+
+  // Technicians & date range from sessions
+  const techs = [...new Set((sessions || []).map(s => s.technician).filter(Boolean))];
+  const epochs = (sessions || []).map(s => s.epoch).filter(Boolean);
+  let workDates = '—';
+  if (epochs.length === 1) {
+    workDates = fmtDateLong(epochs[0]);
+  } else if (epochs.length > 1) {
+    const mn = Math.min(...epochs), mx = Math.max(...epochs);
+    workDates = mn === mx ? fmtDateLong(mn) : `${fmtDateLong(mn)} — ${fmtDateLong(mx)}`;
+  }
+
+  let html = '';
+
+  // ── Header ────────────────────────────────────────────────────────────
+  const stationLine = site.station
+    ? esc(site.station) + (site.site_name ? ' — ' + esc(site.site_name) : '')
+    : 'Field Test Report';
+
+  html += `
+    <div class="rpt-header">
+      <div class="rh-system">THE PONEGLYPH SYSTEM</div>
+      <div class="rh-station">${stationLine}</div>
+      ${site.description ? `<div class="rh-station-sub">${esc(site.description)}</div>` : ''}
+      <div class="rh-doctype">FIELD TEST REPORT</div>
+    </div>`;
+
+  // ── Meta ──────────────────────────────────────────────────────────────
+  html += `<div class="meta-block">
+    <span class="meta-label">Test</span>
+    <span class="meta-value">${esc(test.name)}</span>
+
+    <span class="meta-label">Status</span>
+    <span class="meta-value"><span class="status-badge ${statusCls}">${esc(test.status)}</span></span>
+
+    <span class="meta-label">Technician(s)</span>
+    <span class="meta-value">${esc(techs.length ? techs.join(', ') : '—')}</span>
+
+    <span class="meta-label">Work Date(s)</span>
+    <span class="meta-value">${esc(workDates)}</span>
+
+    ${test.created_by ? `
+    <span class="meta-label">Prepared By</span>
+    <span class="meta-value">${esc(test.created_by)}</span>` : ''}
+
+    ${test.description ? `
+    <span class="meta-label">Description</span>
+    <span class="meta-value">${esc(test.description)}</span>` : ''}
+  </div>`;
+
+  // ── Drawings ──────────────────────────────────────────────────────────
+  html += `<div class="sec-heading">DRAWINGS &amp; REFERENCES</div>`;
+  if (!drawings || drawings.length === 0) {
+    html += `<div class="no-data">No drawings logged for this test.</div>`;
+  } else {
+    html += `<div class="drawings-wrap">
+      <table class="drw-table">
+        <thead>
+          <tr>
+            <th style="width:60px;">REV</th>
+            <th>DRAWING / TITLE</th>
+            <th>URL / REFERENCE</th>
+            <th>NOTES</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    drawings.forEach(d => {
+      html += `<tr>
+        <td class="td-rev">${esc(d.revision) || '—'}</td>
+        <td>${esc(d.title)}</td>
+        <td class="td-url">${d.url ? esc(d.url) : '<span style="color:#ccc;">—</span>'}</td>
+        <td class="td-note">${esc(d.notes) || ''}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+  }
+
+  // ── Sessions ──────────────────────────────────────────────────────────
+  html += `<div class="sec-heading">MEASUREMENT DATA</div>`;
+
+  if (!sessions || sessions.length === 0) {
+    html += `<div class="no-data">No measurement sessions recorded for this test.</div>`;
+  } else {
+    sessions.forEach((sess, si) => {
+      html += `<div class="session-block">
+        <div class="session-meta">
+          <span class="sm-lbl">SESSION</span><span class="sm-val">${si + 1} of ${sessions.length}</span>
+          <span class="sm-lbl">TECH</span><span class="sm-val">${esc(sess.technician) || '—'}</span>
+          <span class="sm-lbl">DATE</span><span class="sm-val">${fmtDateTime(sess.epoch)}</span>
+          <span class="sm-lbl">INSTRUMENT</span><span class="sm-val">${esc(sess.instrument) || '—'}</span>
+          ${sess.label ? `<span class="sm-lbl">LABEL</span><span class="sm-val">${esc(sess.label)}</span>` : ''}
+        </div>`;
+
+      const byDevice = sess.by_device || {};
+      const deviceIds = Object.keys(byDevice).sort();
+
+      if (deviceIds.length === 0) {
+        html += `<div class="no-data" style="padding:8px 34px;">No measurements recorded in this session.</div>`;
+      } else {
+        deviceIds.forEach(devId => {
+          const node    = nodeMap[devId];
+          const devMeas = byDevice[devId];
+          const summary = node?.summary || {};
+
+          html += `<div class="device-block">
+            <div class="dev-title">
+              <span class="dev-id">${esc(devId)}</span>
+              ${node ? `<span class="dev-type">[${esc(node.type)}]</span>` : ''}
+            </div>
+            <table class="meas-table">
+              <thead>
+                <tr>
+                  <th>PARAMETER</th>
+                  <th class="r">MEASURED</th>
+                  <th class="r pred-col">PREDICTED</th>
+                  <th class="r delta-col">DEVIATION</th>
+                </tr>
+              </thead>
+              <tbody>`;
+
+          sortedKeys(devMeas).forEach(key => {
+            const measured  = devMeas[key].value;
+            const predicted = key in summary ? summary[key] : null;
+            const delta     = predicted !== null
+              ? fmtDelta(measured, predicted, key)
+              : { text: '—', cls: 'dn' };
+
+            html += `<tr>
+              <td class="td-param">${esc(key)}</td>
+              <td class="r td-measured">${fmtVal(measured, key)}</td>
+              <td class="r td-predicted pred-col">${fmtVal(predicted, key)}</td>
+              <td class="r td-delta delta-col ${delta.cls}">${delta.text}</td>
+            </tr>`;
+          });
+
+          html += `</tbody></table></div>`;
+        });
+      }
+
+      html += `</div>`; // .session-block
+    });
+  }
+
+  // ── Footer ────────────────────────────────────────────────────────────
+  html += `
+    <div class="rpt-footer">
+      <span>THE PONEGLYPH SYSTEM &mdash; Generated ${new Date().toLocaleString()}</span>
+      <span>Test ID: ${esc(test.id)}</span>
+    </div>`;
+
+  root.innerHTML = html;
+}
+
+buildReport();
+</script>
+</body>
+</html>

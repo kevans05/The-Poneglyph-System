@@ -187,6 +187,33 @@
             <!-- Hidden by default, shown on right-click -->
             <div id="context-menu"></div>
 
+            <!-- Selection tool panel (slide-in from left) -->
+            <div id="selection-panel">
+                <div id="sel-header">
+                    <span>SELECTION<span id="sel-count-badge"></span></span>
+                    <span id="sel-close" onclick="toggleSelectionPanel()">[ CLOSE ]</span>
+                </div>
+                <div id="sel-controls">
+                    <div class="sel-row">
+                        <button class="sel-btn" onclick="selectAll()">ALL</button>
+                        <button class="sel-btn" onclick="clearSelection()">CLEAR</button>
+                    </div>
+                    <div class="sel-row">
+                        <select id="sel-test-picker"></select>
+                        <button class="sel-btn" onclick="applyTestSelection()">APPLY</button>
+                    </div>
+                </div>
+                <div class="sel-divider"></div>
+                <div id="sel-pick-list"></div>
+                <div class="sel-divider"></div>
+                <div id="sel-footer">
+                    <div class="sel-row">
+                        <button class="sel-btn sel-btn-action" onclick="autoLayoutSelected()">AUTO-LAYOUT</button>
+                    </div>
+                    <div id="sel-tip">Click diagram devices to toggle</div>
+                </div>
+            </div>
+
             <!-- All Devices slide-in panel -->
             <div id="all-devices-panel">
                 <div id="adp-header">
@@ -194,6 +221,17 @@
                     <span id="adp-close" onclick="toggleAllDevices()">[ CLOSE ]</span>
                 </div>
                 <div id="all-devices-list"></div>
+            </div>
+
+            <!-- Minimap (bottom-left) -->
+            <div id="minimap-container">
+                <div id="minimap-header">
+                    <span>MAP</span>
+                    <button id="minimap-toggle" onclick="toggleMinimap()">&#x2212;</button>
+                </div>
+                <div id="minimap-body">
+                    <svg id="minimap-svg" width="200" height="150"></svg>
+                </div>
             </div>
 
             <!-- Canvas overlay controls (bottom-right) -->
@@ -209,6 +247,7 @@
                     </div>
                 </div>
                 <div class="canvas-ctrl-row">
+                    <button class="canvas-btn" id="sel-mode-btn" onclick="toggleSelectionPanel()" title="Selection Tool">SEL</button>
                     <button class="canvas-btn" onclick="toggleAllDevices()" title="Device List">LIST</button>
                     <button class="canvas-btn" onclick="zoomOut()" title="Zoom Out">&#x2212;</button>
                     <button class="canvas-btn" onclick="zoomIn()" title="Zoom In">+</button>
@@ -440,6 +479,7 @@
         <!-- Modular Scripts (Loaded in order of dependency) -->
         <script src="/static/utils.js"></script>
         <script src="/static/api-client.js"></script>
+        <script src="/static/selector.js"></script>
         <script src="/static/sites.js"></script>
         <script src="/static/tests.js"></script>
         <script src="/static/visualization.js"></script>

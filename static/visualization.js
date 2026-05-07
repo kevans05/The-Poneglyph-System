@@ -9,7 +9,10 @@ const zoomGroup = d3.select("#zoom-group");
 const zoom = d3
   .zoom()
   .scaleExtent([0.1, 10])
-  .on("zoom", (e) => zoomGroup.attr("transform", e.transform));
+  .on("zoom", (e) => {
+    zoomGroup.attr("transform", e.transform);
+    updateMinimapViewport();
+  });
 
 svg.call(zoom);
 
@@ -30,15 +33,13 @@ function getAnchorPoint(x, y, angle, bushing, offset, radialOffset = 55) {
   return { x: x + rotX, y: y + rotY };
 }
 
-function getPathData(x1, y1, x2, y2, offset) {
+function getPathData(x1, y1, x2, y2, offset, frac = 0.5) {
   const dx = x2 - x1, dy = y2 - y1;
   if (Math.abs(dx) >= Math.abs(dy)) {
-    // Horizontal-dominant: horizontal elbow
-    const midX = (x1 + x2) / 2 + offset;
+    const midX = x1 + dx * frac + offset;
     return `M ${x1},${y1} L ${midX},${y1} L ${midX},${y2} L ${x2},${y2}`;
   } else {
-    // Vertical-dominant: vertical elbow
-    const midY = (y1 + y2) / 2 + offset;
+    const midY = y1 + dy * frac + offset;
     return `M ${x1},${y1} L ${x1},${midY} L ${x2},${midY} L ${x2},${y2}`;
   }
 }
@@ -96,18 +97,40 @@ function render3LD(data) {
 
   // 2. Draw Edges
   const linkGroup = zoomGroup.append("g").attr("id", "links");
+
+  // Pre-pass: stagger bend fractions for edges that share a source or target
+  // so their elbows land at different points instead of all bunching at 50%.
+  const _resolveId = v => typeof v === "string" ? v : v.id;
+  const _bendFrac = {};
+  const _bySrc = {}, _byTgt = {};
+  data.edges.forEach(edge => {
+    const sid = _resolveId(edge.source), tid = _resolveId(edge.target);
+    const key = sid + "→" + tid;
+    _bendFrac[key] = 0.5;
+    (_bySrc[sid] = _bySrc[sid] || []).push(key);
+    (_byTgt[tid] = _byTgt[tid] || []).push(key);
+  });
+  const _stagger = (keys) => {
+    if (keys.length < 2) return;
+    keys.forEach((k, j) => {
+      _bendFrac[k] = 0.3 + 0.4 * (j / (keys.length - 1));
+    });
+  };
+  Object.values(_byTgt).forEach(_stagger);
+  // Only apply source stagger if not already moved by target stagger
+  Object.values(_bySrc).forEach(keys => {
+    if (keys.length < 2) return;
+    keys.forEach((k, j) => {
+      if (_bendFrac[k] === 0.5) _bendFrac[k] = 0.3 + 0.4 * (j / (keys.length - 1));
+    });
+  });
+
   data.edges.forEach((edge) => {
-    const src = data.nodes.find(
-      (n) =>
-        n.id ===
-        (typeof edge.source === "string" ? edge.source : edge.source.id),
-    );
-    const tgt = data.nodes.find(
-      (n) =>
-        n.id ===
-        (typeof edge.target === "string" ? edge.target : edge.target.id),
-    );
+    const src = data.nodes.find(n => n.id === _resolveId(edge.source));
+    const tgt = data.nodes.find(n => n.id === _resolveId(edge.target));
     if (!src || !tgt) return;
+
+    const frac = _bendFrac[src.id + "→" + tgt.id] ?? 0.5;
 
     if (edge.type === "protection") {
       let wireClass = "secondary-wire";
@@ -123,14 +146,15 @@ function render3LD(data) {
       linkGroup
         .append("path")
         .attr("class", wireClass)
-        .attr("d", getPathData(src.gx, src.gy, tgt.gx, tgt.gy, 0))
+        .attr("d", getPathData(src.gx, src.gy, tgt.gx, tgt.gy, 0, frac))
         .attr("data-src", src.id)
         .attr("data-tgt", tgt.id)
         .attr("data-x1", src.gx)
         .attr("data-y1", src.gy)
         .attr("data-x2", tgt.gx)
         .attr("data-y2", tgt.gy)
-        .attr("data-offset", 0);
+        .attr("data-offset", 0)
+        .attr("data-frac", frac);
     } else {
       const srcB = facingBushing(
         src.gx,
@@ -170,14 +194,15 @@ function render3LD(data) {
         linkGroup
           .append("path")
           .attr("class", "link-wire " + classes[i])
-          .attr("d", getPathData(a1.x, a1.y, a2.x, a2.y, off))
+          .attr("d", getPathData(a1.x, a1.y, a2.x, a2.y, off, frac))
           .attr("data-src", src.id)
           .attr("data-tgt", tgt.id)
           .attr("data-x1", a1.x)
           .attr("data-y1", a1.y)
           .attr("data-x2", a2.x)
           .attr("data-y2", a2.y)
-          .attr("data-offset", off);
+          .attr("data-offset", off)
+          .attr("data-frac", frac);
       });
     }
   });
@@ -235,7 +260,14 @@ function render3LD(data) {
         }),
     )
     .on("click", (e, d) => {
-      if (!e.defaultPrevented) handleNodeInteraction(e, d);
+      if (!e.defaultPrevented) {
+        if (typeof isSelecting === "function" && isSelecting()) {
+          e.stopPropagation();
+          toggleDeviceSelection(d.id);
+        } else {
+          handleNodeInteraction(e, d);
+        }
+      }
     })
     .on("contextmenu", (e, d) => showContextMenu(e, d));
 
@@ -482,17 +514,19 @@ function render3LD(data) {
 
     const labelText = d.id;
     const labelG = el.append("g").attr("class", "node-label");
-    const textEl = labelG.append("text").attr("dy", 100).text(labelText);
+    const textEl = labelG.append("text")
+      .attr("text-anchor", "middle")
+      .attr("dominant-baseline", "middle")
+      .attr("x", 0).attr("y", 0)
+      .text(labelText);
     const bbox = textEl.node().getBBox();
-    labelG
-      .insert("rect", "text")
-      .attr("x", bbox.x - 4)
-      .attr("y", bbox.y - 2)
-      .attr("width", bbox.width + 8)
-      .attr("height", bbox.height + 4)
-      .attr("rx", 2)
-      .attr("class", "label-bg");
+    labelG.insert("rect", "text")
+      .attr("x", bbox.x - 4).attr("y", bbox.y - 2)
+      .attr("width", bbox.width + 8).attr("height", bbox.height + 4)
+      .attr("rx", 2).attr("class", "label-bg");
   });
+
+  positionLabels(nodeGroup, data.nodes);
 }
 
 function updateLinksDuringDrag(nodeId, newX, newY, angle, data, linkGroup) {
@@ -533,7 +567,8 @@ function updateLinksDuringDrag(nodeId, newX, newY, angle, data, linkGroup) {
       }
       el.attr("data-x2", x2).attr("data-y2", y2);
     }
-    el.attr("d", getPathData(x1, y1, x2, y2, off));
+    const frac = parseFloat(el.attr("data-frac")) || 0.5;
+    el.attr("d", getPathData(x1, y1, x2, y2, off, frac));
   });
 }
 
@@ -966,4 +1001,215 @@ function panToDevice(id) {
             setTimeout(() => el.style("opacity", 0.25), 400);
             setTimeout(() => el.style("opacity", 1), 600);
         });
+}
+
+// ── Label Placement ───────────────────────────────────────────────────────
+
+// Candidate world-space offsets tried in preference order.
+// dx/dy are in pixels; anchor is SVG text-anchor.
+const _LABEL_CANDS = [
+  { dx:   0, dy:  90, anchor: "middle" },  // below (default)
+  { dx:   0, dy: -90, anchor: "middle" },  // above
+  { dx:  95, dy:   0, anchor: "start"  },  // right
+  { dx: -95, dy:   0, anchor: "end"    },  // left
+  { dx:  72, dy:  72, anchor: "start"  },  // bottom-right
+  { dx: -72, dy:  72, anchor: "end"    },  // bottom-left
+  { dx:  72, dy: -72, anchor: "start"  },  // top-right
+  { dx: -72, dy: -72, anchor: "end"    },  // top-left
+];
+
+function positionLabels(sel, nodes) {
+  const NR = 70;  // node circle exclusion radius
+  const LP = 5;   // extra padding on label box when checking overlaps
+  const placed = [];
+
+  const npos = nodes.map(n => ({ x: n.gx || 0, y: n.gy || 0 }));
+
+  sel.each(function(d) {
+    const labelG = d3.select(this).select(".node-label");
+    const textEl = labelG.select("text");
+    const rot    = d.rotation || 0;
+    const wx = d.gx || 0, wy = d.gy || 0;
+
+    const bb = textEl.node().getBBox();
+    const lw = bb.width + 8, lh = bb.height + 4;
+
+    let best = _LABEL_CANDS[0], bestScore = Infinity;
+
+    for (const c of _LABEL_CANDS) {
+      const cx = wx + c.dx, cy = wy + c.dy;
+      const lbx = c.anchor === "middle" ? cx - lw / 2
+                : c.anchor === "start"  ? cx
+                : cx - lw;
+      const lby = cy - lh / 2;
+      let score = 0;
+
+      for (const np of npos) {
+        if (np.x === wx && np.y === wy) continue;
+        if (_lblHitsCircle(lbx - LP, lby - LP, lw + LP*2, lh + LP*2, np.x, np.y, NR))
+          score += 2;
+      }
+      for (const pl of placed) {
+        if (_lblHitsRect(lbx - LP, lby - LP, lw + LP*2, lh + LP*2, pl.x, pl.y, pl.w, pl.h))
+          score++;
+      }
+
+      if (score < bestScore) { bestScore = score; best = c; }
+      if (bestScore === 0) break;
+    }
+
+    // Convert world-space offset to local node space, cancelling the node's rotation.
+    // Node transform is translate(wx,wy) rotate(rot), so local = R^-1(rot) * world_offset.
+    const rad = (rot * Math.PI) / 180;
+    const ldx = best.dx * Math.cos(rad) + best.dy * Math.sin(rad);
+    const ldy = best.dy * Math.cos(rad) - best.dx * Math.sin(rad);
+
+    labelG.attr("transform", `translate(${ldx.toFixed(1)},${ldy.toFixed(1)})`);
+    textEl.attr("text-anchor", best.anchor);
+
+    const nb = textEl.node().getBBox();
+    labelG.select(".label-bg")
+      .attr("x", nb.x - 4).attr("y", nb.y - 2)
+      .attr("width", nb.width + 8).attr("height", nb.height + 4);
+
+    const fx = wx + best.dx, fy = wy + best.dy;
+    const flx = best.anchor === "middle" ? fx - lw / 2
+              : best.anchor === "start"  ? fx
+              : fx - lw;
+    placed.push({ x: flx, y: fy - lh / 2, w: lw, h: lh });
+  });
+}
+
+function _lblHitsCircle(rx, ry, rw, rh, cx, cy, cr) {
+  const nx = Math.max(rx, Math.min(cx, rx + rw));
+  const ny = Math.max(ry, Math.min(cy, ry + rh));
+  return (cx - nx) * (cx - nx) + (cy - ny) * (cy - ny) < cr * cr;
+}
+
+function _lblHitsRect(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+// ── Minimap ────────────────────────────────────────────────────────────────
+
+const MINIMAP_W = 200;
+const MINIMAP_H = 150;
+const MINIMAP_PAD = 12;
+
+const minimapScaleX = d3.scaleLinear();
+const minimapScaleY = d3.scaleLinear();
+let minimapCollapsed = false;
+
+(function initMinimap() {
+  const mmSvg = d3.select("#minimap-svg");
+  mmSvg.append("g").attr("id", "minimap-edges");
+  mmSvg.append("g").attr("id", "minimap-nodes");
+  mmSvg.append("rect")
+    .attr("id", "minimap-viewport")
+    .attr("fill", "rgba(255,255,0,0.06)")
+    .attr("stroke", "#ffff00")
+    .attr("stroke-width", 1)
+    .attr("pointer-events", "none");
+
+  mmSvg.on("click", function(event) {
+    const [mx, my] = d3.pointer(event);
+    const cx = minimapScaleX.invert(mx);
+    const cy = minimapScaleY.invert(my);
+    const svgW = svg.node().clientWidth || window.innerWidth;
+    const svgH = svg.node().clientHeight || window.innerHeight;
+    const k = d3.zoomTransform(svg.node()).k;
+    svg.transition().duration(200).call(
+      zoom.transform,
+      d3.zoomIdentity.translate(svgW / 2 - k * cx, svgH / 2 - k * cy).scale(k)
+    );
+  });
+})();
+
+function updateMinimap() {
+  if (minimapCollapsed || !currentData || !currentData.nodes || currentData.nodes.length === 0) return;
+
+  const nodes = currentData.nodes;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach(n => {
+    const gx = n.gx || 0, gy = n.gy || 0;
+    if (gx < minX) minX = gx;
+    if (gy < minY) minY = gy;
+    if (gx > maxX) maxX = gx;
+    if (gy > maxY) maxY = gy;
+  });
+
+  const pad = 60;
+  minimapScaleX.domain([minX - pad, maxX + pad]).range([MINIMAP_PAD, MINIMAP_W - MINIMAP_PAD]);
+  minimapScaleY.domain([minY - pad, maxY + pad]).range([MINIMAP_PAD, MINIMAP_H - MINIMAP_PAD]);
+
+  const nodeById = {};
+  nodes.forEach(n => { nodeById[n.id] = n; });
+
+  const resolveId = e => typeof e === "string" ? e : e.id;
+
+  const edgeSel = d3.select("#minimap-edges").selectAll("line")
+    .data(currentData.edges || []);
+  edgeSel.enter().append("line")
+    .merge(edgeSel)
+    .attr("x1", d => { const n = nodeById[resolveId(d.source)]; return n ? minimapScaleX(n.gx || 0) : 0; })
+    .attr("y1", d => { const n = nodeById[resolveId(d.source)]; return n ? minimapScaleY(n.gy || 0) : 0; })
+    .attr("x2", d => { const n = nodeById[resolveId(d.target)]; return n ? minimapScaleX(n.gx || 0) : 0; })
+    .attr("y2", d => { const n = nodeById[resolveId(d.target)]; return n ? minimapScaleY(n.gy || 0) : 0; })
+    .attr("stroke", d => d.type === "protection" ? "#2a2a2a" : "#2e2e2e")
+    .attr("stroke-width", 0.8);
+  edgeSel.exit().remove();
+
+  const nodeSel = d3.select("#minimap-nodes").selectAll("circle")
+    .data(nodes, d => d.id);
+  nodeSel.enter().append("circle")
+    .merge(nodeSel)
+    .attr("cx", d => minimapScaleX(d.gx || 0))
+    .attr("cy", d => minimapScaleY(d.gy || 0))
+    .attr("r", 2.5)
+    .attr("fill", d => {
+      if (d.type === "VoltageSource") return "#ffaa00";
+      if (d.type === "CircuitBreaker") return d.status === "OPEN" ? "#444" : "#00cc44";
+      if (d.type === "Disconnect") return d.status === "OPEN" ? "#333" : "#559955";
+      if (d.type === "PowerTransformer") return "#4488ff";
+      if (d.type === "Load") return "#ff4444";
+      if (d.type === "Bus") return "#555";
+      return "#505050";
+    });
+  nodeSel.exit().remove();
+
+  updateMinimapViewport();
+}
+
+function updateMinimapViewport() {
+  if (minimapCollapsed) return;
+  const vp = d3.select("#minimap-viewport");
+  if (vp.empty() || minimapScaleX.domain()[0] === minimapScaleX.domain()[1]) return;
+
+  const t = d3.zoomTransform(svg.node());
+  const svgW = svg.node().clientWidth || window.innerWidth;
+  const svgH = svg.node().clientHeight || window.innerHeight;
+
+  const left   = minimapScaleX(-t.x / t.k);
+  const top    = minimapScaleY(-t.y / t.k);
+  const right  = minimapScaleX((svgW - t.x) / t.k);
+  const bottom = minimapScaleY((svgH - t.y) / t.k);
+
+  vp.attr("x", left)
+    .attr("y", top)
+    .attr("width", Math.max(1, right - left))
+    .attr("height", Math.max(1, bottom - top));
+}
+
+function toggleMinimap() {
+  minimapCollapsed = !minimapCollapsed;
+  const body = document.getElementById("minimap-body");
+  const btn  = document.getElementById("minimap-toggle");
+  if (minimapCollapsed) {
+    body.style.display = "none";
+    btn.innerHTML = "+";
+  } else {
+    body.style.display = "block";
+    btn.innerHTML = "&#x2212;";
+    updateMinimap();
+  }
 }

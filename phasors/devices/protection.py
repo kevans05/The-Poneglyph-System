@@ -165,11 +165,54 @@ class IsoBlock(FTBlock):
     pass
 
 class Relay(ProtectionDevice):
-    def __init__(self, name: str, function: str = "Differential"):
+    def __init__(self, name: str, function: str = "Differential", input_polarities: dict = None):
         super().__init__(name)
         self.function = function
+        self.input_polarities = input_polarities or {}
+
+    @property
+    def current(self):
+        if self._evaluating: return None
+        self._evaluating = True
+        try:
+            total_a = complex(0)
+            total_b = complex(0)
+            total_c = complex(0)
+            found = False
+            for src in self.inputs:
+                i_sys = getattr(src, 'secondary_current', None)
+                if i_sys:
+                    sign = self.input_polarities.get(src.name, 1)
+                    total_a += sign * i_sys.a.to_complex()
+                    total_b += sign * i_sys.b.to_complex()
+                    total_c += sign * i_sys.c.to_complex()
+                    found = True
+            if not found: return None
+            def from_complex(c):
+                mag, ang_rad = cmath.polar(c)
+                return CurrentPhasor(mag, math.degrees(ang_rad))
+            return wye_currents(from_complex(total_a), from_complex(total_b), from_complex(total_c))
+        finally:
+            self._evaluating = False
 
     def get_summary_dict(self):
         stats = super().get_summary_dict()
         stats["Function"] = self.function
+
+        if self.input_polarities:
+            for src in self.inputs:
+                pol = self.input_polarities.get(src.name, 1)
+                stats[f"  {src.name} polarity"] = "+" if pol == 1 else "−"
+
+        i_result = self.current
+        if i_result and len(self.inputs) > 1:
+            mags = []
+            for src in self.inputs:
+                i_sys = getattr(src, "secondary_current", None)
+                if i_sys:
+                    mags.append(i_sys.a.magnitude)
+            if mags:
+                stats["Irestraint (Max)"] = max(mags)
+                stats["Idiff Phase A"] = i_result.a.magnitude
+
         return stats

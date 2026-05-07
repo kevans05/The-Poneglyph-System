@@ -167,7 +167,7 @@ class DeviceFactory:
             return IsoBlock(did)
 
         elif dtype == "Relay":
-            return Relay(did, function=data.get("function", "Differential"))
+            return Relay(did, function=data.get("function", "Differential"), input_polarities=data.get("input_polarities", {}))
 
         elif dtype == "ShuntCapacitor":
             return ShuntCapacitor(

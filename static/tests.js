@@ -264,6 +264,11 @@ function _testsRenderDetail(testId) {
                 ← ALL TESTS
             </button>
             <div style="flex:1;"></div>
+            <button onclick="window.open('/static/print-report.html?test_id=${testId}', '_blank')"
+                style="background:#000d1a; border:1px solid #3af; color:#3af;
+                       font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer; letter-spacing:1px;">
+                ⎙ PRINT REPORT
+            </button>
             <button onclick="if(confirm('Delete this test and all its drawings?')) deleteTest('${testId}').then(() => _testsRenderList())"
                 style="background:#1a0000; border:1px solid #600; color:#a00;
                        font-family:inherit; font-size:10px; padding:6px 12px; cursor:pointer;">

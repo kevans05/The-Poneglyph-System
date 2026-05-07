@@ -161,6 +161,18 @@ svg {
     color: #ffff00; /* Yellow title for high visibility */
 }
 
+.ang-conv-btn {
+    background: none;
+    border: 1px solid #555;
+    color: #888;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 9px;
+    padding: 1px 6px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+}
+.ang-conv-btn:hover { border-color: #3af; color: #3af; }
+
 .window-content {
     padding: 12px;
     max-height: 58vh;
@@ -800,6 +812,55 @@ svg {
     background: #111;
 }
 
+/* ── Minimap (bottom-left corner) ──────────────────────────────────────── */
+
+#minimap-container {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    z-index: 4000;
+    background: rgba(8, 8, 8, 0.93);
+    border: 1px solid #333;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+}
+
+#minimap-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 7px;
+    border-bottom: 1px solid #222;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: #555;
+    cursor: default;
+}
+
+#minimap-toggle {
+    background: none;
+    border: none;
+    color: #444;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+    font-family: inherit;
+}
+
+#minimap-toggle:hover { color: #ffff00; }
+
+#minimap-body { display: block; }
+
+#minimap-svg {
+    display: block;
+    cursor: crosshair;
+}
+
+#minimap-svg:hover { background: rgba(255,255,255,0.02); }
+
 /* ── Canvas overlay controls (bottom-right corner) ─────────────────────── */
 
 #canvas-controls {
@@ -886,6 +947,165 @@ svg {
 .find-result-type { color: #3a3a3a; font-size: 9px; }
 
 /* ── All Devices slide-in panel (left edge of canvas) ───────────────────── */
+
+/* ── Selection Panel (slide-in from left) ───────────────────────────────── */
+
+#selection-panel {
+    position: absolute;
+    top: 0;
+    left: -250px;
+    width: 230px;
+    height: 100%;
+    background: #0c0c0c;
+    border-right: 1px solid #1c1c1c;
+    z-index: 3600;
+    display: flex;
+    flex-direction: column;
+    transition: left 0.18s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.7);
+}
+
+#selection-panel.open { left: 0; }
+
+#sel-header {
+    padding: 8px 12px;
+    background: #111;
+    border-bottom: 1px solid #1c1c1c;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    color: #ffff00;
+    letter-spacing: 1px;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+#sel-count-badge { color: #555; font-size: 9px; }
+#sel-close { cursor: pointer; color: #555; font-size: 11px; }
+#sel-close:hover { color: #f00; }
+
+#sel-controls {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.sel-row { display: flex; gap: 6px; align-items: center; }
+
+.sel-btn {
+    background: rgba(8,8,8,0.93);
+    border: 1px solid #333;
+    color: #777;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    padding: 5px 10px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    flex: 1;
+}
+
+.sel-btn:hover { border-color: #ffff00; color: #ffff00; }
+
+.sel-btn-action {
+    border-color: #444;
+    color: #aaa;
+    width: 100%;
+}
+
+.sel-btn-action:hover { border-color: #ffff00; color: #ffff00; }
+
+#sel-test-picker {
+    flex: 1;
+    background: #0c0c0c;
+    border: 1px solid #333;
+    color: #888;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    padding: 4px 6px;
+    outline: none;
+    min-width: 0;
+}
+
+#sel-test-picker:focus { border-color: #ffff00; }
+
+.sel-divider { border-top: 1px solid #181818; flex-shrink: 0; }
+
+/* Pick list — grows to fill available space */
+#sel-pick-list {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.sel-list-group {
+    padding: 4px 10px 2px;
+    font-size: 9px;
+    color: #3a3a3a;
+    letter-spacing: 1px;
+    background: #0a0a0a;
+    border-top: 1px solid #161616;
+    user-select: none;
+}
+
+.sel-list-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    color: #555;
+    border-bottom: 1px solid #101010;
+    user-select: none;
+}
+
+.sel-list-item:hover { background: #141414; color: #999; }
+
+.sel-item-on { color: #ffff00 !important; background: #111 !important; }
+.sel-item-on:hover { background: #181800 !important; }
+
+.sel-list-check { font-size: 10px; flex-shrink: 0; width: 10px; }
+.sel-list-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.sel-list-empty { padding: 12px; font-size: 10px; color: #333; text-align: center; }
+
+#sel-footer {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+#sel-tip {
+    font-size: 9px;
+    color: #2a2a2a;
+    letter-spacing: 0.5px;
+    text-align: center;
+}
+
+/* canvas-btn active state when selection panel is open */
+#sel-mode-btn.active {
+    border-color: #ffff00;
+    color: #ffff00;
+}
+
+/* ── Node selection highlight & dim ─────────────────────────────────────── */
+
+.node-selected .node-hitbox {
+    stroke: #ffff00 !important;
+    stroke-width: 3 !important;
+    fill: rgba(255,255,0,0.05) !important;
+    filter: drop-shadow(0 0 8px rgba(255,255,0,0.5));
+}
+
+.node-dimmed {
+    opacity: 0.18;
+}
+
+/* ── All Devices Panel ───────────────────────────────────────────────────── */
 
 #all-devices-panel {
     position: absolute;
