@@ -39,22 +39,6 @@ async function _loadTestsForPicker() {
 
 // ── Pick List ─────────────────────────────────────────────────────────────────
 
-const TYPE_LABELS = {
-  VoltageSource: "SOURCE",
-  CircuitBreaker: "BREAKER",
-  Disconnect: "DISCONNECT",
-  PowerTransformer: "TRANSFORMER",
-  CurrentTransformer: "CT",
-  VoltageTransformer: "VT",
-  DualWindingVT: "VT (DUAL)",
-  Bus: "BUS",
-  PowerLine: "LINE",
-  Load: "LOAD",
-  Relay: "RELAY",
-  CTTB: "CTTB",
-  FTBlock: "FT BLOCK",
-  IsoBlock: "ISO BLOCK",
-};
 
 function _renderPickList() {
   const list = document.getElementById("sel-pick-list");

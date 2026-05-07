@@ -196,7 +196,12 @@ class Relay(ProtectionDevice):
             self._evaluating = False
 
     def get_summary_dict(self):
-        stats = super().get_summary_dict()
+        i_result = self.current
+        v_result = self.voltage
+        stats = {"Type": self.__class__.__name__, "Inputs": len(self.inputs)}
+        if not self.inputs:
+            stats["Status"] = "No Input Sources"
+        stats = append_3phase_details(stats, v_result, i_result)
         stats["Function"] = self.function
 
         if self.input_polarities:
@@ -204,13 +209,9 @@ class Relay(ProtectionDevice):
                 pol = self.input_polarities.get(src.name, 1)
                 stats[f"  {src.name} polarity"] = "+" if pol == 1 else "−"
 
-        i_result = self.current
         if i_result and len(self.inputs) > 1:
-            mags = []
-            for src in self.inputs:
-                i_sys = getattr(src, "secondary_current", None)
-                if i_sys:
-                    mags.append(i_sys.a.magnitude)
+            mags = [i_sys.a.magnitude for src in self.inputs
+                    if (i_sys := getattr(src, "secondary_current", None))]
             if mags:
                 stats["Irestraint (Max)"] = max(mags)
                 stats["Idiff Phase A"] = i_result.a.magnitude

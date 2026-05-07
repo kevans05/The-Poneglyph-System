@@ -901,7 +901,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(f.read())
             elif self.path.startswith("/static/"):
-                local_path = self.path.lstrip("/")
+                local_path = self.path.split("?")[0].lstrip("/")
                 if os.path.exists(local_path) and os.path.isfile(local_path):
                     content_type, _ = mimetypes.guess_type(local_path)
                     with open(local_path, "rb") as f:

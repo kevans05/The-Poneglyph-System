@@ -1038,9 +1038,7 @@ function positionLabels(sel, nodes) {
 
     for (const c of _LABEL_CANDS) {
       const cx = wx + c.dx, cy = wy + c.dy;
-      const lbx = c.anchor === "middle" ? cx - lw / 2
-                : c.anchor === "start"  ? cx
-                : cx - lw;
+      const lbx = _anchorX(cx, lw, c.anchor);
       const lby = cy - lh / 2;
       let score = 0;
 
@@ -1073,11 +1071,12 @@ function positionLabels(sel, nodes) {
       .attr("width", nb.width + 8).attr("height", nb.height + 4);
 
     const fx = wx + best.dx, fy = wy + best.dy;
-    const flx = best.anchor === "middle" ? fx - lw / 2
-              : best.anchor === "start"  ? fx
-              : fx - lw;
-    placed.push({ x: flx, y: fy - lh / 2, w: lw, h: lh });
+    placed.push({ x: _anchorX(fx, lw, best.anchor), y: fy - lh / 2, w: lw, h: lh });
   });
+}
+
+function _anchorX(x, w, anchor) {
+  return anchor === "middle" ? x - w / 2 : anchor === "start" ? x : x - w;
 }
 
 function _lblHitsCircle(rx, ry, rw, rh, cx, cy, cr) {
@@ -1132,10 +1131,8 @@ function updateMinimap() {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   nodes.forEach(n => {
     const gx = n.gx || 0, gy = n.gy || 0;
-    if (gx < minX) minX = gx;
-    if (gy < minY) minY = gy;
-    if (gx > maxX) maxX = gx;
-    if (gy > maxY) maxY = gy;
+    minX = Math.min(minX, gx); minY = Math.min(minY, gy);
+    maxX = Math.max(maxX, gx); maxY = Math.max(maxY, gy);
   });
 
   const pad = 60;
@@ -1147,14 +1144,17 @@ function updateMinimap() {
 
   const resolveId = e => typeof e === "string" ? e : e.id;
 
+  const mmNodeX = (id) => { const n = nodeById[id]; return n ? minimapScaleX(n.gx || 0) : 0; };
+  const mmNodeY = (id) => { const n = nodeById[id]; return n ? minimapScaleY(n.gy || 0) : 0; };
+
   const edgeSel = d3.select("#minimap-edges").selectAll("line")
-    .data(currentData.edges || []);
+    .data(currentData.edges || [], d => `${resolveId(d.source)}→${resolveId(d.target)}`);
   edgeSel.enter().append("line")
     .merge(edgeSel)
-    .attr("x1", d => { const n = nodeById[resolveId(d.source)]; return n ? minimapScaleX(n.gx || 0) : 0; })
-    .attr("y1", d => { const n = nodeById[resolveId(d.source)]; return n ? minimapScaleY(n.gy || 0) : 0; })
-    .attr("x2", d => { const n = nodeById[resolveId(d.target)]; return n ? minimapScaleX(n.gx || 0) : 0; })
-    .attr("y2", d => { const n = nodeById[resolveId(d.target)]; return n ? minimapScaleY(n.gy || 0) : 0; })
+    .attr("x1", d => mmNodeX(resolveId(d.source)))
+    .attr("y1", d => mmNodeY(resolveId(d.source)))
+    .attr("x2", d => mmNodeX(resolveId(d.target)))
+    .attr("y2", d => mmNodeY(resolveId(d.target)))
     .attr("stroke", d => d.type === "protection" ? "#2a2a2a" : "#2e2e2e")
     .attr("stroke-width", 0.8);
   edgeSel.exit().remove();

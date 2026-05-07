@@ -244,14 +244,7 @@ const _DEVICE_DEFAULTS = {
 };
 
 function _defaultId(type) {
-  const abbrev = { VoltageSource: "VS", CircuitBreaker: "CB", Disconnect: "DS",
-    PowerTransformer: "TX", Load: "LD", VoltageTransformer: "VT",
-    DualWindingVT: "DVT", CurrentTransformer: "CT", FTBlock: "FT",
-    IsoBlock: "ISO", CTTB: "CTTB", Relay: "RLY", Wire: "W",
-    ShuntCapacitor: "CAP", ShuntReactor: "RCT", SurgeArrester: "SA",
-    SeriesCapacitor: "SC", SeriesReactor: "SR",
-    NeutralGroundingResistor: "NGR", SVC: "SVC", LineTrap: "LT" };
-  return (abbrev[type] || type) + "-" + Math.floor(Math.random() * 1000);
+  return (TYPE_ABBREV[type] || type) + "-" + Math.floor(Math.random() * 1000);
 }
 
 function plantDevice(type, pageX, pageY, gx, gy, hostId = null, bushing = null) {
@@ -2529,30 +2522,12 @@ function _bpRenderStep4() {
     });
   }
 
-  renderGroup(
-    "VOLTAGE ONLY — VT · DVT · FTBlock · IsoBlock",
-    voltNodes,
-    () => _bpVoltDevices,
-    (arr) => { _bpVoltDevices = arr; },
-  );
-  renderGroup(
-    "CURRENT ONLY — CT · CTTB",
-    currNodes,
-    () => _bpCurrDevices,
-    (arr) => { _bpCurrDevices = arr; },
-  );
-  renderGroup(
-    "RELAY — Protection Devices",
-    relayNodes,
-    () => _bpRelayDevices,
-    (arr) => { _bpRelayDevices = arr; },
-  );
-  renderGroup(
-    "MULTI-ANALOG — Primary Equipment",
-    multiNodes,
-    () => _bpMultiDevices,
-    (arr) => { _bpMultiDevices = arr; },
-  );
+  [
+    ["VOLTAGE ONLY — VT · DVT · FTBlock · IsoBlock", voltNodes,  () => _bpVoltDevices,  arr => { _bpVoltDevices  = arr; }],
+    ["CURRENT ONLY — CT · CTTB",                     currNodes,  () => _bpCurrDevices,  arr => { _bpCurrDevices  = arr; }],
+    ["RELAY — Protection Devices",                   relayNodes, () => _bpRelayDevices, arr => { _bpRelayDevices = arr; }],
+    ["MULTI-ANALOG — Primary Equipment",             multiNodes, () => _bpMultiDevices, arr => { _bpMultiDevices = arr; }],
+  ].forEach(([label, nodes, get, set]) => renderGroup(label, nodes, get, set));
 
   const footer = d3.select("#brain-point-footer").html("");
   footer

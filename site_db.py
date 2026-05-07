@@ -476,25 +476,30 @@ def get_test_report_data(db_path: str, test_id: str) -> dict | None:
             "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC", (test_id,)
         ).fetchall()
 
-        session_data = []
-        for sess in sessions:
-            rows = c.execute("""
-                SELECT m.device_id, m.key, m.value, m.epoch
-                FROM measurements m
-                WHERE m.session_id = ?
-                ORDER BY m.device_id, m.epoch DESC
-            """, (sess["id"],)).fetchall()
-            by_device: dict = {}
-            seen: set = set()
-            for row in rows:
-                dk = (row["device_id"], row["key"])
-                if dk not in seen:
-                    seen.add(dk)
-                    by_device.setdefault(row["device_id"], {})[row["key"]] = {
+        all_meas = c.execute("""
+            SELECT m.session_id, m.device_id, m.key, m.value, m.epoch
+            FROM measurements m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE s.test_id = ?
+            ORDER BY m.device_id, m.epoch DESC
+        """, (test_id,)).fetchall()
+
+        meas_by_session: dict = {}
+        seen: set = set()
+        for row in all_meas:
+            dk = (row["session_id"], row["device_id"], row["key"])
+            if dk not in seen:
+                seen.add(dk)
+                meas_by_session.setdefault(row["session_id"], {}) \
+                    .setdefault(row["device_id"], {})[row["key"]] = {
                         "value": row["value"],
                         "epoch": row["epoch"],
                     }
-            session_data.append({**dict(sess), "by_device": by_device})
+
+        session_data = [
+            {**dict(sess), "by_device": meas_by_session.get(sess["id"], {})}
+            for sess in sessions
+        ]
 
         return {
             "site":     dict(site_row) if site_row else {},

@@ -11,21 +11,55 @@ const GRID_SIZE = 20;
 
 // Short display labels for each device type
 const TYPE_ABBREV = {
-  CircuitBreaker: "CB",
   VoltageSource: "VS",
+  CircuitBreaker: "CB",
   Disconnect: "DS",
   PowerTransformer: "TX",
   Load: "LD",
   Wire: "W",
   Bus: "BUS",
   CurrentTransformer: "CT",
+  VoltageTransformer: "VT",
+  DualWindingVT: "DVT",
   PowerLine: "PL",
   Relay: "RLY",
   CTTB: "CTTB",
   FTBlock: "FT",
   IsoBlock: "ISO",
+  ShuntCapacitor: "CAP",
+  ShuntReactor: "RCT",
+  SurgeArrester: "SA",
+  SeriesCapacitor: "SC",
+  SeriesReactor: "SR",
+  NeutralGroundingResistor: "NGR",
+  SVC: "SVC",
+  LineTrap: "LT",
+};
+
+// Full display names for each device type (used in selection panels, reports)
+const TYPE_LABELS = {
+  VoltageSource: "SOURCE",
+  CircuitBreaker: "BREAKER",
+  Disconnect: "DISCONNECT",
+  PowerTransformer: "TRANSFORMER",
+  CurrentTransformer: "CT",
   VoltageTransformer: "VT",
-  DualWindingVT: "DVT",
+  DualWindingVT: "VT (DUAL)",
+  Bus: "BUS",
+  PowerLine: "LINE",
+  Load: "LOAD",
+  Relay: "RELAY",
+  CTTB: "CTTB",
+  FTBlock: "FT BLOCK",
+  IsoBlock: "ISO BLOCK",
+  ShuntCapacitor: "SHUNT CAP",
+  ShuntReactor: "SHUNT RCT",
+  SurgeArrester: "SURGE ARR",
+  SeriesCapacitor: "SERIES CAP",
+  SeriesReactor: "SERIES RCT",
+  NeutralGroundingResistor: "NGR",
+  SVC: "SVC",
+  LineTrap: "LINE TRAP",
 };
 
 /**
