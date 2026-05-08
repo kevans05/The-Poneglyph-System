@@ -5,6 +5,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import excel_report as _xrep
 import power_meters as _pmm
 import site_db as _sdb
 from phasors.devices.factory import DeviceFactory
@@ -756,6 +757,29 @@ class SCADAServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     return
                 return _json_response(self, report)
+
+            if self.path.startswith("/api/tests/") and self.path.endswith("/report.xlsx"):
+                if not _require_site(self):
+                    return
+                test_id = self.path.split("/")[3]
+                xlsx = _xrep.build_load_test_report(_active_site, test_id)
+                if xlsx is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                self.send_header(
+                    "Content-Disposition",
+                    f'attachment; filename="load_test_{test_id}.xlsx"',
+                )
+                self.send_header("Content-Length", str(len(xlsx)))
+                self.end_headers()
+                self.wfile.write(xlsx)
+                return
 
             if self.path.startswith("/api/tests/") and not any(
                 self.path.startswith(p)

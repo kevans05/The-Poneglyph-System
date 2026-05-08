@@ -473,7 +473,7 @@ def get_test_report_data(db_path: str, test_id: str) -> dict | None:
             "SELECT * FROM test_drawings WHERE test_id = ? ORDER BY rowid", (test_id,)
         ).fetchall()
         sessions  = c.execute(
-            "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC", (test_id,)
+            "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC, rowid ASC", (test_id,)
         ).fetchall()
 
         all_meas = c.execute("""

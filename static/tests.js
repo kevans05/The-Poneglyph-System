@@ -269,6 +269,11 @@ function _testsRenderDetail(testId) {
                        font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer; letter-spacing:1px;">
                 ⎙ PRINT REPORT
             </button>
+            <button onclick="window.location='/api/tests/${testId}/report.xlsx'"
+                style="background:#001a0d; border:1px solid #3a7; color:#3a7;
+                       font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer; letter-spacing:1px;">
+                ↓ DOWNLOAD EXCEL
+            </button>
             <button onclick="if(confirm('Delete this test and all its drawings?')) deleteTest('${testId}').then(() => _testsRenderList())"
                 style="background:#1a0000; border:1px solid #600; color:#a00;
                        font-family:inherit; font-size:10px; padding:6px 12px; cursor:pointer;">
