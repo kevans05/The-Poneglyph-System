@@ -121,6 +121,8 @@ _MIGRATIONS = [
     ("site_info",  "gps_lon",     "REAL"),
     ("sessions",   "technician",  "TEXT    DEFAULT ''"),
     ("sessions",   "test_id",     "TEXT"),
+    ("tests",      "vref_label",     "TEXT    DEFAULT ''"),
+    ("tests",      "vref_magnitude", "REAL"),
 ]
 
 
@@ -359,6 +361,14 @@ def update_test_status(db_path: str, test_id: str, status: str):
     with _conn(db_path) as c:
         c.execute("UPDATE tests SET status = ? WHERE id = ?", (status, test_id))
 
+def set_test_vref(db_path: str, test_id: str, label: str, magnitude: float | None):
+    """Store the system reference VT for a test. Angle is always 0 by definition."""
+    with _conn(db_path) as c:
+        c.execute(
+            "UPDATE tests SET vref_label = ?, vref_magnitude = ? WHERE id = ?",
+            (label or "", magnitude, test_id),
+        )
+
 def delete_test(db_path: str, test_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM tests WHERE id = ?", (test_id,))
@@ -473,7 +483,7 @@ def get_test_report_data(db_path: str, test_id: str) -> dict | None:
             "SELECT * FROM test_drawings WHERE test_id = ? ORDER BY rowid", (test_id,)
         ).fetchall()
         sessions  = c.execute(
-            "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC", (test_id,)
+            "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC, rowid ASC", (test_id,)
         ).fetchall()
 
         all_meas = c.execute("""
