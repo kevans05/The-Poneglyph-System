@@ -190,13 +190,36 @@ def _devices_for_test(data: dict, topo_devices: dict) -> list[dict]:
     devs: list[dict] = []
     for did in ordered:
         topo = topo_devices.get(did, {}) or {}
-        ratio_text = (topo.get("ratio") or "").strip()
+        dtype = topo.get("type") or _infer_type_from_measurements(data, did)
+
+        if dtype == "Relay":
+            inputs = _relay_inputs(did, topo_devices)
+            if inputs:
+                for inp_id in inputs:
+                    inp_topo = topo_devices.get(inp_id, {}) or {}
+                    inp_type = inp_topo.get("type", "")
+                    inp_ratio_text = (inp_topo.get("ratio") or inp_topo.get("selected_tap") or "").strip()
+                    inp_ratio_factor = _ratio_to_factor(inp_ratio_text) if inp_ratio_text else None
+                    inp_bushing = (inp_topo.get("bushing") or "").strip()
+                    inp_parent = _root_device_for(inp_id, inp_topo, topo_devices)
+                    inp_root = f"{inp_parent} {inp_bushing}".strip() if inp_parent or inp_bushing else ""
+                    devs.append({
+                        "id": did,
+                        "type": inp_type,
+                        "name": f"{inp_id} → {did}",
+                        "location": (inp_topo.get("location") or "").strip(),
+                        "ratio": inp_ratio_text,
+                        "ratio_factor": inp_ratio_factor,
+                        "root_device": inp_root,
+                        "kind": _kind_for_type(inp_type),
+                    })
+                continue
+
+        ratio_text = (topo.get("ratio") or topo.get("selected_tap") or "").strip()
         ratio_factor = _ratio_to_factor(ratio_text) if ratio_text else None
         bushing = (topo.get("bushing") or "").strip()
         parent = _root_device_for(did, topo, topo_devices)
         root_device = f"{parent} {bushing}".strip() if parent or bushing else ""
-
-        dtype = topo.get("type") or _infer_type_from_measurements(data, did)
         devs.append({
             "id": did,
             "type": dtype,
@@ -208,6 +231,14 @@ def _devices_for_test(data: dict, topo_devices: dict) -> list[dict]:
             "kind": _kind_for_type(dtype),
         })
     return devs
+
+
+def _relay_inputs(relay_id: str, topo_devices: dict) -> list[str]:
+    """Devices whose secondary_connections include this relay (they feed into it)."""
+    return [
+        did for did, topo in topo_devices.items()
+        if relay_id in (topo.get("secondary_connections") or [])
+    ]
 
 
 def _ratio_to_factor(ratio_text: str) -> float | None:
@@ -250,7 +281,7 @@ def _infer_type_from_measurements(data: dict, did: str) -> str:
 def _kind_for_type(dtype: str) -> str:
     """'current' if the device produces current measurements, 'voltage' if voltage."""
     t = (dtype or "").lower()
-    if "voltagetransformer" in t or "vt" == t or "dualwindingvt" in t:
+    if "voltagetransformer" in t or "vt" == t or "dualwindingvt" in t or "ftblock" in t or "isoblock" in t:
         return "voltage"
     return "current"
 
@@ -292,6 +323,8 @@ def _short_type(dtype: str) -> str:
     if "voltagetransformer" in t or "dualwindingvt" in t: return "VT"
     if "relay" in t: return "RLY"
     if "cttb" in t: return "CTTB"
+    if "ftblock" in t: return "FT"
+    if "isoblock" in t: return "ISO"
     return dtype or ""
 
 
