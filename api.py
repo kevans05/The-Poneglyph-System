@@ -480,6 +480,26 @@ class SCADAServer(BaseHTTPRequestHandler):
                 )
                 return _json_response(self, {"ok": True})
 
+            if self.path == "/api/tests/vref":
+                if not _require_site(self):
+                    return
+                test_id = (req.get("test_id") or "").strip()
+                if not test_id:
+                    return _json_response(self, {"error": "missing test_id"}, 400)
+                mag_raw = req.get("magnitude")
+                magnitude = None
+                if mag_raw not in (None, ""):
+                    try:
+                        magnitude = float(mag_raw)
+                    except (TypeError, ValueError):
+                        return _json_response(self, {"error": "magnitude must be numeric"}, 400)
+                _sdb.set_test_vref(
+                    _active_site, test_id,
+                    (req.get("label") or "").strip(),
+                    magnitude,
+                )
+                return _json_response(self, {"ok": True})
+
             if self.path == "/api/tests/drawings/add":
                 if not _require_site(self):
                     return

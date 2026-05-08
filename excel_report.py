@@ -126,6 +126,13 @@ def _fill_header(ws, data: dict) -> None:
     # J5 stays blank per the field map.
     ws["AM5"] = test.get("created_by", "")
 
+    # System Reference VT (label / magnitude / angle). Angle is 0 by definition --
+    # all other angles in the report are measured relative to this phasor.
+    ws["J17"]  = test.get("vref_label") or ""
+    vref_mag = test.get("vref_magnitude")
+    ws["AL17"] = vref_mag if vref_mag is not None else ""
+    ws["AU17"] = 0 if vref_mag is not None else ""
+
 
 def _fill_equipment_block(ws, data: dict) -> None:
     """Populate the multi-line A8 region with equipment list, drawings, and notes."""

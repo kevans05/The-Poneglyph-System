@@ -2380,23 +2380,137 @@ function _bpRenderChannelConfigOverlay(measType, onDone) {
   footer.append("div").style("flex", 1);
   footer.append("button")
     .attr("class", "wiz-save")
-    .text("BEGIN MEASUREMENT →")
+    .text(isVolt ? "CAPTURE REFERENCE →" : "BEGIN MEASUREMENT →")
     .on("click", () => {
       if (isVolt) { _bpVoltChan1 = c1Val; _bpVoltChan2 = c2Val; }
       else { _bpCurrChan1 = c1Val; _bpCurrChan2 = c2Val; }
       _bpChan1 = c1Val;
       _bpChan2 = c2Val;
-      if (
+      const isMeter = (
         (_bpInstrumentType === "pmm1" || _bpInstrumentType === "pmm2" || _bpInstrumentType === "sim") &&
         _pmmConnected
-      ) {
+      );
+      if (isMeter) {
         fetch("/api/pmm/configure", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chan1: c1Val, chan2: c2Val }),
         }).catch(() => {});
       }
-      onDone();
+      if (isVolt && _activeTestId) {
+        _bpCaptureVRef(c1Val, _bpRefVTId, isMeter, onDone);
+      } else {
+        onDone();
+      }
+    });
+}
+
+// Capture the system reference VT magnitude after the voltage channel has been
+// configured. Meter / sim sessions read chan1 from /api/pmm/query; manual
+// sessions prompt the user. Result is POSTed to /api/tests/vref.
+function _bpCaptureVRef(chan1Val, refVTId, isMeter, onDone) {
+  d3.select("#brain-point-module").style("width", "750px").style("height", "auto");
+  const body = d3.select("#brain-point-body").html("");
+  const footer = d3.select("#brain-point-footer").html("");
+
+  body
+    .style("background", "#111")
+    .style("color", "#eee")
+    .style("height", "auto")
+    .style("padding", "20px");
+
+  body.append("div")
+    .text("SYSTEM REFERENCE VT — MAGNITUDE CAPTURE")
+    .style("font-size", "11px")
+    .style("color", "#66f")
+    .style("letter-spacing", "1px")
+    .style("margin-bottom", "20px")
+    .style("border-bottom", "1px solid #1a1a1a")
+    .style("padding-bottom", "10px");
+
+  const chanLabel = (PMM_SOURCES[chan1Val] && PMM_SOURCES[chan1Val].l) || String(chan1Val);
+  const label = (refVTId ? refVTId + " " : "") + chanLabel;
+
+  body.append("div")
+    .text("Reference label that will be stored on this test:")
+    .style("font-size", "10px").style("color", "#888").style("margin-bottom", "4px");
+  body.append("div")
+    .text(label)
+    .style("font-size", "13px").style("color", "#fff")
+    .style("background", "#1a1a1a").style("padding", "6px 10px")
+    .style("margin-bottom", "16px").style("border", "1px solid #2a2a2a");
+
+  body.append("label").text("MAGNITUDE (V) — angle = 0 by definition")
+    .style("font-size", "10px").style("color", "#888")
+    .style("display", "block").style("margin-bottom", "4px");
+  const magInput = body.append("input")
+    .attr("type", "number").attr("step", "0.001")
+    .attr("placeholder", isMeter ? "click READ FROM METER below" : "type the measured magnitude")
+    .style("width", "100%").style("background", "#222").style("color", "#eee")
+    .style("padding", "6px 8px").style("border", "1px solid #333")
+    .style("font-family", "inherit").style("font-size", "12px")
+    .style("box-sizing", "border-box");
+
+  const status = body.append("div")
+    .style("font-size", "10px").style("color", "#888").style("margin-top", "8px").style("min-height", "14px");
+
+  if (isMeter) {
+    body.append("button")
+      .text("READ FROM METER")
+      .style("margin-top", "12px")
+      .style("background", "#001a1a").style("border", "1px solid #0aa").style("color", "#0cc")
+      .style("font-family", "inherit").style("font-size", "10px")
+      .style("padding", "6px 14px").style("cursor", "pointer").style("letter-spacing", "1px")
+      .on("click", function () {
+        status.text("querying meter…").style("color", "#888");
+        fetch("/api/pmm/query")
+          .then(r => r.json())
+          .then(res => {
+            if (res && res.ok && typeof res.chan1 === "number") {
+              magInput.property("value", res.chan1.toFixed(4));
+              status.text("captured chan1 = " + res.chan1.toFixed(4) + " V").style("color", "#0a0");
+            } else {
+              status.text("meter read failed: " + (res && res.error || "no chan1")).style("color", "#f44");
+            }
+          })
+          .catch(e => status.text("meter read error: " + e).style("color", "#f44"));
+      });
+  } else {
+    magInput.node().focus();
+  }
+
+  footer.append("button")
+    .text("← BACK")
+    .style("background", "#0a0a0a").style("border", "1px solid #333").style("color", "#666")
+    .style("font-family", "inherit").style("font-size", "10px")
+    .style("padding", "6px 12px").style("cursor", "pointer")
+    .on("click", () => _bpRenderChannelConfigOverlay("voltage", onDone));
+  footer.append("div").style("flex", 1);
+  footer.append("button")
+    .attr("class", "wiz-save")
+    .text("SAVE & BEGIN MEASUREMENT →")
+    .on("click", () => {
+      const raw = magInput.property("value");
+      const mag = raw === "" ? null : parseFloat(raw);
+      if (raw !== "" && (Number.isNaN(mag) || mag < 0)) {
+        status.text("magnitude must be a non-negative number").style("color", "#f44");
+        return;
+      }
+      fetch("/api/tests/vref", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          test_id: _activeTestId,
+          label: label,
+          magnitude: mag,
+        }),
+      })
+        .then(r => r.json())
+        .then(res => {
+          if (res && res.ok) onDone();
+          else status.text("save failed: " + (res && res.error || "unknown")).style("color", "#f44");
+        })
+        .catch(e => status.text("save error: " + e).style("color", "#f44"));
     });
 }
 
