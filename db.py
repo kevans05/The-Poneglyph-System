@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     station    TEXT    DEFAULT '',
     device     TEXT    DEFAULT '',
     instrument TEXT    DEFAULT 'manual',  -- 'manual' | 'pmm1' | 'pmm2'
-    snapshot_id INTEGER REFERENCES snapshots(id)
+    snapshot_id INTEGER REFERENCES snapshots(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sess_epoch ON sessions(epoch DESC);
 
@@ -105,6 +105,7 @@ def get_snapshot_topology(snapshot_id: int) -> dict | None:
 
 def delete_snapshot(snapshot_id: int):
     with _conn() as c:
+        c.execute("DELETE FROM sessions WHERE snapshot_id = ?", (snapshot_id,))
         c.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
 
 

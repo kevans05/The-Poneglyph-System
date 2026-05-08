@@ -83,8 +83,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     device      TEXT    DEFAULT '',
     instrument  TEXT    DEFAULT 'manual',
     technician  TEXT    DEFAULT '',
-    test_id     TEXT    REFERENCES tests(id),
-    snapshot_id TEXT    REFERENCES snapshots(id)
+    test_id     TEXT    REFERENCES tests(id) ON DELETE CASCADE,
+    snapshot_id TEXT    REFERENCES snapshots(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sess_epoch ON sessions(epoch DESC);
 
@@ -323,6 +323,7 @@ def get_latest_topology(db_path: str) -> dict | None:
 
 def delete_snapshot(db_path: str, snapshot_id: str):
     with _conn(db_path) as c:
+        c.execute("DELETE FROM sessions WHERE snapshot_id = ?", (snapshot_id,))
         c.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
 
 
@@ -371,6 +372,7 @@ def set_test_vref(db_path: str, test_id: str, label: str, magnitude: float | Non
 
 def delete_test(db_path: str, test_id: str):
     with _conn(db_path) as c:
+        c.execute("DELETE FROM sessions WHERE test_id = ?", (test_id,))
         c.execute("DELETE FROM tests WHERE id = ?", (test_id,))
 
 
