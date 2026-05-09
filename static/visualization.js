@@ -278,8 +278,13 @@ function render3LD(data) {
     // Draw symbols...
     if (d.type === "CurrentTransformer") {
       // 3-Phase Circular CT with winding loop and polarity
-      [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
-        const c = ["#f00", "#ff0", "#00f"][i];
+      const sw = d.params.secondary_wiring || "Y";
+      const phases = (sw === "A") ? [0] : (sw === "B") ? [1] : (sw === "C") ? [2] : (sw === "N") ? [3] : [0, 1, 2];
+      
+      phases.forEach(idx => {
+        const off = (idx === 3) ? PHASE_GAP * 2 : [-PHASE_GAP, 0, PHASE_GAP][idx];
+        const c = (idx === 3) ? "#666" : ["#f00", "#ff0", "#00f"][idx];
+        
         // The CT Circle on the line
         el.append("circle").attr("cx", 0).attr("cy", off).attr("r", 8).attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.5);
         // The winding loop (secondary)

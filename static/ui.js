@@ -1015,12 +1015,19 @@ function showConfigModal(id) {
         key: "secondary_wiring",
         type: "select",
         options: [
-          { value: "Y", label: "Y — Wye" },
+          { value: "Y", label: "Y — Wye (Standard)" },
           { value: "DAB", label: "Δ — Delta (DAB)" },
           { value: "DAC", label: "Δ — Delta (DAC)" },
           { value: "RESIDUAL", label: "3I₀ — Residual" },
+          { value: "A", label: "Phase A Only" },
+          { value: "B", label: "Phase B Only" },
+          { value: "C", label: "Phase C Only" },
+          { value: "N", label: "Neutral / Ground" },
         ],
       },
+      { label: "Phase A Ratio Override", key: "ratio_a" },
+      { label: "Phase B Ratio Override", key: "ratio_b" },
+      { label: "Phase C Ratio Override", key: "ratio_c" },
     ],
     VoltageTransformer: [
       { label: "Bushing", key: "bushing", type: "text" },
@@ -1097,7 +1104,12 @@ function showConfigModal(id) {
     ],
   };
   const fields = fieldDefs[node.type] || [],
-    params = node.params || {};
+    params = {...(node.params || {})};
+  if (node.type === "CurrentTransformer" && params.phase_ratios) {
+    params.ratio_a = params.phase_ratios.a;
+    params.ratio_b = params.phase_ratios.b;
+    params.ratio_c = params.phase_ratios.c;
+  }
   _resetConfigModalPos();
   d3.select("#config-modal").style("display", "flex");
   d3.select("#modal-title").text("CONFIGURE [" + id + "]");
@@ -1177,6 +1189,13 @@ function showConfigModal(id) {
         });
         if (Object.keys(tapRatios).length > 0) props.tap_ratios = tapRatios;
       }
+    }
+    if (node.type === "CurrentTransformer") {
+      const pr = {};
+      if (props.ratio_a) pr.a = props.ratio_a;
+      if (props.ratio_b) pr.b = props.ratio_b;
+      if (props.ratio_c) pr.c = props.ratio_c;
+      if (Object.keys(pr).length > 0) props.phase_ratios = pr;
     }
     if (node.type === "PowerTransformer") {
       props.h_winding = document.getElementById("conf-h_winding").value;

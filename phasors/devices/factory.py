@@ -86,6 +86,7 @@ class DeviceFactory:
                 polarity_normal=data.get("polarity_normal", True),
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
                 secondary_wiring=data.get("secondary_wiring", "Y"),
+                phase_ratios=data.get("phase_ratios"),
             )
 
         elif dtype == "VoltageTransformer":
@@ -107,6 +108,7 @@ class DeviceFactory:
                 polarity_normal=data.get("polarity_normal", True),
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
                 secondary_wiring=data.get("secondary_wiring", "Y"),
+                phase_ratios=data.get("phase_ratios"),
             )
 
         elif dtype == "DualWindingVT":
@@ -132,6 +134,7 @@ class DeviceFactory:
                 polarity_normal=data.get("polarity_normal", True),
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
                 secondary_wiring=data.get("secondary_wiring", "Y"),
+                phase_ratios=data.get("phase_ratios"),
                 secondary2_wiring=data.get("secondary2_wiring", "Y"),
             )
 

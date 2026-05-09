@@ -155,6 +155,10 @@ SECONDARY_WIRINGS = {
     "DAB": "Δ — Delta (DAB)",
     "DAC": "Δ — Delta (DAC)",
     "RESIDUAL": "3I₀ — Residual",
+    "A": "Phase A Only",
+    "B": "Phase B Only",
+    "C": "Phase C Only",
+    "N": "Neutral / Ground",
 }
 
 VT_SECONDARY_WIRINGS = {
@@ -180,6 +184,7 @@ class CurrentTransformer(InstrumentTransformer):
         polarity_normal: bool = True,
         phase_shift_deg: float = 0.0,
         secondary_wiring: str = "Y",
+        phase_ratios: dict = None, # {"a": 400, "b": 400, "c": 400, "n": 400}
     ):
         super().__init__(
             name,
@@ -198,12 +203,13 @@ class CurrentTransformer(InstrumentTransformer):
         )
         sw = secondary_wiring.upper().strip()
         self.secondary_wiring = sw if sw in SECONDARY_WIRINGS else "Y"
+        self.phase_ratios = phase_ratios or {}
 
     @property
     def is_reversed(self):
         if self.bushing == "X":
             return self.polarity_facing == "TOWARDS"
-        elif self.bushing == "Y":
+        elif self.bushing == "Y" or self.bushing == "H":
             return self.polarity_facing == "AWAY"
         return False
 
@@ -230,8 +236,36 @@ class CurrentTransformer(InstrumentTransformer):
             mag, ang_rad = cmath.polar(c_sum)
             i_res = CurrentPhasor(mag, math.degrees(ang_rad))
             return wye_currents(i_res, i_res, i_res)
+        elif self.secondary_wiring == "A":
+            return wye_currents(i_sys.a, CurrentPhasor(0,0), CurrentPhasor(0,0))
+        elif self.secondary_wiring == "B":
+            return wye_currents(CurrentPhasor(0,0), i_sys.b, CurrentPhasor(0,0))
+        elif self.secondary_wiring == "C":
+            return wye_currents(CurrentPhasor(0,0), CurrentPhasor(0,0), i_sys.c)
+        elif self.secondary_wiring == "N":
+            # Assume neutral current is vector sum of primary currents (if no dedicated neutral CT is modeled)
+            c_sum = i_sys.a.to_complex() + i_sys.b.to_complex() + i_sys.c.to_complex()
+            mag, ang_rad = cmath.polar(c_sum)
+            i_n = CurrentPhasor(mag, math.degrees(ang_rad))
+            return wye_currents(CurrentPhasor(0,0), CurrentPhasor(0,0), CurrentPhasor(0,0), i_n=i_n)
         else:
             return i_sys
+
+    def _apply_phase_ratios(self, i_sys):
+        """Apply per-phase ratio overrides if present."""
+        def scale(p, phase):
+            r = self.phase_ratios.get(phase)
+            if r is None: return p
+            # i_sec = i_pri / r
+            # logic already applied 1/self.ratio. We need to swap self.ratio for r.
+            # So multiply by self.ratio and divide by r.
+            return CurrentPhasor(p.magnitude * self.ratio / r, p.angle_degrees)
+        
+        return wye_currents(
+            scale(i_sys.a, "a"),
+            scale(i_sys.b, "b"),
+            scale(i_sys.c, "c")
+        )
 
     @property
     def secondary_current(self):
@@ -239,11 +273,12 @@ class CurrentTransformer(InstrumentTransformer):
         if source_i:
             self.polarity_normal = not self.is_reversed
             base = self._apply_logic(source_i, to_secondary=True)
+            base = self._apply_phase_ratios(base)
             return self._apply_secondary_wiring(base)
         return None
 
     def get_summary_dict(self):
-        is_delta = self.connection_type == "delta"
+        is_delta = self.secondary_wiring in ("D", "DAB", "DAC")
         stats = {
             "Location": self.location,
             "Winding Side": self.winding_side,
@@ -264,13 +299,17 @@ class CurrentTransformer(InstrumentTransformer):
         if sec_i:
             if self.secondary_wiring == "D":
                 labels = [("A-B", "a"), ("B-C", "b"), ("C-A", "c")]
+            elif self.secondary_wiring == "N":
+                labels = [("N", "i_n")]
             else:
                 labels = [("A", "a"), ("B", "b"), ("C", "c")]
+                
             for label, attr in labels:
-                stats[f"--- PHASE {label} ---"] = "HEADER"
                 p_phasor = getattr(sec_i, attr)
-                stats[f"Sec Current Phase {label[0]}"] = p_phasor.magnitude
-                stats[f"Phase {label[0]} I-Angle"] = p_phasor.angle_degrees
+                if p_phasor:
+                    stats[f"--- PHASE {label} ---"] = "HEADER"
+                    stats[f"Sec Current Phase {label[0]}"] = p_phasor.magnitude
+                    stats[f"Phase {label[0]} I-Angle"] = p_phasor.angle_degrees
         else:
             stats["Status"] = "DEAD (No Current)"
         return stats
