@@ -247,7 +247,7 @@ class CurrentTransformer(InstrumentTransformer):
             c_sum = i_sys.a.to_complex() + i_sys.b.to_complex() + i_sys.c.to_complex()
             mag, ang_rad = cmath.polar(c_sum)
             i_n = CurrentPhasor(mag, math.degrees(ang_rad))
-            return wye_currents(CurrentPhasor(0,0), CurrentPhasor(0,0), CurrentPhasor(0,0), i_n=i_n)
+            return wye_currents(CurrentPhasor(0,0), CurrentPhasor(0,0), CurrentPhasor(0,0), neutral=i_n)
         else:
             return i_sys
 
@@ -300,7 +300,7 @@ class CurrentTransformer(InstrumentTransformer):
             if self.secondary_wiring == "D":
                 labels = [("A-B", "a"), ("B-C", "b"), ("C-A", "c")]
             elif self.secondary_wiring == "N":
-                labels = [("N", "i_n")]
+                labels = [("N", "neutral_current")]
             else:
                 labels = [("A", "a"), ("B", "b"), ("C", "c")]
                 

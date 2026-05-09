@@ -447,7 +447,7 @@ function updateWindow(id, node) {
 
     if (inputNodes.length > 0) {
       html += '<div class="section-title">INPUT SOURCES</div>';
-      const isRelay = node.type === "Relay";
+      const isRelay = ["Relay", "CTTB"].includes(node.type);
       const polarities = (isRelay && node.params?.input_polarities) ? node.params.input_polarities : {};
       inputNodes.forEach((inp) => {
         const s = inp.summary || {};
@@ -460,7 +460,7 @@ function updateWindow(id, node) {
         html += `<span style="color:#aaa;">${inp.id}</span>`;
         html += `<span style="color:#555;">[${inp.type}]</span>`;
         if (isRelay) {
-          html += `<button onclick="toggleRelayInputPolarity('${node.id}', '${inp.id}', ${pol})" style="margin-left:8px; background:#111; border:1px solid ${polColor}; color:${polColor}; font-size:11px; font-weight:bold; width:22px; height:18px; cursor:pointer; line-height:1;">${polLabel}</button>`;
+          html += `<button onclick="toggleInputPolarity('${node.id}', '${inp.id}', ${pol})" style="margin-left:8px; background:#111; border:1px solid ${polColor}; color:${polColor}; font-size:11px; font-weight:bold; width:22px; height:18px; cursor:pointer; line-height:1;">${polLabel}</button>`;
         }
         html += `</div>`;
         ["A", "B", "C"].forEach((p) => {
@@ -4554,13 +4554,12 @@ function clearFindResults() {
 
 // ── Relay input polarity toggle ────────────────────────────────────────────
 
-function toggleRelayInputPolarity(relayId, inputId, currentPol) {
-  const relay = currentData?.nodes.find((n) => n.id === relayId);
-  if (!relay) return;
-  const polarities = Object.assign({}, relay.params?.input_polarities || {});
+function toggleInputPolarity(deviceId, inputId, currentPol) {
+  const dev = currentData?.nodes.find((n) => n.id === deviceId);
+  if (!dev) return;
+  const polarities = Object.assign({}, dev.params?.input_polarities || {});
   polarities[inputId] = currentPol === 1 ? -1 : 1;
-  reconfigureAPI(relayId, "update_device", { properties: { input_polarities: polarities } })
-    .then(() => refreshData());
+  reconfigureAPI(deviceId, "update_device", { properties: { input_polarities: polarities } }).then(() => refreshData());
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────

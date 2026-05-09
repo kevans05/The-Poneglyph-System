@@ -95,9 +95,10 @@ class ProtectionDevice:
         return append_3phase_details(stats, self.voltage, self.current)
 
 class CTTB(ProtectionDevice):
-    def __init__(self, name: str, mode: str = "SUM"):
+    def __init__(self, name: str, mode: str = "SUM", input_polarities: dict = None):
         super().__init__(name)
         self.mode = mode.upper().strip()
+        self.input_polarities = input_polarities or {}
 
     @property
     def current(self):
@@ -112,19 +113,16 @@ class CTTB(ProtectionDevice):
             for i, src in enumerate(self.inputs):
                 i_sys = getattr(src, 'secondary_current', None)
                 if i_sys:
-                    # In differential protection, we usually sum all currents
-                    # entering the zone. If CTs are all facing 'AWAY' from the bus,
-                    # then Sum(I) = I_differential.
-                    # If the user specifically selected 'DIFFERENTIAL' mode,
-                    # we perform I1 - I2 - I3... as requested.
-                    if self.mode == "DIFFERENTIAL" and i > 0:
-                        total_a -= i_sys.a.to_complex()
-                        total_b -= i_sys.b.to_complex()
-                        total_c -= i_sys.c.to_complex()
-                    else:
-                        total_a += i_sys.a.to_complex()
-                        total_b += i_sys.b.to_complex()
-                        total_c += i_sys.c.to_complex()
+                    # Apply polarity override if present
+                    sign = self.input_polarities.get(src.name, 1)
+                    
+                    # Also keep the mode logic for legacy behavior
+                    if self.mode == "DIFFERENTIAL" and i > 0 and src.name not in self.input_polarities:
+                        sign = -1
+                        
+                    total_a += sign * i_sys.a.to_complex()
+                    total_b += sign * i_sys.b.to_complex()
+                    total_c += sign * i_sys.c.to_complex()
                     found = True
 
             if not found: return None
@@ -140,6 +138,10 @@ class CTTB(ProtectionDevice):
     def get_summary_dict(self):
         stats = super().get_summary_dict()
         stats["Mode"] = self.mode
+        if self.input_polarities:
+            for src in self.inputs:
+                pol = self.input_polarities.get(src.name, 1)
+                stats[f"  {src.name} polarity"] = "+" if pol == 1 else "−"
 
         # Add differential specific metrics if in that mode
         if self.mode == "DIFFERENTIAL":

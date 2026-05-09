@@ -230,8 +230,8 @@ function autoLayoutSelected() {
     const totalH = (ids.length - 1) * ROW_GAP;
     ids.forEach((id, ri) => {
       newPos[id] = {
-        gx: Math.round(cx - totalW / 2 + di * COL_GAP),
-        gy: Math.round(cy - totalH / 2 + ri * ROW_GAP),
+        gx: snapToGrid(Math.round(cx - totalW / 2 + di * COL_GAP)),
+        gy: snapToGrid(Math.round(cy - totalH / 2 + ri * ROW_GAP)),
       };
     });
   });

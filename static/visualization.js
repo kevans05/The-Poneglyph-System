@@ -35,11 +35,20 @@ function getAnchorPoint(x, y, angle, bushing, offset, radialOffset = 55) {
 
 function getPathData(x1, y1, x2, y2, offset, frac = 0.5) {
   const dx = x2 - x1, dy = y2 - y1;
+  
+  // To keep 3-phase lines neat and parallel, we stagger the elbow midpoint
+  // based on the phase offset. This prevents bunching at the vertical/horizontal
+  // transitions without over-stretching or crossing lines.
+  const stagger = (offset / 16) * 0.04;
+  const f = Math.max(0.1, Math.min(0.9, frac + stagger));
+
   if (Math.abs(dx) >= Math.abs(dy)) {
-    const midX = x1 + dx * frac + offset;
+    // Horizontal-ish (H-V-H path)
+    const midX = x1 + dx * f;
     return `M ${x1},${y1} L ${midX},${y1} L ${midX},${y2} L ${x2},${y2}`;
   } else {
-    const midY = y1 + dy * frac + offset;
+    // Vertical-ish (V-H-V path)
+    const midY = y1 + dy * f;
     return `M ${x1},${y1} L ${x1},${midY} L ${x2},${midY} L ${x2},${y2}`;
   }
 }

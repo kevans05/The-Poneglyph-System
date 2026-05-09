@@ -26,6 +26,11 @@ class wye_currents:
             return self._neutral
         return self.a + self.b + self.c
 
+    @property
+    def i_n(self):
+        """Alias for neutral_current"""
+        return self.neutral_current
+
     @neutral_current.setter
     def neutral_current(self, value):
         """Set a specific neutral current value"""
