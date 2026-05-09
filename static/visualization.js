@@ -354,36 +354,46 @@ function render3LD(data) {
         .style("font-family", "Arial")
         .text(d.summary.Function || "87");
     } else if (d.type === "PowerTransformer") {
-      // Overlapping Coils with Winding Symbols (Y / Delta)
-      const drawCoil = (cx, cy, color, type) => {
+      // High-Fidelity Scalloped Winding Representation
+      const drawWinding = (cx, cy, color, type, isHighSide) => {
         const g = el.append("g").attr("transform", `translate(${cx}, ${cy})`);
-        g.append("circle").attr("r", 22).attr("fill", "#050505").attr("stroke", color).attr("stroke-width", 2.5);
         
-        // Render winding type inside coil
+        // Vertical Scalloped Coil (3 full turns)
+        const coilPath = "M 0 -24 Q 15 -18 0 -12 Q 15 -6 0 0 Q 15 6 0 12 Q 15 18 0 24";
+        g.append("path")
+          .attr("d", coilPath)
+          .attr("fill", "none")
+          .attr("stroke", color)
+          .attr("stroke-width", 3)
+          .attr("stroke-linecap", "round");
+          
+        // Winding Configuration Symbol
+        const symX = isHighSide ? -22 : 22;
+        const symG = g.append("g").attr("transform", `translate(${symX}, 0)`);
+        
         if (type === "D") {
-            // Delta Triangle
-            g.append("path").attr("d", "M 0 -8 L 8 6 L -8 6 Z").attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
+            symG.append("path").attr("d", "M 0 -7 L 7 5 L -7 5 Z").attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
         } else {
-            // Wye Y symbol
-            g.append("path").attr("d", "M 0 0 L 0 -9 M 0 0 L 7 5 M 0 0 L -7 5").attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
-            
-            // Ground symbol for YG/ZG
+            symG.append("path").attr("d", "M 0 0 L 0 -8 M 0 0 L 6 4 M 0 0 L -6 4").attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
             if (type === "YG" || type === "ZG") {
-                const gr = g.append("g").attr("transform", "translate(0, 22)");
-                gr.append("line").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 8).attr("stroke", color).attr("stroke-width", 1.5);
-                gr.append("line").attr("x1", -8).attr("y1", 8).attr("x2", 8).attr("y2", 8).attr("stroke", color).attr("stroke-width", 1.5);
-                gr.append("line").attr("x1", -5).attr("y1", 11).attr("x2", 5).attr("y2", 11).attr("stroke", color).attr("stroke-width", 1.2);
-                gr.append("line").attr("x1", -2).attr("y1", 14).attr("x2", 2).attr("y2", 14).attr("stroke", color).attr("stroke-width", 1);
+                const gr = symG.append("g").attr("transform", "translate(0, 8)");
+                gr.append("line").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 5).attr("stroke", color);
+                gr.append("line").attr("x1", -5).attr("y1", 5).attr("x2", 5).attr("y2", 5).attr("stroke", color);
+                gr.append("line").attr("x1", -3).attr("y1", 7).attr("x2", 3).attr("y2", 7).attr("stroke", color);
             }
         }
       };
-      drawCoil(-18, 0, "#fff", d.params.h_winding || "Y");
-      drawCoil(18, 0, "#fff", d.params.x_winding || "D");
-      // Add bushing indicators
-      el.append("text").attr("x", -38).attr("y", -28).attr("fill", "#aaa").style("font-size", "10px").text("H");
-      el.append("text").attr("x", 28).attr("y", -28).attr("fill", "#aaa").style("font-size", "10px").text("X");
+      
+      drawWinding(-20, 0, "#fff", d.params.h_winding || "Y", true);
+      drawWinding(20, 0, "#fff", d.params.x_winding || "D", false);
+      
+      // Bushing Labels
+      el.append("text").attr("x", -40).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("X");
     } else if (d.type === "VoltageRegulator") {
       el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 28).attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 2);
+      el.append("text").attr("x", -38).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       el.append("polyline").attr("points", "-14,-14 -6,14 6,-14 14,14").attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 2.5);
       // Adjustable arrow
       el.append("line").attr("x1", -20).attr("y1", 20).attr("x2", 20).attr("y2", -20).attr("stroke", "#0f0").attr("stroke-width", 2);
@@ -391,11 +401,15 @@ function render3LD(data) {
     } else if (d.type === "CircuitBreaker") {
       // 3-Phase Breaker representation
       el.append("rect").attr("x", -25).attr("y", -30).attr("width", 50).attr("height", 60).attr("fill", d.status === "CLOSED" ? "#004411" : "#111").attr("stroke", "#00ff44").attr("stroke-width", 2);
+      el.append("text").attr("x", -32).attr("y", -35).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 25).attr("y", -35).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
           el.append("rect").attr("x", -15).attr("y", off-4).attr("width", 30).attr("height", 8).attr("fill", d.status === "CLOSED" ? "#fff" : "#333").attr("stroke", "#00ff44");
       });
     } else if (d.type === "Disconnect") {
       // 3-Phase Disconnect blades
+      el.append("text").attr("x", -28).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 22).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
         el.append("circle").attr("cx", -20).attr("cy", off).attr("r", 2.5).attr("fill", "#fff");
         el.append("circle").attr("cx", 20).attr("cy", off).attr("r", 2.5).attr("fill", "#fff");
@@ -489,16 +503,22 @@ function render3LD(data) {
       el.append("line").attr("x1", -7).attr("y1", 30).attr("x2", 7).attr("y2", 30).attr("stroke", "#666").attr("stroke-width", 1.5);
       el.append("line").attr("x1", -3).attr("y1", 34).attr("x2", 3).attr("y2", 34).attr("stroke", "#666").attr("stroke-width", 1);
     } else if (d.type === "SeriesCapacitor") {
+      el.append("text").attr("x", -60).attr("y", -25).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 52).attr("y", -25).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       el.append("line").attr("x1", -50).attr("y1", 0).attr("x2", -8).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
       el.append("line").attr("x1", 8).attr("y1", 0).attr("x2", 50).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
       el.append("line").attr("x1", -8).attr("y1", -20).attr("x2", -8).attr("y2", 20).attr("stroke", "#4df").attr("stroke-width", 3.5);
       el.append("line").attr("x1", 8).attr("y1", -20).attr("x2", 8).attr("y2", 20).attr("stroke", "#4df").attr("stroke-width", 3.5);
     } else if (d.type === "SeriesReactor") {
+      el.append("text").attr("x", -60).attr("y", -20).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 52).attr("y", -20).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       el.append("line").attr("x1", -50).attr("y1", 0).attr("x2", -20).attr("y2", 0).attr("stroke", "#f90").attr("stroke-width", 2);
       el.append("line").attr("x1", 20).attr("y1", 0).attr("x2", 50).attr("y2", 0).attr("stroke", "#f90").attr("stroke-width", 2);
       // Inductor coils (horizontal)
       el.append("path").attr("d", "M -20 0 Q -15 -10 -10 0 Q -5 -10 0 0 Q 5 -10 10 0 Q 15 -10 20 0").attr("fill", "none").attr("stroke", "#f90").attr("stroke-width", 2);
     } else if (d.type === "LineTrap") {
+      el.append("text").attr("x", -60).attr("y", -20).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
+      el.append("text").attr("x", 52).attr("y", -20).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       el.append("line").attr("x1", -50).attr("y1", 0).attr("x2", -25).attr("y2", 0).attr("stroke", "#8f8").attr("stroke-width", 2);
       el.append("line").attr("x1", 25).attr("y1", 0).attr("x2", 50).attr("y2", 0).attr("stroke", "#8f8").attr("stroke-width", 2);
       el.append("ellipse").attr("cx", 0).attr("cy", 0).attr("rx", 25).attr("ry", 15).attr("fill", "#050").attr("fill-opacity", 0.4).attr("stroke", "#8f8").attr("stroke-width", 2);
@@ -749,26 +769,32 @@ function renderPhasorBox(div, summary, mode) {
           n: "AB",
           vm: "Sec Voltage Phase AB",
           va: "Phase AB V-Angle",
+          im: "Sec Current Phase A",
+          ia: "Phase A I-Angle",
           c: "#f00",
         },
         {
           n: "BC",
           vm: "Sec Voltage Phase BC",
           va: "Phase BC V-Angle",
+          im: "Sec Current Phase B",
+          ia: "Phase B I-Angle",
           c: "#ff0",
         },
         {
           n: "CA",
           vm: "Sec Voltage Phase CA",
           va: "Phase CA V-Angle",
+          im: "Sec Current Phase C",
+          ia: "Phase C I-Angle",
           c: "#00f",
         },
       ];
     } else {
       pMap = [
-        { n: "A", vm: "Sec Voltage Phase A", va: "Phase A V-Angle", c: "#f00" },
-        { n: "B", vm: "Sec Voltage Phase B", va: "Phase B V-Angle", c: "#ff0" },
-        { n: "C", vm: "Sec Voltage Phase C", va: "Phase C V-Angle", c: "#00f" },
+        { n: "A", vm: "Sec Voltage Phase A", va: "Phase A V-Angle", im: "Sec Current Phase A", ia: "Phase A I-Angle", c: "#f00" },
+        { n: "B", vm: "Sec Voltage Phase B", va: "Phase B V-Angle", im: "Sec Current Phase B", ia: "Phase B I-Angle", c: "#ff0" },
+        { n: "C", vm: "Sec Voltage Phase C", va: "Phase C V-Angle", im: "Sec Current Phase C", ia: "Phase C I-Angle", c: "#00f" },
       ];
     }
   } else if (mode === "sec2") {

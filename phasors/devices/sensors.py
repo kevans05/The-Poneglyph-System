@@ -83,13 +83,8 @@ class InstrumentTransformer:
         if host_device.__class__.__name__ == "PowerTransformer":
             if bushing in ("H", "Y", "PRIMARY"):
                 self.winding_side = "Primary (High Side)"
-                self.phase_shift_deg = 0.0
             else:
                 self.winding_side = "Secondary (Low Side)"
-                # Automatically compensate for transformer phase shift
-                # to bring secondary measurement back to primary reference
-                if hasattr(host_device, "phase_shift_deg"):
-                    self.phase_shift_deg = -host_device.phase_shift_deg
         else:
             self.winding_side = "Standard Terminal"
 
@@ -271,7 +266,6 @@ class CurrentTransformer(InstrumentTransformer):
     def secondary_current(self):
         source_i = self.current
         if source_i:
-            self.polarity_normal = not self.is_reversed
             base = self._apply_logic(source_i, to_secondary=True)
             base = self._apply_phase_ratios(base)
             return self._apply_secondary_wiring(base)

@@ -1001,15 +1001,7 @@ function showConfigModal(id) {
     CurrentTransformer: [
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "Position", key: "position", type: "text" },
-      {
-        label: "Polarity",
-        key: "polarity_facing",
-        type: "select",
-        options: [
-          { value: "AWAY", label: "AWAY (Standard)" },
-          { value: "TOWARDS", label: "TOWARDS (Reversed)" },
-        ],
-      },
+      { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
       {
         label: "Secondary Wiring",
         key: "secondary_wiring",
@@ -1031,6 +1023,7 @@ function showConfigModal(id) {
     ],
     VoltageTransformer: [
       { label: "Bushing", key: "bushing", type: "text" },
+      { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
       {
         label: "Secondary Wiring",
         key: "secondary_wiring",
@@ -1045,6 +1038,7 @@ function showConfigModal(id) {
     ],
     DualWindingVT: [
       { label: "Bushing", key: "bushing", type: "text" },
+      { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
       { label: "W2 Ratio (e.g. 2000:1)", key: "sec2_ratio", type: "text" },
       {
         label: "W1 Secondary Wiring",
@@ -1080,6 +1074,7 @@ function showConfigModal(id) {
     SurgeArrester: [
       { label: "Rated kV (MCOV)", key: "kv_rating" },
       { label: "Bushing", key: "bushing", type: "text" },
+      { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
     ],
     SeriesCapacitor: [
       { label: "Rating (MVAr)", key: "mvar_rating" },
@@ -1139,6 +1134,13 @@ function showConfigModal(id) {
           .text(opt.label)
           .property("selected", (params[f.key] ?? "") === opt.value);
       });
+    } else if (f.type === "checkbox") {
+      body
+        .append("input")
+        .attr("id", "conf-" + f.key)
+        .attr("type", "checkbox")
+        .property("checked", params[f.key] !== false); // default to true if undefined
+      body.append("span").text(" (Active)").style("font-size", "9px").style("color", "#555");
     } else {
       body
         .append("input")
@@ -1162,12 +1164,17 @@ function showConfigModal(id) {
   d3.select("#modal-save").on("click", () => {
     const props = {};
     fields.forEach((f) => {
-      const v = d3.select("#conf-" + f.key).property("value");
-      if (v !== "") {
-        if (f.type === "text" || f.type === "select") {
-          props[f.key] = v;
-        } else {
-          props[f.key] = parseFloat(v);
+      const el = d3.select("#conf-" + f.key);
+      if (f.type === "checkbox") {
+        props[f.key] = el.property("checked");
+      } else {
+        const v = el.property("value");
+        if (v !== "") {
+          if (f.type === "text" || f.type === "select") {
+            props[f.key] = v;
+          } else {
+            props[f.key] = parseFloat(v);
+          }
         }
       }
     });
