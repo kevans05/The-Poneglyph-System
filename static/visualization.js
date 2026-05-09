@@ -53,7 +53,7 @@ function getPathData(x1, y1, x2, y2, offset, frac = 0.5) {
   }
 }
 
-function render3LD(data) {
+function render3LD(data) { if (!data || !data.nodes) return;
   zoomGroup.selectAll("*").remove();
 
   zoomGroup
@@ -78,10 +78,10 @@ function render3LD(data) {
           node.type,
         )
       ) {
-        const host = data.nodes.find((n) => n.id === node.summary.Location);
+        const host = data.nodes.find((n) => n.id ===  (node.summary || {}) .Location);
         if (host) {
-          const b = node.summary.Bushing || "X",
-            p = node.summary.Position || "inner",
+          const b =  (node.summary || {}) .Bushing || "X",
+            p =  (node.summary || {}) .Position || "inner",
             r = { inner: 70, middle: 95, outer: 120 }[p] || 70;
           const a = getAnchorPoint(
             host.gx || 0,
@@ -190,7 +190,7 @@ function render3LD(data) {
           srcB === "H" ? src.params.h_winding : src.params.x_winding;
         if (winding && winding.toUpperCase().startsWith("D")) isDelta = true;
       } else if (src.summary && src.summary.Connection) {
-        if (src.summary.Connection.includes("Delta")) isDelta = true;
+        if (src.summary.Connection && src.summary.Connection.includes("Delta")) isDelta = true;
       }
 
       const offsets = isDelta
@@ -355,7 +355,7 @@ function render3LD(data) {
         .style("font-size", "14px")
         .style("font-weight", "bold")
         .style("font-family", "Arial")
-        .text(d.summary.Function || "87");
+        .text( ( (d.summary || {})  || {}) .Function || "87");
     } else if (d.type === "PowerTransformer") {
       // High-Fidelity Scalloped Winding Representation
       const drawWinding = (cx, cy, color, type, isHighSide) => {
@@ -395,7 +395,7 @@ function render3LD(data) {
       el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("X");
     } else if (d.type === "Indicator") {
       // Indicator Light Symbol
-      const isOn = d.summary["Status"] && d.summary["Status"].includes("ON");
+      const isOn = ( ( (d.summary || {})  || {})  &&  ( (d.summary || {})  || {}) ["Status"]) &&  ( (d.summary || {})  || {}) ["Status"].includes("ON");
       el.append("circle").attr("r", 20).attr("fill", isOn ? "#f44" : "#300").attr("stroke", "#fff").attr("stroke-width", 2);
       if (isOn) {
         el.append("circle").attr("r", 25).attr("fill", "none").attr("stroke", "#f44").attr("stroke-width", 3).attr("opacity", 0.5);
@@ -410,24 +410,63 @@ function render3LD(data) {
       el.append("line").attr("x1", -20).attr("y1", 20).attr("x2", 20).attr("y2", -20).attr("stroke", "#0f0").attr("stroke-width", 2);
       el.append("path").attr("d", "M 12,-20 L 20,-20 L 20,-12").attr("fill", "none").attr("stroke", "#0f0").attr("stroke-width", 2);
     } else if (d.type === "CircuitBreaker") {
-      // 3-Phase Breaker representation
-      el.append("rect").attr("x", -25).attr("y", -30).attr("width", 50).attr("height", 60).attr("fill", d.status === "CLOSED" ? "#004411" : "#111").attr("stroke", "#00ff44").attr("stroke-width", 2);
+      // 3-Phase Breaker representation with physical contact lines
+      const isClosed = (ph) => {
+          const s = (d.summary || {}).Status || "";
+          if (s.includes("1-POLE")) {
+              const parts = s.split("[")[1].split("]")[0].split(" ");
+              const map = {"a": 0, "b": 1, "c": 2};
+              return parts[map[ph]] !== ".";
+          }
+          return s.startsWith("CLOSED");
+      };
+
+      // Main frame
+      el.append("rect").attr("x", -25).attr("y", -30).attr("width", 50).attr("height", 60).attr("fill", "#050505").attr("stroke", "#00ff44").attr("stroke-width", 2);
       el.append("text").attr("x", -32).attr("y", -35).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
       el.append("text").attr("x", 25).attr("y", -35).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
-      [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
-          el.append("rect").attr("x", -15).attr("y", off-4).attr("width", 30).attr("height", 8).attr("fill", d.status === "CLOSED" ? "#fff" : "#333").attr("stroke", "#00ff44");
+      
+      ["a", "b", "c"].forEach((ph, i) => {
+          const off = [-PHASE_GAP, 0, PHASE_GAP][i];
+          const closed = isClosed(ph);
+          // Fixed terminals
+          el.append("circle").attr("cx", -20).attr("cy", off).attr("r", 2).attr("fill", "#fff");
+          el.append("circle").attr("cx", 20).attr("cy", off).attr("r", 2).attr("fill", "#fff");
+          
+          if (closed) {
+            // Horizontal connecting bridge
+            el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 20).attr("y2", off).attr("stroke", "#fff").attr("stroke-width", 3);
+            el.append("rect").attr("x", -12).attr("y", off-3).attr("width", 24).attr("height", 6).attr("fill", "#00ff44");
+          } else {
+            // Open contact (vertical or diagonal line)
+            el.append("line").attr("x1", -5).attr("y1", off-8).attr("x2", 5).attr("y2", off+8).attr("stroke", "#555").attr("stroke-width", 2);
+          }
       });
     } else if (d.type === "Disconnect") {
       // 3-Phase Disconnect blades
+      const isClosed = (ph) => {
+          const s = (d.summary || {}).Status || "";
+          if (s.includes("1-POLE")) {
+              const parts = s.split("[")[1].split("]")[0].split(" ");
+              const map = {"a": 0, "b": 1, "c": 2};
+              return parts[map[ph]] !== ".";
+          }
+          return s.startsWith("CLOSED");
+      };
+
       el.append("text").attr("x", -28).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
       el.append("text").attr("x", 22).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
-      [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
+      ["a", "b", "c"].forEach((ph, i) => {
+        const off = [-PHASE_GAP, 0, PHASE_GAP][i];
+        const closed = isClosed(ph);
         el.append("circle").attr("cx", -20).attr("cy", off).attr("r", 2.5).attr("fill", "#fff");
         el.append("circle").attr("cx", 20).attr("cy", off).attr("r", 2.5).attr("fill", "#fff");
-        if (d.status === "OPEN") {
-          el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 15).attr("y2", off-15).attr("stroke", "#fff").attr("stroke-width", 2.5);
+        if (!closed) {
+          // Open blade (pointing up)
+          el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 10).attr("y2", off-20).attr("stroke", "#fff").attr("stroke-width", 3);
         } else {
-          el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 20).attr("y2", off).attr("stroke", "#fff").attr("stroke-width", 2.5);
+          // Closed blade (flat)
+          el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 20).attr("y2", off).attr("stroke", "#0f0").attr("stroke-width", 3);
         }
       });
     } else if (d.type === "VoltageSource") {
@@ -708,7 +747,7 @@ function renderPhasorBox(div, summary, mode) {
   );
 
   const isDelta =
-    summary && summary.Connection && summary.Connection.includes("Delta");
+    summary && summary.Connection && summary.Connection && summary.Connection.includes("Delta");
 
   let pMap = [];
   if (mode === "primary") {

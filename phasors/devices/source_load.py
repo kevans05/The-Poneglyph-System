@@ -27,26 +27,41 @@ class VoltageSource(Bus):
         self.phase_shift_deg = phase_shift_deg
 
     def find_loads(self):
-        """Crawl downstream to find all connected Load devices."""
+        """Crawl downstream to find all connected Load devices with phase masks."""
         visited = set()
-        loads = []
+        loads = [] # List of (load_dev, mask)
 
-        def check(dev):
+        def check(dev, current_mask):
             if dev in visited: return
             visited.add(dev)
-            # Stop at other voltage sources — each source serves its own island
+            
+            # Stop at other voltage sources
             if dev is not self and dev.__class__.__name__ == "VoltageSource": return
+            
             if isinstance(dev, Load):
-                loads.append(dev)
+                loads.append((dev, current_mask))
                 return
-            if hasattr(dev, "is_closed") and not dev.is_closed: return
+            
+            # Update mask based on switch status
+            new_mask = current_mask.copy()
+            if hasattr(dev, "is_ph_closed"):
+                for ph in "abc":
+                    if not dev.is_ph_closed(ph):
+                        new_mask[ph] = False
+            elif hasattr(dev, "is_closed") and not dev.is_closed:
+                # Legacy / non-single-pole switch
+                for ph in "abc": new_mask[ph] = False
+            
+            # If all phases open, stop
+            if not any(new_mask.values()): return
+
             for attr in ("connections", "h_connections", "x_connections"):
                 for c in getattr(dev, attr, []):
-                    check(c)
+                    check(c, new_mask)
             if hasattr(dev, "downstream_device") and dev.downstream_device:
-                check(dev.downstream_device)
+                check(dev.downstream_device, new_mask)
 
-        check(self)
+        check(self, {"a": True, "b": True, "c": True})
         return loads
 
     def is_circuit_closed(self):
@@ -64,11 +79,12 @@ class VoltageSource(Bus):
 
         phase_p = {"a": 0.0, "b": 0.0, "c": 0.0}
         phase_q = {"a": 0.0, "b": 0.0, "c": 0.0}
-        for load in loads:
+        for load, mask in loads:
             pq = load.get_phase_pq()
             for ph in ("a", "b", "c"):
-                phase_p[ph] += pq[ph][0]
-                phase_q[ph] += pq[ph][1]
+                if mask[ph]:
+                    phase_p[ph] += pq[ph][0]
+                    phase_q[ph] += pq[ph][1]
 
         def make_i(ph, v_phasor):
             p, q = phase_p[ph], phase_q[ph]

@@ -75,7 +75,7 @@ function showSelectionDialog(event, nodes) {
 }
 
 function openWindowById(id) {
-  const node = currentData.nodes.find((n) => n.id === id);
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (node) openWindow(node);
   d3.select("#context-menu").style("display", "none");
 }
@@ -103,7 +103,7 @@ function updateStatusBar(reference, syncErrors) {
   if (syncErrors && syncErrors.length > 0) {
     syncErrors.forEach(err => {
       const issues = err.issues.join(" · ");
-      html += `<span style="background:#1a0000; color:#f44; padding:2px 10px; margin-right:8px; border:1px solid #f44; font-size:10px; letter-spacing:1px;">`;
+      html += "<span style=\"background:#1a0000; color:#f44; padding:2px 10px; margin-right:8px; border:1px solid #f44; font-size:10px; letter-spacing:1px;\">";
       html += `⚠ SYNC FAULT: ${err.sources.join(" ↔ ")} — ${issues}</span>`;
     });
     bar.style("background", "#0d0000").style("color", "#f44");
@@ -171,8 +171,60 @@ function startCloseConnectionMode(sourceId) {
     );
 }
 
-function startDCConnectionMode(sourceId) {
-  connectionSource = { id: sourceId, isDC: true };
+function startDCConnectionMode(sourceId, fromLabel, isReverse) {
+  if (fromLabel === undefined) fromLabel = null;
+  if (isReverse === undefined) isReverse = false;
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === sourceId);
+  if (!fromLabel && node) {
+    let outputs;
+    if (isReverse) {
+        outputs = (node.params && node.params.digital_inputs) || (node.type === 'Relay' ? ["IN101", "IN102"] : ["TRIP_COIL", "CLOSE_COIL", "TRIP_A", "TRIP_B", "TRIP_C", "CLOSE_A", "CLOSE_B", "CLOSE_C"]);
+    } else {
+        outputs = (node.params && node.params.digital_outputs);
+        if (!outputs) {
+            if (node.type === 'Relay') {
+                outputs = ["TRIP", "OUT101", "OUT102"];
+            } else if (node.type === 'CircuitBreaker') {
+                outputs = ["52A", "52B", "52A_A", "52B_A", "52A_B", "52B_B", "52A_C", "52B_C"];
+            } else if (node.type === 'Disconnect') {
+                outputs = ["89A", "89B", "89A_A", "89B_A", "89A_B", "89B_B", "89A_C", "89B_C"];
+            } else {
+                outputs = ["DC_OUT"];
+            }
+        }
+    }
+    if (outputs.length > 1) {
+        showTerminalPicker(isReverse ? "SELECT TARGET TERMINAL" : "SELECT SOURCE TERMINAL", outputs, (label) => startDCConnectionMode(sourceId, label, isReverse));
+        return;
+    }
+    fromLabel = outputs[0];
+  }
+
+  connectionSource = { id: sourceId, isDC: true, from: fromLabel, isReverse: isReverse };
+  const prompt = isReverse ? "WIRE FROM INPUT: Select source device to drive " : "DC CONNECTION: Select target device to connect ";
+  d3.select("#status-bar")
+    .style("display", "block")
+    .style("background", "#ff8800")
+    .style("color", "#000")
+    .html(
+      prompt +
+        sourceId + " (" + fromLabel + ")" +
+        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
+    );
+}
+
+function dummy_startDCConnectionMode(sourceId, fromLabel = null) {
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === sourceId);
+  if (!fromLabel && node) {
+    const outputs = (node.params && (node.params && node.params.digital_outputs)) || (node.type === 'Relay' ? ["TRIP", "OUT101", "OUT102"] : ["DC_OUT"]);
+    if (outputs.length > 1) {
+        showTerminalPicker("SELECT SOURCE TERMINAL", outputs, (label) => startDCConnectionMode(sourceId, label));
+        return;
+    }
+    fromLabel = outputs[0];
+  }
+
+  connectionSource = { id: sourceId, isDC: true, from: fromLabel };
   d3.select("#status-bar")
     .style("display", "block")
     .style("background", "#ff8800")
@@ -205,15 +257,33 @@ function cancelConnectionMode() {
     .text("Navigation System Standby.");
 }
 
-function completeConnection(targetId) {
+function completeConnection(targetId, toLabel = null) {
   if (!connectionSource) return;
-  const { id, bushing, isSecondary, isDC, isTrip, isClose } = connectionSource;
+  const { id, bushing, isSecondary, isDC, isTrip, isClose, from } = connectionSource;
+  
+  if (isDC && !toLabel) {
+    const targetNode = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === targetId) : null;
+    if (targetNode) {
+        let inputs = (targetNode.params && targetNode.params.digital_inputs);
+        if (!inputs) {
+            if (targetNode.type === 'Relay') inputs = ["IN101", "IN102"];
+            else if (['CircuitBreaker', 'Disconnect'].includes(targetNode.type)) inputs = ["TRIP_COIL", "CLOSE_COIL", "TRIP_A", "TRIP_B", "TRIP_C", "CLOSE_A", "CLOSE_B", "CLOSE_C"];
+            else inputs = ["DC_IN"];
+        }
+        if (inputs.length > 1) {
+            showTerminalPicker("SELECT TARGET TERMINAL", inputs, (label) => completeConnection(targetId, label));
+            return;
+        }
+        toLabel = inputs[0];
+    }
+  }
+
   if (id === targetId) {
     alert("Cannot connect a device to itself.");
     return;
   }
   const action = isTrip ? "add_trip_connection" : isClose ? "add_close_connection" : isDC ? "add_dc_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
-  reconfigureAPI(id, action, { target_id: targetId, bushing: bushing }).then(
+  reconfigureAPI(id, action, { target_id: targetId, bushing: bushing, from: from, to: toLabel }).then(
     () => {
       cancelConnectionMode();
       refreshData();
@@ -325,7 +395,7 @@ function showPlantMenu(pageX, pageY, gx, gy, hostId = null, bushing = null) {
     { label: "CONTROL",          types: ["Indicator"] },
   ];
 
-  let html = `<div style="padding:6px 10px; font-size:10px; color:#ff0; border-bottom:1px solid #333; background:#111;">${title}</div>`;
+  let html = "<div style=\"padding:6px 10px; font-size:10px; color:#ff0; border-bottom:1px solid #333; background:#111;\">" + title + "</div>";
   const args = `${pageX},${pageY},${gx},${gy},${hostId ? "'" + hostId + "'" : "null"},${bushing ? "'" + bushing + "'" : "null"}`;
   groups.forEach(g => {
     html += `<div style="padding:3px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #1a1a1a;">${g.label}</div>`;
@@ -410,7 +480,7 @@ function closeWindow(id) {
 
 function _renderSummaryRows(entries, compNode) {
   let html = "";
-  entries.forEach(([key, value]) => {
+  entries.forEach(function(entry) { var key = entry[0], value = entry[1];
     if (value === "HEADER") {
       html += `<div style="background:#1a1a1a; padding:2px 8px; font-size:10px; color:#aaa; margin-top:8px; text-align:center; border:1px solid #333; text-transform:uppercase;">${key.replace(/-/g, "").trim()}</div>`;
     } else {
@@ -448,6 +518,8 @@ function _splitSummaryAt(entries, markerSubstr) {
 // ── updateWindow ───────────────────────────────────────────────────────────────
 
 function updateWindow(id, node) {
+  if (!node) return;
+  if (!node) return;
   const safeId = id.replace(/\s+/g, "-");
   const content = document.getElementById("win-" + safeId);
   if (!content) return;
@@ -459,7 +531,7 @@ function updateWindow(id, node) {
 
   // 1. PHASOR DIAGRAMS + TELEMETRY — per-winding layout for multi-winding devices
   if (node.type === "DualWindingVT") {
-    const allEntries = Object.entries(node.summary);
+    const allEntries = Object.entries(node.summary || {});
     const [w1Entries, w2Entries] = _splitSummaryAt(allEntries, "WINDING 2");
     html += `<div class="section-title">WINDING 1 — ANALYSIS</div><div class="phasor-box" id="phasor-sec-${safeId}"></div>`;
     html += _renderSummaryRows(w1Entries, compNode);
@@ -467,7 +539,7 @@ function updateWindow(id, node) {
     html += _renderSummaryRows(w2Entries, compNode);
 
   } else if (node.type === "PowerTransformer") {
-    const allEntries = Object.entries(node.summary);
+    const allEntries = Object.entries(node.summary || {});
     const [sharedEntries, afterPri] = _splitSummaryAt(allEntries, "PRIMARY SIDE");
     const [priEntries, secEntries] = _splitSummaryAt(afterPri, "SECONDARY SIDE");
     html += _renderSummaryRows(sharedEntries, compNode);
@@ -483,7 +555,7 @@ function updateWindow(id, node) {
     // Protection devices: show per-input breakdown first
     const isProtection = ["Relay", "CTTB", "FTBlock"].includes(node.type);
     const inputNodes = isProtection && node.inputs?.length > 0
-      ? node.inputs.map((id) => currentData.nodes.find((n) => n.id === id)).filter(Boolean)
+      ? node.inputs.map((id) => (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id)).filter(Boolean)
       : [];
 
     if (inputNodes.length > 0) {
@@ -532,7 +604,7 @@ function updateWindow(id, node) {
       html += '<div class="section-title">TELEMETRY DATA</div>';
     }
 
-    html += _renderSummaryRows(Object.entries(node.summary), compNode);
+    html += _renderSummaryRows(Object.entries(node.summary || {}), compNode);
   }
 
   // Sync error banner (VoltageSource with conflicts)
@@ -563,22 +635,33 @@ function updateWindow(id, node) {
   }
 
   
-  // Relay Control (Manual Trip)
+  // Relay Control (Multi-Output)
   if (node.type === "Relay") {
-    const isHigh = node.summary["DC Output"] && node.summary["DC Output"].includes("HIGH");
+    const outputs = (node.params && (node.params && node.params.digital_outputs)) || ["TRIP", "OUT101", "OUT102"];
+    const overrides = (node.params && (node.params && node.params.output_manual_overrides)) || {};
+    
+    html += "<div class=\"section-title\">OUTPUT CONTROL (MANUAL)</div>";
+    html += "<div style=\"display:grid; grid-template-columns: 1fr 1fr; gap:4px;\">";
+    outputs.forEach(out => {
+      const isForced = overrides[out] === true;
+      const btnCol = isForced ? "#522" : "#111";
+      const txtCol = isForced ? "#f44" : "#888";
+      const label = isForced ? "FORCE " + out : "OVERRIDE " + out;
+      html += "<button class=\"eng-btn\" style=\"background:" + btnCol + "; color:" + txtCol + "; border-color:" + txtCol + "; font-size:9px;\" " +
+              "onclick=\"toggleTerminalOverride(\'" + node.id + "\', \'" + out + "\', " + (!isForced) + ")\">" + label + "</button>";
+    });
+    html += "</div>";
+
     const isMech = node.summary["Category"] === "Electromechanical";
-    const isDropped = node.summary["Target / Flag"] === "DROPPED";
-
-    const label = isHigh ? "RESET DC OUTPUT" : "MANUAL TRIP (DC)";
-    const btnCol = isHigh ? "#522" : "#311";
-    const txtCol = isHigh ? "#aaa" : "#f44";
-    html += "<button class=\"cmd-btn\" style=\"background:" + btnCol + "; color:" + txtCol + "; border-color:" + txtCol + ";\" onclick=\"toggleRelayTrip(\'" + node.id + "\', " + (!isHigh) + ")\">" + label + "</button>";
-
     if (isMech) {
+      const isDropped = node.summary["Target / Flag"] === "DROPPED";
       const tLabel = isDropped ? "RESET TARGET / FLAG" : "DROP TARGET";
       const tCol = isDropped ? "#f80" : "#444";
-      html += "<button class=\"cmd-btn\" style=\"background:#111; color:" + tCol + "; border-color:" + tCol + "; margin-top:4px;\" onclick=\"toggleRelayTarget(\'" + node.id + "\', " + (!isDropped) + ")\">" + tLabel + "</button>";
+      html += "<button class=\"cmd-btn\" style=\"background:#111; color:" + tCol + "; border-color:" + tCol + "; margin-top:4px;\" " +
+              "onclick=\"toggleRelayTarget(\'" + node.id + "\', " + (!isDropped) + ")\">" + tLabel + "</button>";
     }
+    html += "<button class=\"cmd-btn\" style=\"background:#001530; color:#3af; border-color:#3af; margin-top:4px;\" " +
+            "onclick=\"showLogicDesigner(\'" + node.id + "\')\">LOGIC DESIGNER <span>CONFIG</span></button>";
   }
   // 4. ENGINEERING CONTROLS (Grouped)
   html += '<div class="section-title">ENGINEERING CONTROLS</div>';
@@ -660,6 +743,7 @@ function updateWindow(id, node) {
     [
       "CurrentTransformer",
       "CTTB",
+      "Relay",
       "VoltageTransformer",
       "DualWindingVT",
       "FTBlock",
@@ -696,6 +780,23 @@ function updateWindow(id, node) {
       "</div>";
   }
 
+
+  // 5. CONTROL & DC WIRING
+  const controlTypes = ["Relay", "Indicator", "Meter", "CircuitBreaker", "Disconnect", "CTTB", "FTBlock"];
+  if (controlTypes.includes(node.type)) {
+    html += '<div class="section-title">CONTROL & DC WIRING</div>';
+    html += '<div style="display:flex; gap:4px; margin-top:2px;">';
+    html += '<button class="eng-btn" style="flex:1; background:#320; color:#fa0;" onclick="startDCConnectionMode(\'' + node.id + '\')">DC <span>&rarr;</span></button>';
+    html += '<button class="eng-btn" style="flex:1; background:#311; color:#f66;" onclick="startTripConnectionMode(\'' + node.id + '\')">TRIP <span>&rarr;</span></button>';
+    html += '<button class="eng-btn" style="flex:1; background:#121; color:#6f6;" onclick="startCloseConnectionMode(\'' + node.id + '\')">CLOSE <span>&rarr;</span></button>';
+    html += '</div>';
+    
+    // Wire From Input (reverse mode)
+    html += '<div style="display:flex; gap:4px; margin-top:4px;">';
+    html += '<button class="eng-btn" style="flex:1; font-size:8px; opacity:0.7;" onclick="startDCConnectionMode(\'' + node.id + '\')">WIRE FROM INPUT Terminal</button>';
+    html += '</div>';
+  }
+
   // Phase Reference Selection
   if (
     ["VoltageTransformer", "DualWindingVT", "CurrentTransformer"].includes(
@@ -706,7 +807,7 @@ function updateWindow(id, node) {
       '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">SET AS PHASE REFERENCE</div>';
     html += '<div style="display:flex; gap:4px; margin-top:2px;">';
     const isDelta =
-      node.summary.Connection && node.summary.Connection.includes("Delta");
+      (node.summary && (node.summary && node.summary.Connection)) && (node.summary && (node.summary && node.summary.Connection)).includes("Delta");
     const phases = isDelta ? ["AB", "BC", "CA"] : ["A", "B", "C"];
     phases.forEach((ph) => {
       html += `<button class="eng-btn" style="flex:1" onclick="setAsReference('${node.id}', '${ph}')">${ph}</button>`;
@@ -795,6 +896,29 @@ function showContextMenu(e, d) {
       "('" +
       d.id +
       "')\">CONFIGURE DEVICE</div>" +
+
+      (function() {
+        let breakHtml = "";
+        const allConns = [];
+        // Find all edges where THIS device is the source
+        currentData.edges.forEach(e => {
+          const sid = (typeof e.source === "string") ? e.source : e.source.id;
+          const tid = (typeof e.target === "string") ? e.target : e.target.id;
+          if (sid === d.id) {
+            allConns.push({ src: sid, tgt: tid, label: "WIRE TO " + tid });
+          } else if (tid === d.id) {
+            allConns.push({ src: sid, tgt: tid, label: "WIRE FROM " + sid });
+          }
+        });
+        
+        if (allConns.length > 0) {
+           breakHtml += '<div style="padding:4px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #222;">BREAK CONNECTION</div>';
+           allConns.forEach(c => {
+             breakHtml += '<div class="menu-item" style="color:#f88;" onclick="breakConnection(\'' + c.src + '\', \'' + c.tgt + '\')">' + c.label + '</div>';
+           });
+        }
+        return breakHtml;
+      })() +
       '<div class="menu-item" onclick="showRenameDialog(\'' +
       d.id +
       "')\">RENAME DEVICE</div>" +
@@ -920,8 +1044,8 @@ function _predKey(node, phase, qty) {
   const isDelta =
     node &&
     node.summary &&
-    node.summary.Connection &&
-    node.summary.Connection.includes("Delta");
+    (node.summary && (node.summary && node.summary.Connection)) &&
+    (node.summary && (node.summary && node.summary.Connection)).includes("Delta");
 
   if (qty === "voltage") {
     if (["VoltageTransformer", "DualWindingVT"].includes(type)) {
@@ -972,7 +1096,7 @@ function _toggleAngleConv() {
     btn.style.borderColor = _use360Lag ? "#3af" : "#555";
   });
   Object.keys(openWindows).forEach(id => {
-    const node = currentData?.nodes.find(n => n.id === id);
+    const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === id);
     if (node) updateWindow(id, node);
   });
 }
@@ -1005,7 +1129,7 @@ let _activeTestId   = null;
 let _activeTestName = null;
 
 function showConfigModal(id) {
-  const node = currentData.nodes.find((n) => n.id === id);
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (!node) return;
   const fieldDefs = {
     VoltageSource: [
@@ -1025,6 +1149,7 @@ function showConfigModal(id) {
       },
     ],
     CircuitBreaker: [
+      { label: "Single Pole Mode", key: "is_single_pole", type: "checkbox" },
       { label: "Continuous Amps (A)", key: "continuous_amps" },
       { label: "Interrupt (kA)", key: "interrupt_ka" },
     ],
@@ -1500,7 +1625,7 @@ function _updateAutoShiftHint() {
 }
 
 function showLoadConfigModal(id) {
-  const node = currentData.nodes.find((n) => n.id === id);
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (!node) return;
   _resetConfigModalPos();
   d3.select("#config-modal").style("display", "flex");
@@ -1865,7 +1990,7 @@ function initBrainPointSequence() {
         .style("transform", "translate(-50%, -50%)")
         .style("top", "50%")
         .style("left", "50%");
-      _bpRenderStep0();
+      _bpRenderStep4();
     });
   };
 
@@ -1955,7 +2080,7 @@ function _bpRenderStep0() {
     if (card.available) {
       c.on("click", () => {
         _bpInstrumentType = card.id;
-        _bpRenderStep0();
+        _bpRenderStep4();
       });
     }
     c.append("div")
@@ -2010,7 +2135,11 @@ function _bpRenderStep0() {
       if (_bpInstrumentType === "pmm1") _bpConnectPMM1();
       else if (_bpInstrumentType === "pmm2") _bpConnectPMM2();
       else if (_bpInstrumentType === "sim") _bpStartSimulation();
-      else _bpRenderStep4();
+      else {
+          _bpTargetDeviceId = _bpSelectedDevices[0];
+          _bpTargetPhase = "A";
+          _bpRenderStep5();
+      }
     });
 }
 
@@ -2809,7 +2938,7 @@ function _bpRenderStep4() {
     .on("click", () => {
       if (_bpInstrumentType === "pmm1") _bpConnectPMM1();
       else if (_bpInstrumentType === "pmm2") _bpConnectPMM2();
-      else _bpRenderStep0();
+      else _bpRenderStep4();
     });
   footer.append("div").style("flex", 1);
 
@@ -2817,25 +2946,15 @@ function _bpRenderStep4() {
   footer
     .append("button")
     .attr("class", "wiz-save")
-    .text("OPEN INSTRUMENT →" + (totalSelected > 0 ? ` (${totalSelected})` : ""))
+    .text("NEXT: SELECT INSTRUMENT →" + (totalSelected > 0 ? ` (${totalSelected})` : ""))
     .on("click", () => {
       _bpSelectedDevices = [..._bpVoltDevices, ..._bpCurrDevices, ..._bpRelayDevices, ..._bpMultiDevices];
       if (_bpSelectedDevices.length === 0) return;
 
-      _bpTargetDeviceId = _bpSelectedDevices[0];
-      _bpTargetPhase = "A";
-      _bpLastMeasType = null;
-
-      const firstNode = (currentData?.nodes || []).find((n) => n.id === _bpTargetDeviceId);
-      const firstGroup = firstNode ? _bpDeviceGroup(firstNode.type) : "voltage";
-      const firstMeasType = firstGroup === "current" ? "current" : "voltage";
-      _bpDeviceMeasStep = firstGroup === "multi" ? "voltage" : null;
-
-      _bpShowChannelConfig(firstMeasType, null, () => {
-        (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim")
-          ? _bpRenderPMMStep5()
-          : _bpRenderStep5();
-      });
+      if (_activeTestId) {
+          updateTestCapturePoints(_activeTestId, _bpSelectedDevices);
+      }
+      _bpRenderStep0();
     });
 }
 
@@ -2878,8 +2997,8 @@ function _bpRenderPMMStep5() {
   }
 
   const node =
-    currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
-    currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
+    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
+    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
   _bpTargetDeviceId = node.id;
   const isNeutralPhase = _bpTargetPhase === "N";
   const effectiveChan2 = isNeutralPhase
@@ -3318,10 +3437,10 @@ function _bpRenderStep5() {
   }
 
   const node =
-    currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
-    currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
+    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
+    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
   _bpTargetDeviceId = node.id;
-  const refVT = currentData.nodes.find((n) => n.id === _bpRefVTId);
+  const refVT = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpRefVTId);
 
   const expectedType = _bpDeviceExpectedType(node.type);
 
@@ -3725,7 +3844,7 @@ function _bpRenderStep5() {
 }
 
 function _bpLogCurrentPoint() {
-  const node = currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   if (!node) return;
   const expectedType = _bpDeviceExpectedType(node.type);
   const qty = expectedType === "current" ? "Current" : "Voltage";
@@ -3779,7 +3898,7 @@ function _bpMoveToNextPhase() {
 
   const phases = ["A", "B", "C"];
   const idx = phases.indexOf(_bpTargetPhase);
-  const node = currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   const showsI = node && _deviceShowsCurrent(node.type);
   const showsV = node && _deviceShowsVoltage(node.type);
   const isMultiAnalog = showsV && showsI;
@@ -4443,7 +4562,7 @@ function _bpSIModeStep2() {
 }
 
 function _bpSIModeStep3() {
-  const node = currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   const hasVoltage = !["CurrentTransformer", "CTTB"].includes(node.type);
 
   const others = ["A", "B", "C"].filter((p) => p !== _bpSISelectedPhase);
@@ -4644,7 +4763,7 @@ function clearFindResults() {
 // ── Relay input polarity toggle ────────────────────────────────────────────
 
 function toggleInputPolarity(deviceId, inputId, currentPol) {
-  const dev = currentData?.nodes.find((n) => n.id === deviceId);
+  const dev = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === deviceId);
   if (!dev) return;
   const polarities = Object.assign({}, dev.params?.input_polarities || {});
   polarities[inputId] = currentPol === 1 ? -1 : 1;
@@ -4655,10 +4774,107 @@ function toggleInputPolarity(deviceId, inputId, currentPol) {
 
 document.addEventListener("DOMContentLoaded", _initConfigModalDrag);
 
+
 function toggleRelayTrip(id, state) {
   reconfigureAPI(id, "update_device", { properties: { dc_output_state: state } }).then(() => refreshData());
 }
 
 function toggleRelayTarget(id, state) {
   reconfigureAPI(id, "update_device", { properties: { target_dropped: state } }).then(() => refreshData());
+}
+
+function showLogicDesigner(id) {
+  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === id);
+  if (!node) return;
+  const params = node.params || {};
+  const settings = params.settings || { "50P1P": 5.0, "59P1P": 120.0 };
+  const logic = params.logic || { "TRIP": "50P1 OR IN101", "OUT101": "50P1" };
+  
+  _resetConfigModalPos();
+  d3.select("#config-modal").style("display", "flex");
+  d3.select("#modal-title").text("LOGIC DESIGNER [" + id + "]");
+  const body = d3.select("#modal-body").html("");
+  
+  body.append("div").attr("class", "section-title").text("ANALOG SETTINGS");
+  Object.entries(settings).forEach(([key, val]) => {
+    const row = body.append("div").style("display", "flex").style("gap", "4px").style("margin-bottom", "4px");
+    row.append("label").style("width", "60px").style("font-size", "10px").style("color", "#888").text(key);
+    row.append("input").attr("type", "number").attr("class", "l-setting").attr("data-key", key).property("value", val).style("flex", 1);
+  });
+  
+  body.append("div").attr("class", "section-title").text("CONTROL EQUATIONS");
+  Object.entries(logic).forEach(([out, eq]) => {
+    const row = body.append("div").style("display", "flex").style("flex-direction", "column").style("margin-bottom", "8px");
+    row.append("label").style("font-size", "9px").style("color", "#0af").text(out + " =");
+    row.append("input").attr("type", "text").attr("class", "l-logic").attr("data-out", out).property("value", eq).style("width", "100%");
+  });
+  
+  body.append("div").attr("class", "section-title").text("I/O DEFINITION");
+  const ioRow = body.append("div").style("display", "flex").style("gap", "8px");
+  const inCol = ioRow.append("div").style("flex", 1);
+  inCol.append("label").style("font-size", "9px").style("color", "#888").text("Digital Inputs (CSV)");
+  inCol.append("textarea").attr("id", "l-inputs").style("width", "100%").text((params.digital_inputs || ["IN101", "IN102"]).join(", "));
+  
+  const outCol = ioRow.append("div").style("flex", 1);
+  outCol.append("label").style("font-size", "9px").style("color", "#888").text("Digital Outputs (CSV)");
+  outCol.append("textarea").attr("id", "l-outputs").style("width", "100%").text((params.digital_outputs || ["OUT101", "OUT102"]).join(", "));
+
+  body.append("div").style("font-size", "8px").style("color", "#555").style("margin-top", "8px")
+    .text("Elements: 50P1 (I > Pickup), 59P1 (V > Pickup). Digital: use defined labels. Operators: AND, OR, NOT.");
+
+  d3.select("#modal-save").on("click", () => {
+    const newSettings = {};
+    document.querySelectorAll(".l-setting").forEach(el => newSettings[el.dataset.key] = parseFloat(el.value));
+    const newLogic = {};
+    document.querySelectorAll(".l-logic").forEach(el => newLogic[el.dataset.out] = el.value.trim().toUpperCase());
+    const newInputs = document.getElementById("l-inputs").value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+    const newOutputs = document.getElementById("l-outputs").value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+    
+    newOutputs.forEach(out => { if (!newLogic[out]) newLogic[out] = "0"; });
+    if (!newLogic["TRIP"]) newLogic["TRIP"] = "0"; 
+    
+    reconfigureAPI(id, "update_device", { properties: { settings: newSettings, logic: newLogic, digital_inputs: newInputs, digital_outputs: newOutputs } }).then(() => {
+      d3.select("#config-modal").style("display", "none");
+      refreshData();
+    });
+  });
+}
+
+function showTerminalPicker(title, options, callback) {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:20000;display:flex;align-items:center;justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#111;border:1px solid #0af;padding:20px;display:flex;flex-direction:column;gap:8px;min-width:200px;";
+  box.innerHTML = '<div style="font-size:10px;color:#888;margin-bottom:8px;">' + title + '</div>';
+  options.forEach(opt => {
+    const btn = document.createElement("button");
+    btn.className = "eng-btn";
+    btn.textContent = opt;
+    btn.onclick = () => { document.body.removeChild(overlay); callback(opt); };
+    box.appendChild(btn);
+  });
+  const cancel = document.createElement("button");
+  cancel.className = "eng-btn";
+  cancel.style.marginTop = "8px";
+  cancel.style.borderColor = "#555";
+  cancel.textContent = "CANCEL";
+  cancel.onclick = () => { document.body.removeChild(overlay); cancelConnectionMode(); };
+  box.appendChild(cancel);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+}
+
+function toggleTerminalOverride(deviceId, terminal, state) {
+  const dev = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === deviceId) : null;
+  if (!dev) return;
+  const params = dev.params || {};
+  const overrides = Object.assign({}, params.output_manual_overrides || {});
+  overrides[terminal] = state;
+  reconfigureAPI(deviceId, "update_device", { properties: { output_manual_overrides: overrides } }).then(() => refreshData());
+}
+
+function breakConnection(sourceId, targetId) {
+  if (confirm("Break wire between " + sourceId + " and " + targetId + "?")) {
+    reconfigureAPI(sourceId, "delete_connection", { target_id: targetId }).then(() => refreshData());
+  }
 }

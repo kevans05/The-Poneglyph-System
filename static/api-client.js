@@ -122,6 +122,14 @@ function setTestStatus(id, status) {
     }).then(r => r.json());
 }
 
+function updateTestCapturePoints(id, devices) {
+    return fetch("/api/tests/capture-points", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, devices }),
+    }).then(r => r.json());
+}
+
 function addDrawing(testId, title, url, revision, notes) {
     return fetch("/api/tests/drawings/add", {
         method: "POST",

@@ -56,13 +56,21 @@ class DeviceFactory:
                 did,
                 continuous_amps=data["continuous_amps"],
                 interrupt_ka=data["interrupt_ka"],
+                is_closed=data.get("status") == "CLOSED", is_single_pole=data.get("is_single_pole", False)
             )
-            dev.is_closed = data["status"] == "CLOSED"
+            dev.target_dropped = data.get("target_dropped", False)
+            dev.output_manual_overrides = data.get("output_manual_overrides", {})
+            if "manual_closed_phases" in data:
+                dev._manual_closed = data["manual_closed_phases"]
             return dev
 
         elif dtype == "Disconnect":
-            dev = Disconnect(did)
-            dev.is_closed = data["status"] == "CLOSED"
+            dev = Disconnect(did, is_closed=data.get("status") == "CLOSED", is_single_pole=data.get("is_single_pole", False))
+            dev.output_manual_overrides = data.get("output_manual_overrides", {})
+            dev.target_dropped = data.get("target_dropped", False)
+            dev.output_manual_overrides = data.get("output_manual_overrides", {})
+            if "manual_closed_phases" in data:
+                dev._manual_closed = data["manual_closed_phases"]
             return dev
 
         elif dtype == "CurrentTransformer":
@@ -181,8 +189,17 @@ class DeviceFactory:
             return IsoBlock(did)
 
         elif dtype == "Relay":
-            dev = Relay(did, function=data.get("function", "Differential"), input_polarities=data.get("input_polarities", {}), category=data.get("category", "Numerical"))
-            dev.dc_output_state = data.get("dc_output_state", False)
+            dev = Relay(
+                did, 
+                function=data.get("function", "Differential"), 
+                input_polarities=data.get("input_polarities", {}), 
+                category=data.get("category", "Numerical"),
+                logic=data.get("logic"),
+                settings=data.get("settings"),
+                digital_inputs=data.get("digital_inputs"),
+                digital_outputs=data.get("digital_outputs")
+            )
+            dev.output_manual_overrides = data.get("output_manual_overrides", {})
             dev.target_dropped = data.get("target_dropped", False)
             return dev
 

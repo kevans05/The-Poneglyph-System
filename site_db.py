@@ -123,6 +123,7 @@ _MIGRATIONS = [
     ("sessions",   "test_id",     "TEXT"),
     ("tests",      "vref_label",     "TEXT    DEFAULT ''"),
     ("tests",      "vref_magnitude", "REAL"),
+    ("tests",      "capture_points", "TEXT    DEFAULT \"[]\""),
 ]
 
 
@@ -524,3 +525,7 @@ def get_device_config_history(db_path: str, device_id: str, limit: int = 100) ->
     with _conn(db_path) as c:
         rows = c.execute("""SELECT h.epoch, h.type, h.status, h.config, h.snapshot_id, s.label as snapshot_label FROM device_history h LEFT JOIN snapshots s ON s.id = h.snapshot_id WHERE h.device_id = ? ORDER BY h.epoch DESC LIMIT ?""", (device_id, limit)).fetchall()
     return [dict(r) for r in rows]
+
+def update_test_capture_points(db_path: str, test_id: str, devices: list[str]):
+    with _conn(db_path) as c:
+        c.execute("UPDATE tests SET capture_points = ? WHERE id = ?", (json.dumps(devices), test_id))

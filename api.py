@@ -61,11 +61,15 @@ def load_substation(data=None):
                 else:
                     devices[did].connect(devices[c])
         for c in d.get("dc_connections", []):
-            if c in devices:
+            tid = c if isinstance(c, str) else c.get("id")
+            from_label = None if isinstance(c, str) else c.get("from")
+            to_label = None if isinstance(c, str) else c.get("to")
+            
+            if tid in devices:
                 if hasattr(devices[did], "connect_dc"):
-                    devices[did].connect_dc(devices[c])
+                    devices[did].connect_dc(devices[tid], from_label=from_label, to_label=to_label)
                 else:
-                    devices[did].connect(devices[c])
+                    devices[did].connect(devices[tid])
         for c in d.get("trip_connections", []):
             if c in devices:
                 if hasattr(devices[did], "add_trip_dc"):
@@ -117,9 +121,16 @@ _PARAM_KEYS = [
     "polarity_facing",
     "polarity_normal",
     "is_balanced",
-    "dc_output_state",
+    "is_single_pole",
+    "output_manual_overrides",
+    "dc_output_state_manual",
+    "manual_closed_phases",
     "category",
     "target_dropped",
+    "logic",
+    "settings",
+    "digital_inputs",
+    "digital_outputs",
     "phase_va",
     "phase_pf",
     "mode",
@@ -319,11 +330,15 @@ def _build_topology_response(sources, devices, raw_devices, reference):
                 edges.append(
                     {"source": dev.name, "target": s.name, "type": "protection"}
                 )
-        if hasattr(dev, "dc_outputs"):
-            for s in dev.dc_outputs:
-                edges.append(
-                    {"source": dev.name, "target": s.name, "type": "dc"}
-                )
+        if hasattr(dev, "dc_output_conns"):
+            for conn in dev.dc_output_conns:
+                edges.append({
+                    "source": dev.name,
+                    "target": conn["device"].name,
+                    "type": "dc",
+                    "from_terminal": conn["from"],
+                    "to_terminal": conn["to"]
+                })
         if hasattr(dev, "trip_dc_inputs"):
             for s in dev.trip_dc_inputs:
                 if not any(e["source"] == s.name and e["target"] == dev.name and e["type"] == "trip" for e in edges):
@@ -354,8 +369,12 @@ def save_substation(devices, reference=None, label: str = "auto:toggle"):
             dev = devices[did]
             if hasattr(dev, "is_closed"):
                 d["status"] = "CLOSED" if dev.is_closed else "OPEN"
-            if hasattr(dev, "dc_output_state"):
-                d["dc_output_state"] = dev.dc_output_state
+            if hasattr(dev, "output_manual_overrides"):
+                d["output_manual_overrides"] = dev.output_manual_overrides
+            # Switches use _manual_closed for their state persistence
+            if hasattr(dev, "_manual_closed"):
+                d["status"] = "CLOSED" if all(dev._manual_closed.values()) else "OPEN"
+                d["manual_closed_phases"] = dev._manual_closed
             if hasattr(dev, "target_dropped"):
                 d["target_dropped"] = dev.target_dropped
 
@@ -516,6 +535,14 @@ class SCADAServer(BaseHTTPRequestHandler):
                     return
                 _sdb.update_test_status(
                     _active_site, req.get("id", ""), req.get("status", "IN PROGRESS")
+                )
+                return _json_response(self, {"ok": True})
+
+            if self.path == "/api/tests/capture-points":
+                if not _require_site(self):
+                    return
+                _sdb.update_test_capture_points(
+                    _active_site, req.get("id", ""), req.get("devices", [])
                 )
                 return _json_response(self, {"ok": True})
 
@@ -704,15 +731,34 @@ class SCADAServer(BaseHTTPRequestHandler):
                             if target_id not in d["secondary_connections"]:
                                 d["secondary_connections"].append(target_id)
                             break
+                elif action == "delete_connection":
+                    source_id = req.get("id")
+                    target_id = req.get("target_id")
+                    conn_type = req.get("type", "primary") # primary, secondary, dc, trip, close
+                    
+                    for d in data["devices"]:
+                        if d["id"] == source_id:
+                            # Handle all list types
+                            for list_key in ["connections", "secondary_connections", "dc_connections", "trip_connections", "close_connections"]:
+                                if list_key in d:
+                                    # Handle both string IDs and object-based connections
+                                    d[list_key] = [
+                                        c for c in d[list_key] 
+                                        if (c if isinstance(c, str) else c.get("id")) != target_id
+                                    ]
+                            break
                 elif action == "add_dc_connection":
                     source_id = req.get("id")
                     target_id = req.get("target_id")
+                    from_label = req.get("from")
+                    to_label = req.get("to")
                     for d in data["devices"]:
                         if d["id"] == source_id:
-                            if "dc_connections" not in d:
-                                d["dc_connections"] = []
-                            if target_id not in d["dc_connections"]:
-                                d["dc_connections"].append(target_id)
+                            if "dc_connections" not in d: d["dc_connections"] = []
+                            new_conn = {"id": target_id, "from": from_label, "to": to_label}
+                            # Check for duplicates
+                            if not any(c["id"] == target_id and c.get("from") == from_label and c.get("to") == to_label for c in [x for x in d["dc_connections"] if isinstance(x, dict)]):
+                                d["dc_connections"].append(new_conn)
                             break
                 elif action == "add_trip_connection":
                     source_id = req.get("id")
@@ -1007,6 +1053,12 @@ class SCADAServer(BaseHTTPRequestHandler):
                 else:
                     self.send_response(404)
                     self.end_headers()
+            elif self.path == "/mobile":
+                with open("mobile.html", "rb") as f:
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(f.read())
             elif self.path == "/" or self.path == "/index.html":
                 with open("index.html", "rb") as f:
                     self.send_response(200)
