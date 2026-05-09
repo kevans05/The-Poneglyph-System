@@ -277,216 +277,219 @@ function render3LD(data) {
 
     // Draw symbols...
     if (d.type === "CurrentTransformer") {
+      // 3-Phase Circular CT with winding loop and polarity
       [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
         const c = ["#f00", "#ff0", "#00f"][i];
-        el.append("circle")
-          .attr("cx", 0)
-          .attr("cy", off)
-          .attr("r", 8)
-          .attr("fill", "none")
-          .attr("stroke", c);
-        el.append("path")
-          .attr("d", "M-8," + off + " A8,8 0 0,1 8," + off)
-          .attr("stroke", c)
-          .attr("fill", "none");
-        el.append("circle")
-          .attr("cx", 0)
-          .attr("cy", off - 10)
-          .attr("r", 2)
-          .attr("fill", "#ffff22")
-          .attr("stroke", "#000")
-          .attr("stroke-width", 0.5);
+        // The CT Circle on the line
+        el.append("circle").attr("cx", 0).attr("cy", off).attr("r", 8).attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.5);
+        // The winding loop (secondary)
+        el.append("path").attr("d", `M -6 ${off} A 6 6 0 1 0 6 ${off}`).attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.5);
+        // Polarity Dot
+        el.append("circle").attr("cx", -6).attr("cy", off - 6).attr("r", 2).attr("fill", "#ffff00").attr("stroke", "none");
       });
     } else if (d.type === "VoltageTransformer" || d.type === "DualWindingVT") {
+      // Magnetic VT symbol (overlapping primary/secondary coils)
       [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
         const c = ["#f00", "#ff0", "#00f"][i];
-        el.append("circle")
-          .attr("cx", 0)
-          .attr("cy", off)
-          .attr("r", 8)
-          .attr("fill", "#000")
-          .attr("stroke", c)
-          .attr("stroke-width", 1.5);
-        for (let j = -6; j <= 6; j += 4) {
-          const l = Math.sqrt(64 - j * j);
-          el.append("line")
-            .attr("x1", j)
-            .attr("y1", off - l)
-            .attr("x2", j)
-            .attr("y2", off + l)
-            .attr("stroke", c)
-            .attr("stroke-width", 0.5)
-            .attr("opacity", 0.6);
+        // Primary coil (connected to line)
+        el.append("circle").attr("cx", 0).attr("cy", off).attr("r", 8).attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.5);
+        // Secondary coil 1 (overlapping)
+        el.append("circle").attr("cx", 0).attr("cy", off + 10).attr("r", 8).attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.5);
+        
+        if (d.type === "DualWindingVT") {
+          // Secondary coil 2 (further overlap)
+          el.append("circle").attr("cx", 0).attr("cy", off + 18).attr("r", 8).attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.2).attr("opacity", 0.8);
+          // Polarity Dot for W2
+          el.append("circle").attr("cx", -6).attr("cy", off + 12).attr("r", 1.8).attr("fill", "#f00");
         }
-        el.append("circle")
-          .attr("cx", 0)
-          .attr("cy", off - 10)
-          .attr("r", 2)
-          .attr("fill", "#ff3333")
-          .attr("stroke", "#000")
-          .attr("stroke-width", 0.5);
+
+        // Polarity Dots for Pri and W1
+        el.append("circle").attr("cx", -6).attr("cy", off - 6).attr("r", 1.8).attr("fill", "#f00");
+        el.append("circle").attr("cx", -6).attr("cy", off + 4).attr("r", 1.8).attr("fill", "#f00");
       });
       if (d.type === "DualWindingVT")
-        el.append("circle")
-          .attr("cx", 0)
-          .attr("cy", 0)
-          .attr("r", 25)
-          .attr("fill", "none")
-          .attr("stroke", "#888")
-          .attr("stroke-dasharray", "2,2");
+        el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 35).attr("fill", "none").attr("stroke", "#555").attr("stroke-dasharray", "3,3");
     } else if (d.type === "CTTB" || d.type === "FTBlock") {
       const c = d.type === "CTTB" ? "#ffff22" : "#ff3333";
-      el.append("rect")
-        .attr("x", -15)
-        .attr("y", -25)
-        .attr("width", 30)
-        .attr("height", 50)
-        .attr("fill", "#111")
-        .attr("stroke", c)
-        .attr("stroke-width", 2);
-      el.append("text")
-        .attr("dy", -28)
-        .attr("fill", "#fff")
-        .style("font-size", "7px")
-        .text(d.type === "CTTB" ? "CTTB" : "FT");
+      el.append("rect").attr("x", -15).attr("y", -25).attr("width", 30).attr("height", 50).attr("fill", "#0a0a0a").attr("stroke", c).attr("stroke-width", 2);
+      el.append("text").attr("y", -32).attr("text-anchor", "middle").attr("fill", c).style("font-size", "8px").style("font-weight", "bold").text(d.type);
       for (let i = -18; i <= 18; i += 9) {
-        el.append("circle")
-          .attr("cx", -10)
-          .attr("cy", i)
-          .attr("r", 2)
-          .attr("fill", "#333")
-          .attr("stroke", c);
-        el.append("circle")
-          .attr("cx", 10)
-          .attr("cy", i)
-          .attr("r", 2)
-          .attr("fill", "#333")
-          .attr("stroke", c);
+        el.append("circle").attr("cx", -8).attr("cy", i).attr("r", 2.5).attr("fill", "#333").attr("stroke", c);
+        el.append("line").attr("x1", -5).attr("y1", i).attr("x2", 5).attr("y2", i).attr("stroke", "#444").attr("stroke-dasharray", "2,1");
+        el.append("circle").attr("cx", 8).attr("cy", i).attr("r", 2.5).attr("fill", "#333").attr("stroke", c);
       }
+    } else if (d.type === "Meter") {
+      // Circle with M for Meter
+      el.append("circle").attr("r", 25).attr("fill", "#1a1a1a").attr("stroke", "#fff").attr("stroke-width", 2);
+      el.append("text").attr("dy", 5).attr("text-anchor", "middle").attr("fill", "#fff").style("font-size", "14px").style("font-weight", "bold").text("M");
+    } else if (d.type === "AuxiliaryTransformer") {
+      // Small rectangle with overlap circles for AUX TX
+      el.append("rect").attr("x", -20).attr("y", -15).attr("width", 40).attr("height", 30).attr("fill", "#111").attr("stroke", "#888").attr("stroke-width", 1.5);
+      el.append("circle").attr("cx", -6).attr("cy", 0).attr("r", 8).attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 1.2);
+      el.append("circle").attr("cx", 6).attr("cy", 0).attr("r", 8).attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 1.2);
+      el.append("text").attr("y", -22).attr("text-anchor", "middle").attr("fill", "#aaa").style("font-size", "7px").text("AUX TX");
     } else if (d.type === "Relay") {
-      el.append("rect")
-        .attr("x", -25)
-        .attr("y", -30)
-        .attr("width", 50)
-        .attr("height", 60)
-        .attr("fill", "#222")
-        .attr("stroke", "#0f0")
-        .attr("stroke-width", 2);
+      // Blue Circle Relay Symbol with ANSI number
+      el.append("circle").attr("r", 30).attr("fill", "#001a33").attr("stroke", "#0088ff").attr("stroke-width", 2.5);
       el.append("text")
-        .attr("dy", 4)
-        .attr("fill", "#0f0")
+        .attr("dy", 6)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#00ccff")
         .style("font-size", "14px")
         .style("font-weight", "bold")
-        .text((d.summary.Function || "87").substring(0, 3));
-      for (let i = -18; i <= 18; i += 9)
-        el.append("circle")
-          .attr("cx", i)
-          .attr("cy", 24)
-          .attr("r", 2)
-          .attr("fill", "#333")
-          .attr("stroke", "#0f0");
+        .style("font-family", "Arial")
+        .text(d.summary.Function || "87");
     } else if (d.type === "PowerTransformer") {
-      el.append("circle")
-        .attr("cx", -20)
-        .attr("cy", 0)
-        .attr("r", 25)
-        .attr("fill", "none")
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 2);
-      el.append("circle")
-        .attr("cx", 20)
-        .attr("cy", 0)
-        .attr("r", 25)
-        .attr("fill", "none")
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 2);
-    } else if (["CircuitBreaker", "Disconnect"].includes(d.type)) {
-      el.append("rect")
-        .attr("class", "breaker-frame")
-        .attr("x", -30)
-        .attr("y", -30)
-        .attr("width", 60)
-        .attr("height", 60);
-      [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) =>
-        el
-          .append("line")
-          .attr(
-            "class",
-            "breaker-contact " + ["phase-a", "phase-b", "phase-c"][i],
-          )
-          .attr("x1", -30)
-          .attr("x2", 30)
-          .attr("y1", off)
-          .attr("y2", off)
-          .attr("stroke-dasharray", d.status === "OPEN" ? "4,4" : "none"),
-      );
+      // Overlapping Coils with Winding Symbols (Y / Delta)
+      const drawCoil = (cx, cy, color, type) => {
+        const g = el.append("g").attr("transform", `translate(${cx}, ${cy})`);
+        g.append("circle").attr("r", 22).attr("fill", "#050505").attr("stroke", color).attr("stroke-width", 2.5);
+        
+        // Render winding type inside coil
+        if (type === "D") {
+            // Delta Triangle
+            g.append("path").attr("d", "M 0 -8 L 8 6 L -8 6 Z").attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
+        } else {
+            // Wye Y symbol
+            g.append("path").attr("d", "M 0 0 L 0 -9 M 0 0 L 7 5 M 0 0 L -7 5").attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
+            
+            // Ground symbol for YG/ZG
+            if (type === "YG" || type === "ZG") {
+                const gr = g.append("g").attr("transform", "translate(0, 22)");
+                gr.append("line").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 8).attr("stroke", color).attr("stroke-width", 1.5);
+                gr.append("line").attr("x1", -8).attr("y1", 8).attr("x2", 8).attr("y2", 8).attr("stroke", color).attr("stroke-width", 1.5);
+                gr.append("line").attr("x1", -5).attr("y1", 11).attr("x2", 5).attr("y2", 11).attr("stroke", color).attr("stroke-width", 1.2);
+                gr.append("line").attr("x1", -2).attr("y1", 14).attr("x2", 2).attr("y2", 14).attr("stroke", color).attr("stroke-width", 1);
+            }
+        }
+      };
+      drawCoil(-18, 0, "#fff", d.params.h_winding || "Y");
+      drawCoil(18, 0, "#fff", d.params.x_winding || "D");
+      // Add bushing indicators
+      el.append("text").attr("x", -38).attr("y", -28).attr("fill", "#aaa").style("font-size", "10px").text("H");
+      el.append("text").attr("x", 28).attr("y", -28).attr("fill", "#aaa").style("font-size", "10px").text("X");
+    } else if (d.type === "VoltageRegulator") {
+      el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 28).attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 2);
+      el.append("polyline").attr("points", "-14,-14 -6,14 6,-14 14,14").attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 2.5);
+      // Adjustable arrow
+      el.append("line").attr("x1", -20).attr("y1", 20).attr("x2", 20).attr("y2", -20).attr("stroke", "#0f0").attr("stroke-width", 2);
+      el.append("path").attr("d", "M 12,-20 L 20,-20 L 20,-12").attr("fill", "none").attr("stroke", "#0f0").attr("stroke-width", 2);
+    } else if (d.type === "CircuitBreaker") {
+      // 3-Phase Breaker representation
+      el.append("rect").attr("x", -25).attr("y", -30).attr("width", 50).attr("height", 60).attr("fill", d.status === "CLOSED" ? "#004411" : "#111").attr("stroke", "#00ff44").attr("stroke-width", 2);
+      [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
+          el.append("rect").attr("x", -15).attr("y", off-4).attr("width", 30).attr("height", 8).attr("fill", d.status === "CLOSED" ? "#fff" : "#333").attr("stroke", "#00ff44");
+      });
+    } else if (d.type === "Disconnect") {
+      // 3-Phase Disconnect blades
+      [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
+        el.append("circle").attr("cx", -20).attr("cy", off).attr("r", 2.5).attr("fill", "#fff");
+        el.append("circle").attr("cx", 20).attr("cy", off).attr("r", 2.5).attr("fill", "#fff");
+        if (d.status === "OPEN") {
+          el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 15).attr("y2", off-15).attr("stroke", "#fff").attr("stroke-width", 2.5);
+        } else {
+          el.append("line").attr("x1", -20).attr("y1", off).attr("x2", 20).attr("y2", off).attr("stroke", "#fff").attr("stroke-width", 2.5);
+        }
+      });
+    } else if (d.type === "VoltageSource") {
+      // Source with Sine Wave
+      el.append("circle").attr("r", 30).attr("fill", "#1a1a1a").attr("stroke", "#ffaa00").attr("stroke-width", 2.5);
+      const sinePath = d3.line().x(t => t).y(t => 10 * Math.sin(t / 5));
+      const tValues = d3.range(-20, 21, 1);
+      el.append("path").attr("d", sinePath(tValues)).attr("fill", "none").attr("stroke", "#ffaa00").attr("stroke-width", 2);
+    } else if (d.type === "Load") {
+      // Circle enclosure for Load
+      el.append("circle").attr("r", 35).attr("fill", "#1a0505").attr("stroke", "#ff4444").attr("stroke-width", 2);
+      // 3-Phase Resistor-style Load inside
+      [-PHASE_GAP, 0, PHASE_GAP].forEach(off => {
+          // Zigzag resistor symbol
+          el.append("polyline").attr("points", `-18,${off} -13,${off-4} -8,${off+4} -3,${off-4} 2,${off+4} 7,${off-4} 12,${off+4} 17,${off}`).attr("fill", "none").attr("stroke", "#ff4444").attr("stroke-width", 2);
+          // Connection to ground-ish point
+          el.append("line").attr("x1", 17).attr("y1", off).attr("x2", 22).attr("y2", off).attr("stroke", "#ff4444");
+      });
+      el.append("line").attr("x1", 22).attr("y1", -PHASE_GAP).attr("x2", 22).attr("y2", PHASE_GAP).attr("stroke", "#ff4444");
+    } else if (d.type === "Bus" || d.type === "Wire") {
+      // 3-Phase Bus Bars Look
+      const colors = ["#f44", "#ff4", "#44f"];
+      [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
+          el.append("line")
+            .attr("x1", -40).attr("y1", off)
+            .attr("x2", 40).attr("y2", off)
+            .attr("stroke", colors[i])
+            .attr("stroke-width", 5)
+            .attr("stroke-linecap", "round")
+            .attr("opacity", 0.9);
+      });
+      // Neutral bar (thin, dashed)
       el.append("line")
-        .attr("class", "neutral")
-        .attr("x1", -30)
-        .attr("x2", 30)
-        .attr("y1", PHASE_GAP * 2)
-        .attr("y2", PHASE_GAP * 2)
-        .attr("stroke-width", 2);
+        .attr("x1", -40).attr("y1", PHASE_GAP * 2)
+        .attr("x2", 40).attr("y2", PHASE_GAP * 2)
+        .attr("stroke", "#666")
+        .attr("stroke-width", 2)
+        .attr("stroke-dasharray", "4,2");
     } else if (d.type === "ShuntCapacitor") {
-      // Capacitor symbol (two horizontal plates with vertical leads)
-      el.append("line").attr("x1", 0).attr("y1", -26).attr("x2", 0).attr("y2", -10).attr("stroke", "#4df").attr("stroke-width", 2);
-      el.append("line").attr("x1", -20).attr("y1", -10).attr("x2", 20).attr("y2", -10).attr("stroke", "#4df").attr("stroke-width", 3.5);
-      el.append("line").attr("x1", -20).attr("y1", 4).attr("x2", 20).attr("y2", 4).attr("stroke", "#4df").attr("stroke-width", 3.5);
-      el.append("line").attr("x1", 0).attr("y1", 4).attr("x2", 0).attr("y2", 18).attr("stroke", "#4df").attr("stroke-width", 2);
-      el.append("line").attr("x1", -12).attr("y1", 18).attr("x2", 12).attr("y2", 18).attr("stroke", "#666").attr("stroke-width", 2);
-      el.append("line").attr("x1", -7).attr("y1", 22).attr("x2", 7).attr("y2", 22).attr("stroke", "#666").attr("stroke-width", 1.5);
-      el.append("line").attr("x1", -3).attr("y1", 26).attr("x2", 3).attr("y2", 26).attr("stroke", "#666").attr("stroke-width", 1);
+      const g = el.append("g").attr("transform", "translate(0, -10)");
+      g.append("line").attr("x1", 0).attr("y1", -15).attr("x2", 0).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
+      g.append("line").attr("x1", -18).attr("y1", 0).attr("x2", 18).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 3);
+      g.append("line").attr("x1", -18).attr("y1", 8).attr("x2", 18).attr("y2", 8).attr("stroke", "#4df").attr("stroke-width", 3);
+      g.append("line").attr("x1", 0).attr("y1", 8).attr("x2", 0).attr("y2", 20).attr("stroke", "#4df").attr("stroke-width", 2);
+      // Ground
+      const gr = el.append("g").attr("transform", "translate(0, 10)");
+      gr.append("line").attr("x1", -12).attr("y1", 12).attr("x2", 12).attr("y2", 12).attr("stroke", "#666").attr("stroke-width", 2);
+      gr.append("line").attr("x1", -7).attr("y1", 16).attr("x2", 7).attr("y2", 16).attr("stroke", "#666").attr("stroke-width", 1.5);
+      gr.append("line").attr("x1", -3).attr("y1", 20).attr("x2", 3).attr("y2", 20).attr("stroke", "#666").attr("stroke-width", 1);
     } else if (d.type === "ShuntReactor") {
-      // Reactor symbol (IEC rectangle = inductor)
       el.append("line").attr("x1", 0).attr("y1", -28).attr("x2", 0).attr("y2", -16).attr("stroke", "#f90").attr("stroke-width", 2);
-      el.append("rect").attr("x", -14).attr("y", -16).attr("width", 28).attr("height", 32).attr("fill", "#1a0f00").attr("stroke", "#f90").attr("stroke-width", 2);
-      el.append("text").attr("x", 0).attr("y", 3).attr("text-anchor", "middle").attr("dominant-baseline", "middle").attr("font-size", "9px").attr("fill", "#f90").text("L");
+      // Inductor curls
+      el.append("path").attr("d", "M 0 -16 Q 10 -12 0 -8 Q 10 -4 0 0 Q 10 4 0 8 Q 10 12 0 16").attr("fill", "none").attr("stroke", "#f90").attr("stroke-width", 2);
       el.append("line").attr("x1", 0).attr("y1", 16).attr("x2", 0).attr("y2", 28).attr("stroke", "#f90").attr("stroke-width", 2);
+      // Ground
       el.append("line").attr("x1", -12).attr("y1", 28).attr("x2", 12).attr("y2", 28).attr("stroke", "#666").attr("stroke-width", 2);
       el.append("line").attr("x1", -7).attr("y1", 32).attr("x2", 7).attr("y2", 32).attr("stroke", "#666").attr("stroke-width", 1.5);
       el.append("line").attr("x1", -3).attr("y1", 36).attr("x2", 3).attr("y2", 36).attr("stroke", "#666").attr("stroke-width", 1);
     } else if (d.type === "SurgeArrester") {
-      // Arrow pointing toward ground + ground symbol
       el.append("line").attr("x1", 0).attr("y1", -26).attr("x2", 0).attr("y2", -12).attr("stroke", "#ff6").attr("stroke-width", 2);
-      el.append("polygon").attr("points", "0,14 -14,-12 14,-12").attr("fill", "#ff6").attr("fill-opacity", 0.35).attr("stroke", "#ff6").attr("stroke-width", 1.5);
-      el.append("line").attr("x1", 0).attr("y1", 14).attr("x2", 0).attr("y2", 26).attr("stroke", "#ff6").attr("stroke-width", 2);
+      // Arrester gaps/element
+      el.append("rect").attr("x", -10).attr("y", -12).attr("width", 20).attr("height", 24).attr("fill", "none").attr("stroke", "#ff6").attr("stroke-width", 1.5);
+      el.append("line").attr("x1", -10).attr("y1", 0).attr("x2", 10).attr("y2", 0).attr("stroke", "#ff6").attr("stroke-width", 1).attr("stroke-dasharray", "2,2");
+      el.append("line").attr("x1", 0).attr("y1", 12).attr("x2", 0).attr("y2", 26).attr("stroke", "#ff6").attr("stroke-width", 2);
+      // Ground
       el.append("line").attr("x1", -12).attr("y1", 26).attr("x2", 12).attr("y2", 26).attr("stroke", "#666").attr("stroke-width", 2);
       el.append("line").attr("x1", -7).attr("y1", 30).attr("x2", 7).attr("y2", 30).attr("stroke", "#666").attr("stroke-width", 1.5);
       el.append("line").attr("x1", -3).attr("y1", 34).attr("x2", 3).attr("y2", 34).attr("stroke", "#666").attr("stroke-width", 1);
     } else if (d.type === "SVC") {
-      // Diamond shape (variable reactive device)
-      el.append("polygon").attr("points", "0,-20 18,0 0,20 -18,0").attr("fill", "none").attr("stroke", "#0ff").attr("stroke-width", 2);
-      el.append("line").attr("x1", -14).attr("y1", -8).attr("x2", 14).attr("y2", 8).attr("stroke", "#0ff").attr("stroke-width", 1.5);
+      el.append("polygon").attr("points", "0,-20 18,0 0,20 -18,0").attr("fill", "#055").attr("fill-opacity", 0.5).attr("stroke", "#0ff").attr("stroke-width", 2);
+      el.append("line").attr("x1", -14).attr("y1", 8).attr("x2", 14).attr("y2", -8).attr("stroke", "#0ff").attr("stroke-width", 2);
+      el.append("path").attr("d", "M 8,-8 L 14,-8 L 14,-2").attr("fill", "none").attr("stroke", "#0ff").attr("stroke-width", 2);
       el.append("line").attr("x1", 0).attr("y1", -28).attr("x2", 0).attr("y2", -20).attr("stroke", "#0ff").attr("stroke-width", 2);
       el.append("line").attr("x1", 0).attr("y1", 20).attr("x2", 0).attr("y2", 32).attr("stroke", "#0ff").attr("stroke-width", 2);
+      // Ground
       el.append("line").attr("x1", -12).attr("y1", 32).attr("x2", 12).attr("y2", 32).attr("stroke", "#666").attr("stroke-width", 2);
       el.append("line").attr("x1", -7).attr("y1", 36).attr("x2", 7).attr("y2", 36).attr("stroke", "#666").attr("stroke-width", 1.5);
     } else if (d.type === "NeutralGroundingResistor") {
-      // Vertical zigzag (resistor symbol) + ground
       el.append("line").attr("x1", 0).attr("y1", -28).attr("x2", 0).attr("y2", -16).attr("stroke", "#aaa").attr("stroke-width", 2);
       el.append("polyline").attr("points", "0,-16 8,-12 -8,-8 8,-4 -8,0 8,4 -8,8 0,12").attr("fill", "none").attr("stroke", "#aaa").attr("stroke-width", 2).attr("stroke-linejoin", "round");
       el.append("line").attr("x1", 0).attr("y1", 12).attr("x2", 0).attr("y2", 26).attr("stroke", "#aaa").attr("stroke-width", 2);
+      // Ground
       el.append("line").attr("x1", -12).attr("y1", 26).attr("x2", 12).attr("y2", 26).attr("stroke", "#666").attr("stroke-width", 2);
       el.append("line").attr("x1", -7).attr("y1", 30).attr("x2", 7).attr("y2", 30).attr("stroke", "#666").attr("stroke-width", 1.5);
       el.append("line").attr("x1", -3).attr("y1", 34).attr("x2", 3).attr("y2", 34).attr("stroke", "#666").attr("stroke-width", 1);
     } else if (d.type === "SeriesCapacitor") {
-      // Inline series: stubs to two vertical plates
-      el.append("line").attr("x1", -55).attr("y1", 0).attr("x2", -12).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
-      el.append("line").attr("x1", 12).attr("y1", 0).attr("x2", 55).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
-      el.append("line").attr("x1", -12).attr("y1", -18).attr("x2", -12).attr("y2", 18).attr("stroke", "#4df").attr("stroke-width", 3.5);
-      el.append("line").attr("x1", 12).attr("y1", -18).attr("x2", 12).attr("y2", 18).attr("stroke", "#4df").attr("stroke-width", 3.5);
+      el.append("line").attr("x1", -50).attr("y1", 0).attr("x2", -8).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
+      el.append("line").attr("x1", 8).attr("y1", 0).attr("x2", 50).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
+      el.append("line").attr("x1", -8).attr("y1", -20).attr("x2", -8).attr("y2", 20).attr("stroke", "#4df").attr("stroke-width", 3.5);
+      el.append("line").attr("x1", 8).attr("y1", -20).attr("x2", 8).attr("y2", 20).attr("stroke", "#4df").attr("stroke-width", 3.5);
     } else if (d.type === "SeriesReactor") {
-      // Inline series: stubs to a center rectangle
-      el.append("line").attr("x1", -55).attr("y1", 0).attr("x2", -20).attr("y2", 0).attr("stroke", "#f90").attr("stroke-width", 2);
-      el.append("line").attr("x1", 20).attr("y1", 0).attr("x2", 55).attr("y2", 0).attr("stroke", "#f90").attr("stroke-width", 2);
-      el.append("rect").attr("x", -20).attr("y", -13).attr("width", 40).attr("height", 26).attr("fill", "#1a0f00").attr("stroke", "#f90").attr("stroke-width", 2);
-      el.append("text").attr("x", 0).attr("y", 4).attr("text-anchor", "middle").attr("dominant-baseline", "middle").attr("font-size", "9px").attr("fill", "#f90").text("XL");
+      el.append("line").attr("x1", -50).attr("y1", 0).attr("x2", -20).attr("y2", 0).attr("stroke", "#f90").attr("stroke-width", 2);
+      el.append("line").attr("x1", 20).attr("y1", 0).attr("x2", 50).attr("y2", 0).attr("stroke", "#f90").attr("stroke-width", 2);
+      // Inductor coils (horizontal)
+      el.append("path").attr("d", "M -20 0 Q -15 -10 -10 0 Q -5 -10 0 0 Q 5 -10 10 0 Q 15 -10 20 0").attr("fill", "none").attr("stroke", "#f90").attr("stroke-width", 2);
     } else if (d.type === "LineTrap") {
-      // Inline series: stubs to oval LC symbol
-      el.append("line").attr("x1", -55).attr("y1", 0).attr("x2", -22).attr("y2", 0).attr("stroke", "#8f8").attr("stroke-width", 2);
-      el.append("line").attr("x1", 22).attr("y1", 0).attr("x2", 55).attr("y2", 0).attr("stroke", "#8f8").attr("stroke-width", 2);
-      el.append("ellipse").attr("cx", 0).attr("cy", 0).attr("rx", 22).attr("ry", 15).attr("fill", "#001a00").attr("stroke", "#8f8").attr("stroke-width", 2);
-      el.append("text").attr("x", 0).attr("y", 4).attr("text-anchor", "middle").attr("dominant-baseline", "middle").attr("font-size", "8px").attr("fill", "#8f8").text("WT");
+      el.append("line").attr("x1", -50).attr("y1", 0).attr("x2", -25).attr("y2", 0).attr("stroke", "#8f8").attr("stroke-width", 2);
+      el.append("line").attr("x1", 25).attr("y1", 0).attr("x2", 50).attr("y2", 0).attr("stroke", "#8f8").attr("stroke-width", 2);
+      el.append("ellipse").attr("cx", 0).attr("cy", 0).attr("rx", 25).attr("ry", 15).attr("fill", "#050").attr("fill-opacity", 0.4).attr("stroke", "#8f8").attr("stroke-width", 2);
+      // Parallel LC symbol inside
+      el.append("path").attr("d", "M -15 -5 L 15 -5 M -15 5 L 15 5").attr("stroke", "#8f8").attr("stroke-width", 1);
     } else {
       el.append("circle")
         .attr("r", 30)
@@ -1171,6 +1174,7 @@ function updateMinimap() {
       if (d.type === "CircuitBreaker") return d.status === "OPEN" ? "#444" : "#00cc44";
       if (d.type === "Disconnect") return d.status === "OPEN" ? "#333" : "#559955";
       if (d.type === "PowerTransformer") return "#4488ff";
+      if (d.type === "VoltageRegulator") return "#44ff88";
       if (d.type === "Load") return "#ff4444";
       if (d.type === "Bus") return "#555";
       return "#505050";

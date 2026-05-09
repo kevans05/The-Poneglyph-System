@@ -4,7 +4,8 @@ from phasors.current_phasor import CurrentPhasor
 from phasors.devices.bus import Bus
 from phasors.devices.passive import LineTrap, NeutralGroundingResistor, SeriesCapacitor, SeriesReactor, SurgeArrester
 from phasors.devices.power_line import PowerLine
-from phasors.devices.protection import CTTB, FTBlock, IsoBlock, Relay
+from phasors.devices.protection import CTTB, FTBlock, IsoBlock, Relay, AuxiliaryTransformer, Meter
+from phasors.devices.regulator import VoltageRegulator
 from phasors.devices.sensors import CurrentTransformer, VoltageTransformer, DualWindingVT
 from phasors.devices.source_load import Load, ShuntCapacitor, ShuntReactor, SVC, VoltageSource
 from phasors.devices.switching import CircuitBreaker, Disconnect
@@ -105,6 +106,7 @@ class DeviceFactory:
                 bushing=data.get("bushing", "X"),
                 polarity_normal=data.get("polarity_normal", True),
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
+                secondary_wiring=data.get("secondary_wiring", "Y"),
             )
 
         elif dtype == "DualWindingVT":
@@ -129,6 +131,8 @@ class DeviceFactory:
                 bushing=data.get("bushing", "X"),
                 polarity_normal=data.get("polarity_normal", True),
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
+                secondary_wiring=data.get("secondary_wiring", "Y"),
+                secondary2_wiring=data.get("secondary2_wiring", "Y"),
             )
 
         elif dtype == "PowerTransformer":
@@ -141,6 +145,15 @@ class DeviceFactory:
                 polarity_reversed=data.get("polarity_reversed", False),
                 tap_configs=data.get("tap_configs"),
                 selected_tap_index=data.get("selected_tap_index", 0),
+            )
+
+        elif dtype == "VoltageRegulator":
+            return VoltageRegulator(
+                did,
+                nominal_kv=data.get("nominal_kv", 13.8),
+                tap_pos=data.get("tap_pos", 0),
+                step_percent=data.get("step_percent", 0.625),
+                max_steps=data.get("max_steps", 16)
             )
 
         elif dtype == "Load":
@@ -168,6 +181,16 @@ class DeviceFactory:
 
         elif dtype == "Relay":
             return Relay(did, function=data.get("function", "Differential"), input_polarities=data.get("input_polarities", {}))
+
+        elif dtype == "AuxiliaryTransformer":
+            return AuxiliaryTransformer(
+                did,
+                phase_shift_deg=data.get("phase_shift_deg", 0.0),
+                ratio=data.get("ratio", 1.0)
+            )
+
+        elif dtype == "Meter":
+            return Meter(did)
 
         elif dtype == "ShuntCapacitor":
             return ShuntCapacitor(

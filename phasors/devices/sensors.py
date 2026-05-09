@@ -157,6 +157,13 @@ SECONDARY_WIRINGS = {
     "RESIDUAL": "3I₀ — Residual",
 }
 
+VT_SECONDARY_WIRINGS = {
+    "Y": "Y — Wye (LN)",
+    "D": "Δ — Delta (LL)",
+    "DAB": "Δ — Delta (DAB)",
+    "DAC": "Δ — Delta (DAC)",
+}
+
 
 class CurrentTransformer(InstrumentTransformer):
     VALID_POSITIONS = ("inner", "middle", "outer")
@@ -279,21 +286,46 @@ class VoltageTransformer(InstrumentTransformer):
         bushing: str = "X",
         polarity_normal=True,
         phase_shift_deg=0.0,
+        secondary_wiring: str = "Y",
     ):
         super().__init__(
             name, location, tap_ratios, selected_tap, polarity_normal, phase_shift_deg
         )
         self.bushing = bushing.upper().strip()
+        sw = secondary_wiring.upper().strip()
+        self.secondary_wiring = sw if sw in VT_SECONDARY_WIRINGS else "Y"
+
+    def _apply_secondary_wiring(self, v_sys):
+        def _sub(p1, p2):
+            c = p1.to_complex() - p2.to_complex()
+            mag, ang_rad = cmath.polar(c)
+            return VoltagePhasor(mag, math.degrees(ang_rad))
+
+        if self.secondary_wiring in ("DAB", "D"):
+            return wye_voltages(
+                _sub(v_sys.a, v_sys.b),
+                _sub(v_sys.b, v_sys.c),
+                _sub(v_sys.c, v_sys.a),
+            )
+        elif self.secondary_wiring == "DAC":
+            return wye_voltages(
+                _sub(v_sys.a, v_sys.c),
+                _sub(v_sys.c, v_sys.b),
+                _sub(v_sys.b, v_sys.a),
+            )
+        else:
+            return v_sys
 
     @property
     def secondary_voltage(self):
         source_v = self.voltage
         if source_v:
-            return self._apply_logic(source_v, to_secondary=True)
+            base = self._apply_logic(source_v, to_secondary=True)
+            return self._apply_secondary_wiring(base)
         return None
 
     def get_summary_dict(self):
-        is_delta = self.connection_type == "delta"
+        is_delta = self.secondary_wiring in ("D", "DAB", "DAC")
         stats = {
             "Location": self.location,
             "Winding Side": self.winding_side,
@@ -302,20 +334,18 @@ class VoltageTransformer(InstrumentTransformer):
             "Ratio": f"{self.ratio}:1",
             "Compensation": f"{self.phase_shift_deg} deg",
             "Bushing": self.bushing,
+            "Secondary Wiring": VT_SECONDARY_WIRINGS.get(self.secondary_wiring, self.secondary_wiring),
         }
         sec_v = self.secondary_voltage
         if sec_v:
             if is_delta:
-                # Delta VTs measure Line-to-Line voltages
-                phases = [("AB", "a", "b"), ("BC", "b", "c"), ("CA", "c", "a")]
-                for label, a1, a2 in phases:
+                labels = [("AB", "a"), ("BC", "b"), ("CA", "c")]
+                for label, attr in labels:
                     stats[f"--- PHASE {label} ---"] = "HEADER"
-                    # Calculate LL from LN-equivalent internal phasors
-                    v_ll = getattr(sec_v, a1) - getattr(sec_v, a2)
-                    stats[f"Sec Voltage Phase {label}"] = v_ll.magnitude
-                    stats[f"Phase {label} V-Angle"] = v_ll.angle_degrees
+                    p_phasor = getattr(sec_v, attr)
+                    stats[f"Sec Voltage Phase {label}"] = p_phasor.magnitude
+                    stats[f"Phase {label} V-Angle"] = p_phasor.angle_degrees
             else:
-                # Wye VTs measure Line-to-Neutral voltages
                 phases = [("A", "a"), ("B", "b"), ("C", "c")]
                 for label, attr in phases:
                     stats[f"--- PHASE {label} ---"] = "HEADER"
@@ -338,6 +368,8 @@ class DualWindingVT(VoltageTransformer):
         bushing: str = "X",
         polarity_normal: bool = True,
         phase_shift_deg: float = 0.0,
+        secondary_wiring: str = "Y",
+        secondary2_wiring: str = "Y",
     ):
         super().__init__(
             name,
@@ -347,35 +379,61 @@ class DualWindingVT(VoltageTransformer):
             bushing,
             polarity_normal,
             phase_shift_deg,
+            secondary_wiring,
         )
         self.sec2_ratio = sec2_ratio
+        sw2 = secondary2_wiring.upper().strip()
+        self.secondary2_wiring = sw2 if sw2 in VT_SECONDARY_WIRINGS else "Y"
+
+    def _apply_secondary2_wiring(self, v_sys):
+        def _sub(p1, p2):
+            c = p1.to_complex() - p2.to_complex()
+            mag, ang_rad = cmath.polar(c)
+            return VoltagePhasor(mag, math.degrees(ang_rad))
+
+        if self.secondary2_wiring in ("DAB", "D"):
+            return wye_voltages(
+                _sub(v_sys.a, v_sys.b),
+                _sub(v_sys.b, v_sys.c),
+                _sub(v_sys.c, v_sys.a),
+            )
+        elif self.secondary2_wiring == "DAC":
+            return wye_voltages(
+                _sub(v_sys.a, v_sys.c),
+                _sub(v_sys.c, v_sys.b),
+                _sub(v_sys.b, v_sys.a),
+            )
+        else:
+            return v_sys
 
     @property
     def secondary2_voltage(self):
         source_v = self.voltage
         if source_v:
-            return self._apply_logic(
+            base = self._apply_logic(
                 source_v, to_secondary=True, ratio_override=self.sec2_ratio
             )
+            return self._apply_secondary2_wiring(base)
         return None
 
     def get_summary_dict(self):
         stats = super().get_summary_dict()
-        is_delta = self.connection_type == "delta"
+        is_delta2 = self.secondary2_wiring in ("D", "DAB", "DAC")
         stats["Type"] = "Dual Winding VT"
         stats["Ratio W1"] = f"{self.ratio}:1"
         stats["Ratio W2"] = f"{self.sec2_ratio}:1"
+        stats["Secondary 2 Wiring"] = VT_SECONDARY_WIRINGS.get(self.secondary2_wiring, self.secondary2_wiring)
 
         sec2_v = self.secondary2_voltage
         if sec2_v:
             stats["--- WINDING 2 ---"] = "HEADER"
-            if is_delta:
-                phases = [("AB", "a", "b"), ("BC", "b", "c"), ("CA", "c", "a")]
-                for label, a1, a2 in phases:
+            if is_delta2:
+                labels = [("AB", "a"), ("BC", "b"), ("CA", "c")]
+                for label, attr in labels:
                     stats[f"--- PHASE {label} W2 ---"] = "HEADER"
-                    v_ll = getattr(sec2_v, a1) - getattr(sec2_v, a2)
-                    stats[f"Sec2 Voltage Phase {label}"] = v_ll.magnitude
-                    stats[f"Phase {label} W2 V-Angle"] = v_ll.angle_degrees
+                    p_phasor = getattr(sec2_v, attr)
+                    stats[f"Sec2 Voltage Phase {label}"] = p_phasor.magnitude
+                    stats[f"Phase {label} W2 V-Angle"] = p_phasor.angle_degrees
             else:
                 phases = [("A", "a"), ("B", "b"), ("C", "c")]
                 for label, attr in phases:

@@ -224,14 +224,17 @@ const _DEVICE_DEFAULTS = {
   CircuitBreaker:      { continuous_amps: 2000, interrupt_ka: 40, status: "OPEN" },
   Disconnect:          { status: "OPEN" },
   PowerTransformer:    { pri_kv: 230, sec_kv: 115, h_winding: "Y", x_winding: "D", polarity_reversed: false },
+  VoltageRegulator:    { nominal_kv: 13.8, tap_pos: 0, step_percent: 0.625, max_steps: 16 },
   Load:                { load_mva: 50, pf: 0.85, is_balanced: true },
-  VoltageTransformer:  { ratio: "2000:1", bushing: "X", polarity_normal: true },
-  DualWindingVT:       { ratio: "2000:1", sec2_ratio: "2000:1", bushing: "X", polarity_normal: true },
+  VoltageTransformer:  { ratio: "2000:1", bushing: "X", polarity_normal: true, secondary_wiring: "Y" },
+  DualWindingVT:       { ratio: "2000:1", sec2_ratio: "2000:1", bushing: "X", polarity_normal: true, secondary_wiring: "Y", secondary2_wiring: "Y" },
   CurrentTransformer:  { ratio: "2000:5", bushing: "X", position: "inner", polarity_facing: "AWAY", secondary_wiring: "Y" },
   FTBlock:             {},
   IsoBlock:            {},
   CTTB:                { mode: "SUM" },
   Relay:               { function: "Differential" },
+  AuxiliaryTransformer: { phase_shift_deg: 0, ratio: 1.0 },
+  Meter:                {},
   Wire:                {},
   ShuntCapacitor:             { mvar_rating: 10, kv_rating: 115 },
   ShuntReactor:               { mvar_rating: 10, kv_rating: 115 },
@@ -274,10 +277,11 @@ function showPlantMenu(pageX, pageY, gx, gy, hostId = null, bushing = null) {
   const groups = [
     { label: "SOURCES & LOADS",  types: ["VoltageSource", "Load", "Wire"] },
     { label: "SWITCHING",        types: ["CircuitBreaker", "Disconnect"] },
-    { label: "TRANSFORMERS",     types: ["PowerTransformer", "VoltageTransformer", "DualWindingVT", "CurrentTransformer"] },
+    { label: "TRANSFORMERS",     types: ["PowerTransformer", "VoltageRegulator", "VoltageTransformer", "DualWindingVT", "CurrentTransformer"] },
     { label: "SHUNT DEVICES",    types: ["ShuntCapacitor", "ShuntReactor", "SurgeArrester", "SVC", "NeutralGroundingResistor"] },
     { label: "SERIES DEVICES",   types: ["SeriesCapacitor", "SeriesReactor", "LineTrap"] },
-    { label: "PROTECTION",       types: ["CTTB", "FTBlock", "IsoBlock", "Relay"] },
+    { label: "PROTECTION",       types: ["CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Relay"] },
+    { label: "METERING",         types: ["Meter"] },
   ];
 
   let html = `<div style="padding:6px 10px; font-size:10px; color:#ff0; border-bottom:1px solid #333; background:#111;">${title}</div>`;
@@ -809,6 +813,7 @@ const WIZARD_MEASURABLE = new Set([
   "CircuitBreaker",
   "Disconnect",
   "PowerTransformer",
+  "VoltageRegulator",
   "PowerLine",
   "Load",
   "CurrentTransformer",
@@ -906,7 +911,7 @@ function _toggleAngleConv() {
 
 // Device selection filter groups
 const FILTER_GROUPS = {
-  PROTECTION: new Set(["Relay", "CTTB", "FTBlock", "IsoBlock"]),
+  PROTECTION: new Set(["Relay", "CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Meter"]),
   SENSORS: new Set([
     "CurrentTransformer",
     "VoltageTransformer",
@@ -917,6 +922,7 @@ const FILTER_GROUPS = {
     "CircuitBreaker",
     "Disconnect",
     "PowerTransformer",
+    "VoltageRegulator",
     "Bus",
     "PowerLine",
     "Load",
@@ -954,6 +960,12 @@ function showConfigModal(id) {
       { label: "Continuous Amps (A)", key: "continuous_amps" },
       { label: "Interrupt (kA)", key: "interrupt_ka" },
     ],
+    VoltageRegulator: [
+      { label: "Nominal Voltage (kV)", key: "nominal_kv" },
+      { label: "Tap Position (-16 to +16)", key: "tap_pos" },
+      { label: "Step % (default 0.625)", key: "step_percent" },
+      { label: "Max Steps (default 16)", key: "max_steps" },
+    ],
     PowerTransformer: [
       { label: "Pri (kV)", key: "pri_kv" },
       { label: "Sec (kV)", key: "sec_kv" },
@@ -968,6 +980,11 @@ function showConfigModal(id) {
           { value: "DIFFERENTIAL", label: "DIFFERENTIAL (I1 - I2 - ...)" },
         ],
       },
+    ],
+    Meter: [],
+    AuxiliaryTransformer: [
+      { label: "Phase Shift (°)", key: "phase_shift_deg" },
+      { label: "Ratio Correction", key: "ratio" },
     ],
     Relay: [
       {
@@ -1007,10 +1024,43 @@ function showConfigModal(id) {
     ],
     VoltageTransformer: [
       { label: "Bushing", key: "bushing", type: "text" },
+      {
+        label: "Secondary Wiring",
+        key: "secondary_wiring",
+        type: "select",
+        options: [
+          { value: "Y", label: "Y — Wye (LN)" },
+          { value: "D", label: "Δ — Delta (LL)" },
+          { value: "DAB", label: "Δ — Delta (DAB)" },
+          { value: "DAC", label: "Δ — Delta (DAC)" },
+        ],
+      },
     ],
     DualWindingVT: [
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "W2 Ratio (e.g. 2000:1)", key: "sec2_ratio", type: "text" },
+      {
+        label: "W1 Secondary Wiring",
+        key: "secondary_wiring",
+        type: "select",
+        options: [
+          { value: "Y", label: "Y — Wye (LN)" },
+          { value: "D", label: "Δ — Delta (LL)" },
+          { value: "DAB", label: "Δ — Delta (DAB)" },
+          { value: "DAC", label: "Δ — Delta (DAC)" },
+        ],
+      },
+      {
+        label: "W2 Secondary Wiring",
+        key: "secondary2_wiring",
+        type: "select",
+        options: [
+          { value: "Y", label: "Y — Wye (LN)" },
+          { value: "D", label: "Δ — Delta (LL)" },
+          { value: "DAB", label: "Δ — Delta (DAB)" },
+          { value: "DAC", label: "Δ — Delta (DAC)" },
+        ],
+      },
     ],
     ShuntCapacitor: [
       { label: "Rating (MVAr)", key: "mvar_rating" },
@@ -1087,7 +1137,7 @@ function showConfigModal(id) {
   });
 
   // CT/VT/DualWindingVT: tap ratio selector + add/remove tap management
-  if (["CurrentTransformer", "VoltageTransformer", "DualWindingVT"].includes(node.type)) {
+  if (["CurrentTransformer", "VoltageTransformer", "DualWindingVT", "VoltageRegulator"].includes(node.type)) {
     _appendTapSelector(body, params, node.type);
   }
 
@@ -1109,7 +1159,7 @@ function showConfigModal(id) {
         }
       }
     });
-    if (["CurrentTransformer", "VoltageTransformer", "DualWindingVT"].includes(node.type)) {
+    if (["CurrentTransformer", "VoltageTransformer", "DualWindingVT", "VoltageRegulator"].includes(node.type)) {
       const selTap = document.getElementById("conf-selected_tap");
       if (selTap) props.selected_tap = selTap.value;
       // collect tap_ratios from the editable list; parse "N:M" strings into floats

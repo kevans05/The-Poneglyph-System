@@ -51,7 +51,7 @@ function _renderPickList() {
 
   // Group by type preserving typical electrical order
   const typeOrder = [
-    "VoltageSource", "PowerTransformer", "CircuitBreaker", "Disconnect",
+    "VoltageSource", "PowerTransformer", "VoltageRegulator", "CircuitBreaker", "Disconnect",
     "Bus", "PowerLine", "Load",
     "CurrentTransformer", "VoltageTransformer", "DualWindingVT",
     "Relay", "CTTB", "FTBlock", "IsoBlock",

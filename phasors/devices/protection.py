@@ -217,3 +217,66 @@ class Relay(ProtectionDevice):
                 stats["Idiff Phase A"] = i_result.a.magnitude
 
         return stats
+
+class AuxiliaryTransformer(ProtectionDevice):
+    def __init__(self, name: str, phase_shift_deg: float = 0.0, ratio: float = 1.0):
+        super().__init__(name)
+        self.phase_shift_deg = phase_shift_deg
+        self.ratio = ratio
+
+    def _apply_shift(self, system):
+        if not system: return None
+        rotation = cmath.rect(1, math.radians(self.phase_shift_deg))
+        
+        def process(p):
+            new_c = (p.to_complex() * self.ratio) * rotation
+            mag, ang = cmath.polar(new_c)
+            if isinstance(p, VoltagePhasor):
+                return VoltagePhasor(mag, math.degrees(ang))
+            return CurrentPhasor(mag, math.degrees(ang))
+            
+        return type(system)(process(system.a), process(system.b), process(system.c))
+
+    @property
+    def current(self):
+        base_i = super().current
+        return self._apply_shift(base_i)
+
+    @property
+    def voltage(self):
+        base_v = super().voltage
+        return self._apply_shift(base_v)
+
+    def get_summary_dict(self):
+        stats = super().get_summary_dict()
+        stats["Phase Shift"] = f"{self.phase_shift_deg:+.1f}°"
+        stats["Ratio Correction"] = f"{self.ratio:.4f}"
+        return stats
+
+class Meter(ProtectionDevice):
+    def get_summary_dict(self):
+        stats = super().get_summary_dict()
+        v = self.voltage
+        i = self.current
+        if v and i:
+            def calc_pq(vp, ip):
+                v_c = vp.to_complex()
+                i_c = ip.to_complex()
+                s_c = v_c * i_c.conjugate()
+                return s_c.real, s_c.imag
+
+            p_a, q_a = calc_pq(v.a, i.a)
+            p_b, q_b = calc_pq(v.b, i.b)
+            p_c, q_c = calc_pq(v.c, i.c)
+            
+            p_total = p_a + p_b + p_c
+            q_total = q_a + q_b + q_c
+            s_total = math.sqrt(p_total**2 + q_total**2)
+            pf = p_total / s_total if s_total > 0 else 1.0
+            
+            stats["--- POWER METRICS ---"] = "HEADER"
+            stats["Total Active Power"] = p_total
+            stats["Total Reactive Power"] = q_total
+            stats["Total Apparent Power"] = s_total
+            stats["System PF"] = f"{pf:.3f}"
+        return stats
