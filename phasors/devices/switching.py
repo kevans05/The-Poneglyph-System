@@ -8,7 +8,9 @@ from ..wye_system import wye_voltages
 class Switch:
     def __init__(self, name: str, is_closed: bool = True):
         self.name = name
-        self.is_closed = is_closed
+        self._manual_is_closed = is_closed
+        self.trip_dc_inputs = []
+        self.close_dc_inputs = []
         self.upstream_device = None
         self.h_connections = []
         self.x_connections = []
@@ -16,13 +18,57 @@ class Switch:
         self._evaluating = False
 
     def open(self):
-        self.is_closed = False
+        self._manual_is_closed = False
 
     def close(self):
-        self.is_closed = True
+        self._manual_is_closed = True
+
+    def add_trip_dc(self, source_device):
+        if source_device not in self.trip_dc_inputs:
+            self.trip_dc_inputs.append(source_device)
+        return self
+
+    def add_close_dc(self, source_device):
+        if source_device not in self.close_dc_inputs:
+            self.close_dc_inputs.append(source_device)
+        return self
+
+    @property
+    def is_tripped_by_dc(self) -> bool:
+        """True if any trip coil is energized."""
+        for src in self.trip_dc_inputs:
+            if getattr(src, "dc_output_state", False): return True
+            if hasattr(src, "dc_status") and src.dc_status: return True
+        return False
+
+    @property
+    def is_closed_by_dc(self) -> bool:
+        """True if any close coil is energized."""
+        for src in self.close_dc_inputs:
+            if getattr(src, "dc_output_state", False): return True
+            if hasattr(src, "dc_status") and src.dc_status: return True
+        return False
+
+    @property
+    def is_closed(self) -> bool:
+        # DC Trip (e.g. Lockout) has highest priority
+        if self.is_tripped_by_dc:
+            return False
+        # DC Close pulse/signal
+        if self.is_closed_by_dc:
+            return True
+        return self._manual_is_closed
+
+    @is_closed.setter
+    def is_closed(self, value):
+        self._manual_is_closed = value
 
     @property
     def status(self):
+        if self.is_tripped_by_dc:
+            return "OPEN (Tripped by DC)"
+        if self.is_closed_by_dc and not self._manual_is_closed:
+            return "CLOSED (Driven by DC)"
         return "CLOSED" if self.is_closed else "OPEN"
 
     @property
@@ -96,6 +142,10 @@ class Switch:
             "Status": self.status,
             "Connection": "Delta (Δ)" if is_delta else "Wye (Y)",
         }
+        if self.is_tripped_by_dc:
+            stats["Trip Coil"] = "ENERGIZED"
+        if self.is_closed_by_dc:
+            stats["Close Coil"] = "ENERGIZED" 
         v = self.voltage
         i = self.current
         if v:

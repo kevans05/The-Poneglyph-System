@@ -1167,3 +1167,6 @@ svg {
 
 .adp-item:hover { background: #181818; color: #ffff00; }
 .adp-item-id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-wire { stroke: #ff8800; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
+.trip-wire { stroke: #ff4444; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
+.close-wire { stroke: #44ff44; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }

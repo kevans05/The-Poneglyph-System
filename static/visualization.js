@@ -141,9 +141,12 @@ function render3LD(data) {
 
     const frac = _bendFrac[src.id + "→" + tgt.id] ?? 0.5;
 
-    if (edge.type === "protection") {
+    if (edge.type === "protection" || edge.type === "dc" || edge.type === "trip" || edge.type === "close") {
       let wireClass = "secondary-wire";
-      if (["CurrentTransformer", "CTTB"].includes(src.type))
+      if (edge.type === "dc") wireClass = "dc-wire";
+      else if (edge.type === "trip") wireClass = "trip-wire";
+      else if (edge.type === "close") wireClass = "close-wire";
+      else if (["CurrentTransformer", "CTTB"].includes(src.type))
         wireClass = "ct-wire";
       else if (
         ["VoltageTransformer", "DualWindingVT", "FTBlock", "IsoBlock"].includes(
@@ -390,8 +393,16 @@ function render3LD(data) {
       // Bushing Labels
       el.append("text").attr("x", -40).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("H");
       el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("X");
+    } else if (d.type === "Indicator") {
+      // Indicator Light Symbol
+      const isOn = d.summary["Status"] && d.summary["Status"].includes("ON");
+      el.append("circle").attr("r", 20).attr("fill", isOn ? "#f44" : "#300").attr("stroke", "#fff").attr("stroke-width", 2);
+      if (isOn) {
+        el.append("circle").attr("r", 25).attr("fill", "none").attr("stroke", "#f44").attr("stroke-width", 3).attr("opacity", 0.5);
+      }
+      el.append("line").attr("x1", -12).attr("y1", -12).attr("x2", 12).attr("y2", 12).attr("stroke", "#fff").attr("stroke-width", 1.5);
+      el.append("line").attr("x1", 12).attr("y1", -12).attr("x2", -12).attr("y2", 12).attr("stroke", "#fff").attr("stroke-width", 1.5);
     } else if (d.type === "VoltageRegulator") {
-      el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 28).attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 2);
       el.append("text").attr("x", -38).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
       el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
       el.append("polyline").attr("points", "-14,-14 -6,14 6,-14 14,14").attr("fill", "none").attr("stroke", "#fff").attr("stroke-width", 2.5);

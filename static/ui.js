@@ -109,11 +109,11 @@ function updateStatusBar(reference, syncErrors) {
     bar.style("background", "#0d0000").style("color", "#f44");
   } else if (compareData) {
     html += `<span style="background:#420; color:#fa0; padding:2px 8px; margin-right:15px; border:1px solid #fa0;">COMPARISON MODE ACTIVE: ${compareData.filename}</span>`;
-    html += `<span onclick="exitCompareMode()" style="text-decoration:underline; cursor:pointer; margin-right:20px; color:#f88;">[ EXIT COMPARE ]</span>`;
+    html += `<span onclick="exitCompareMode()" style=\"text-decoration:underline; cursor:pointer; margin-right:20px; color:#f88;">[ EXIT COMPARE ]</span>`;
     bar.style("background", "#111").style("color", "#0f0");
   } else if (reference && reference.device_id) {
     html += `PHASE REFERENCE ACTIVE: <span style="color:#fff; font-weight:bold;">${reference.device_id} (Phase ${reference.phase})</span>`;
-    html += ' <span onclick="setAsReference(null, null)" style="text-decoration:underline; cursor:pointer; margin-left:20px; color:#f88;">[ CLEAR REFERENCE ]</span>';
+    html += ' <span onclick="setAsReference(null, null)" style=\"text-decoration:underline; cursor:pointer; margin-left:20px; color:#f88;">[ CLEAR REFERENCE ]</span>';
     bar.style("background", "#002200").style("color", "#0f0");
   } else {
     html += "Navigation System Standby (Internal 0° Reference).";
@@ -141,7 +141,46 @@ function startConnectionMode(sourceId, bushing) {
       "CONNECTION MODE: Select target device to connect " +
         sourceId +
         bText +
-        ' ... <span onclick="cancelConnectionMode()" style="text-decoration:underline; cursor:pointer; margin-left:20px;">CANCEL</span>',
+        ' ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>',
+    );
+}
+
+function startTripConnectionMode(sourceId) {
+  connectionSource = { id: sourceId, isTrip: true };
+  d3.select("#status-bar")
+    .style("display", "block")
+    .style("background", "#f44")
+    .style("color", "#fff")
+    .html(
+      "TRIP CIRCUIT MODE: Select target Breaker/Switch to connect " +
+        sourceId +
+        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
+    );
+}
+
+function startCloseConnectionMode(sourceId) {
+  connectionSource = { id: sourceId, isClose: true };
+  d3.select("#status-bar")
+    .style("display", "block")
+    .style("background", "#0a0")
+    .style("color", "#fff")
+    .html(
+      "CLOSE CIRCUIT MODE: Select target Breaker/Switch to connect " +
+        sourceId +
+        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
+    );
+}
+
+function startDCConnectionMode(sourceId) {
+  connectionSource = { id: sourceId, isDC: true };
+  d3.select("#status-bar")
+    .style("display", "block")
+    .style("background", "#ff8800")
+    .style("color", "#000")
+    .html(
+      "DC CONNECTION MODE: Select target Indicator/Relay to connect " +
+        sourceId +
+        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
     );
 }
 
@@ -154,7 +193,7 @@ function startSecondaryConnectionMode(sourceId) {
     .html(
       "SECONDARY CONNECTION MODE: Select target CTTB/FT/Relay to connect " +
         sourceId +
-        ' ... <span onclick="cancelConnectionMode()" style="text-decoration:underline; cursor:pointer; margin-left:20px;">CANCEL</span>',
+        ' ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>',
     );
 }
 
@@ -168,12 +207,12 @@ function cancelConnectionMode() {
 
 function completeConnection(targetId) {
   if (!connectionSource) return;
-  const { id, bushing, isSecondary } = connectionSource;
+  const { id, bushing, isSecondary, isDC, isTrip, isClose } = connectionSource;
   if (id === targetId) {
     alert("Cannot connect a device to itself.");
     return;
   }
-  const action = isSecondary ? "add_secondary_connection" : "add_connection";
+  const action = isTrip ? "add_trip_connection" : isClose ? "add_close_connection" : isDC ? "add_dc_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
   reconfigureAPI(id, action, { target_id: targetId, bushing: bushing }).then(
     () => {
       cancelConnectionMode();
@@ -232,9 +271,10 @@ const _DEVICE_DEFAULTS = {
   FTBlock:             {},
   IsoBlock:            {},
   CTTB:                { mode: "SUM" },
-  Relay:               { function: "Differential" },
+  Relay:               { function: "Differential", category: "Numerical" },
   AuxiliaryTransformer: { phase_shift_deg: 0, ratio: 1.0 },
   Meter:                {},
+  Indicator:            {},
   Wire:                {},
   ShuntCapacitor:             { mvar_rating: 10, kv_rating: 115 },
   ShuntReactor:               { mvar_rating: 10, kv_rating: 115 },
@@ -282,6 +322,7 @@ function showPlantMenu(pageX, pageY, gx, gy, hostId = null, bushing = null) {
     { label: "SERIES DEVICES",   types: ["SeriesCapacitor", "SeriesReactor", "LineTrap"] },
     { label: "PROTECTION",       types: ["CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Relay"] },
     { label: "METERING",         types: ["Meter"] },
+    { label: "CONTROL",          types: ["Indicator"] },
   ];
 
   let html = `<div style="padding:6px 10px; font-size:10px; color:#ff0; border-bottom:1px solid #333; background:#111;">${title}</div>`;
@@ -521,6 +562,24 @@ function updateWindow(id, node) {
       "</button>";
   }
 
+  
+  // Relay Control (Manual Trip)
+  if (node.type === "Relay") {
+    const isHigh = node.summary["DC Output"] && node.summary["DC Output"].includes("HIGH");
+    const isMech = node.summary["Category"] === "Electromechanical";
+    const isDropped = node.summary["Target / Flag"] === "DROPPED";
+
+    const label = isHigh ? "RESET DC OUTPUT" : "MANUAL TRIP (DC)";
+    const btnCol = isHigh ? "#522" : "#311";
+    const txtCol = isHigh ? "#aaa" : "#f44";
+    html += "<button class=\"cmd-btn\" style=\"background:" + btnCol + "; color:" + txtCol + "; border-color:" + txtCol + ";\" onclick=\"toggleRelayTrip(\'" + node.id + "\', " + (!isHigh) + ")\">" + label + "</button>";
+
+    if (isMech) {
+      const tLabel = isDropped ? "RESET TARGET / FLAG" : "DROP TARGET";
+      const tCol = isDropped ? "#f80" : "#444";
+      html += "<button class=\"cmd-btn\" style=\"background:#111; color:" + tCol + "; border-color:" + tCol + "; margin-top:4px;\" onclick=\"toggleRelayTarget(\'" + node.id + "\', " + (!isDropped) + ")\">" + tLabel + "</button>";
+    }
+  }
   // 4. ENGINEERING CONTROLS (Grouped)
   html += '<div class="section-title">ENGINEERING CONTROLS</div>';
 
@@ -544,6 +603,9 @@ function updateWindow(id, node) {
       "VoltageTransformer",
       "DualWindingVT",
       "FTBlock",
+      "Indicator",
+      "Meter",
+      "AuxiliaryTransformer",
     ].includes(node.type)
   ) {
     const gx = node.gx,
@@ -601,6 +663,9 @@ function updateWindow(id, node) {
       "VoltageTransformer",
       "DualWindingVT",
       "FTBlock",
+      "Indicator",
+      "Meter",
+      "AuxiliaryTransformer",
     ].includes(node.type)
   ) {
     const isCurrent = ["CurrentTransformer", "CTTB"].includes(node.type);
@@ -625,6 +690,9 @@ function updateWindow(id, node) {
       '<button class="eng-btn" style="flex:1" onclick="startSecondaryConnectionMode(\'' +
       node.id +
       "')\">CONN <span>&rarr;</span></button>" +
+      '<button class="eng-btn" style="flex:1; background:#320; color:#fa0;" onclick="startDCConnectionMode(\'' +
+      node.id +
+      "\')\">DC <span>&rarr;</span></button>" +
       "</div>";
   }
 
@@ -988,6 +1056,15 @@ function showConfigModal(id) {
     ],
     Relay: [
       {
+        label: "Relay Category",
+        key: "category",
+        type: "select",
+        options: [
+          { value: "Numerical", label: "Microprocessor / Numerical" },
+          { value: "Electromechanical", label: "Electromechanical (Latching)" },
+        ],
+      },
+      {
         label: "Relay Function",
         key: "function",
         type: "select",
@@ -995,6 +1072,7 @@ function showConfigModal(id) {
           { value: "Differential", label: "87 — Differential" },
           { value: "Overcurrent", label: "50/51 — Overcurrent" },
           { value: "Distance", label: "21 — Distance" },
+          { value: "Lockout", label: "86 — Lockout" },
         ],
       },
     ],
@@ -1002,6 +1080,7 @@ function showConfigModal(id) {
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "Position", key: "position", type: "text" },
       { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
+      { label: "Phase Shift (°)", key: "phase_shift_deg" },
       {
         label: "Secondary Wiring",
         key: "secondary_wiring",
@@ -1024,6 +1103,7 @@ function showConfigModal(id) {
     VoltageTransformer: [
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
+      { label: "Phase Shift (°)", key: "phase_shift_deg" },
       {
         label: "Secondary Wiring",
         key: "secondary_wiring",
@@ -1039,6 +1119,7 @@ function showConfigModal(id) {
     DualWindingVT: [
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
+      { label: "Phase Shift (°)", key: "phase_shift_deg" },
       { label: "W2 Ratio (e.g. 2000:1)", key: "sec2_ratio", type: "text" },
       {
         label: "W1 Secondary Wiring",
@@ -1075,6 +1156,7 @@ function showConfigModal(id) {
       { label: "Rated kV (MCOV)", key: "kv_rating" },
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
+      { label: "Phase Shift (°)", key: "phase_shift_deg" },
     ],
     SeriesCapacitor: [
       { label: "Rating (MVAr)", key: "mvar_rating" },
@@ -4572,3 +4654,11 @@ function toggleInputPolarity(deviceId, inputId, currentPol) {
 // ── Init ───────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", _initConfigModalDrag);
+
+function toggleRelayTrip(id, state) {
+  reconfigureAPI(id, "update_device", { properties: { dc_output_state: state } }).then(() => refreshData());
+}
+
+function toggleRelayTarget(id, state) {
+  reconfigureAPI(id, "update_device", { properties: { target_dropped: state } }).then(() => refreshData());
+}

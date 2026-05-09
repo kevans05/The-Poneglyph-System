@@ -60,6 +60,25 @@ def load_substation(data=None):
                     devices[did].connect_secondary(devices[c])
                 else:
                     devices[did].connect(devices[c])
+        for c in d.get("dc_connections", []):
+            if c in devices:
+                if hasattr(devices[did], "connect_dc"):
+                    devices[did].connect_dc(devices[c])
+                else:
+                    devices[did].connect(devices[c])
+        for c in d.get("trip_connections", []):
+            if c in devices:
+                if hasattr(devices[did], "add_trip_dc"):
+                    devices[did].add_trip_dc(devices[c])
+                elif hasattr(devices[c], "add_trip_dc"):
+                    devices[c].add_trip_dc(devices[did])
+
+        for c in d.get("close_connections", []):
+            if c in devices:
+                if hasattr(devices[did], "add_close_dc"):
+                    devices[did].add_close_dc(devices[c])
+                elif hasattr(devices[c], "add_close_dc"):
+                    devices[c].add_close_dc(devices[did])
 
     for did, dev in devices.items():
         if hasattr(dev, "location") and dev.upstream_device is None:
@@ -98,6 +117,9 @@ _PARAM_KEYS = [
     "polarity_facing",
     "polarity_normal",
     "is_balanced",
+    "dc_output_state",
+    "category",
+    "target_dropped",
     "phase_va",
     "phase_pf",
     "mode",
@@ -297,6 +319,19 @@ def _build_topology_response(sources, devices, raw_devices, reference):
                 edges.append(
                     {"source": dev.name, "target": s.name, "type": "protection"}
                 )
+        if hasattr(dev, "dc_outputs"):
+            for s in dev.dc_outputs:
+                edges.append(
+                    {"source": dev.name, "target": s.name, "type": "dc"}
+                )
+        if hasattr(dev, "trip_dc_inputs"):
+            for s in dev.trip_dc_inputs:
+                if not any(e["source"] == s.name and e["target"] == dev.name and e["type"] == "trip" for e in edges):
+                    edges.append({"source": s.name, "target": dev.name, "type": "trip"})
+        if hasattr(dev, "close_dc_inputs"):
+            for s in dev.close_dc_inputs:
+                if not any(e["source"] == s.name and e["target"] == dev.name and e["type"] == "close" for e in edges):
+                    edges.append({"source": s.name, "target": dev.name, "type": "close"})
 
     return {
         "nodes": nodes,
@@ -319,6 +354,10 @@ def save_substation(devices, reference=None, label: str = "auto:toggle"):
             dev = devices[did]
             if hasattr(dev, "is_closed"):
                 d["status"] = "CLOSED" if dev.is_closed else "OPEN"
+            if hasattr(dev, "dc_output_state"):
+                d["dc_output_state"] = dev.dc_output_state
+            if hasattr(dev, "target_dropped"):
+                d["target_dropped"] = dev.target_dropped
 
     if reference is not None:
         data["reference"] = reference
@@ -664,6 +703,36 @@ class SCADAServer(BaseHTTPRequestHandler):
                                 d["secondary_connections"] = []
                             if target_id not in d["secondary_connections"]:
                                 d["secondary_connections"].append(target_id)
+                            break
+                elif action == "add_dc_connection":
+                    source_id = req.get("id")
+                    target_id = req.get("target_id")
+                    for d in data["devices"]:
+                        if d["id"] == source_id:
+                            if "dc_connections" not in d:
+                                d["dc_connections"] = []
+                            if target_id not in d["dc_connections"]:
+                                d["dc_connections"].append(target_id)
+                            break
+                elif action == "add_trip_connection":
+                    source_id = req.get("id")
+                    target_id = req.get("target_id")
+                    for d in data["devices"]:
+                        if d["id"] == source_id:
+                            if "trip_connections" not in d:
+                                d["trip_connections"] = []
+                            if target_id not in d["trip_connections"]:
+                                d["trip_connections"].append(target_id)
+                            break
+                elif action == "add_close_connection":
+                    source_id = req.get("id")
+                    target_id = req.get("target_id")
+                    for d in data["devices"]:
+                        if d["id"] == source_id:
+                            if "close_connections" not in d:
+                                d["close_connections"] = []
+                            if target_id not in d["close_connections"]:
+                                d["close_connections"].append(target_id)
                             break
                 elif action == "set_reference":
                     data["reference"] = {

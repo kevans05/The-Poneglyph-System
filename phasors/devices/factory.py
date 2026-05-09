@@ -4,7 +4,7 @@ from phasors.current_phasor import CurrentPhasor
 from phasors.devices.bus import Bus
 from phasors.devices.passive import LineTrap, NeutralGroundingResistor, SeriesCapacitor, SeriesReactor, SurgeArrester
 from phasors.devices.power_line import PowerLine
-from phasors.devices.protection import CTTB, FTBlock, IsoBlock, Relay, AuxiliaryTransformer, Meter
+from phasors.devices.protection import CTTB, FTBlock, IsoBlock, Relay, AuxiliaryTransformer, Meter, Indicator
 from phasors.devices.regulator import VoltageRegulator
 from phasors.devices.sensors import CurrentTransformer, VoltageTransformer, DualWindingVT
 from phasors.devices.source_load import Load, ShuntCapacitor, ShuntReactor, SVC, VoltageSource
@@ -181,7 +181,10 @@ class DeviceFactory:
             return IsoBlock(did)
 
         elif dtype == "Relay":
-            return Relay(did, function=data.get("function", "Differential"), input_polarities=data.get("input_polarities", {}))
+            dev = Relay(did, function=data.get("function", "Differential"), input_polarities=data.get("input_polarities", {}), category=data.get("category", "Numerical"))
+            dev.dc_output_state = data.get("dc_output_state", False)
+            dev.target_dropped = data.get("target_dropped", False)
+            return dev
 
         elif dtype == "AuxiliaryTransformer":
             return AuxiliaryTransformer(
@@ -192,6 +195,9 @@ class DeviceFactory:
 
         elif dtype == "Meter":
             return Meter(did)
+
+        elif dtype == "Indicator":
+            return Indicator(did)
 
         elif dtype == "ShuntCapacitor":
             return ShuntCapacitor(

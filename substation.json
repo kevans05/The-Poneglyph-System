@@ -1,0 +1,136 @@
+{
+  "devices": [
+    {
+      "id": "2L5",
+      "type": "Wire",
+      "gx": 580,
+      "gy": 320,
+      "connections": [
+        {
+          "id": "2D1",
+          "via_bushing": "X"
+        }
+      ]
+    },
+    {
+      "id": "2D1",
+      "type": "Disconnect",
+      "status": "CLOSED",
+      "gx": 800,
+      "gy": 320,
+      "connections": [
+        {
+          "id": "T5",
+          "via_bushing": "X"
+        }
+      ]
+    },
+    {
+      "id": "T5",
+      "type": "PowerTransformer",
+      "pri_kv": 230,
+      "sec_kv": 115,
+      "h_winding": "Y",
+      "x_winding": "D",
+      "polarity_reversed": false,
+      "gx": 1020,
+      "gy": 320,
+      "connections": [
+        {
+          "id": "LOAD",
+          "via_bushing": "X"
+        }
+      ]
+    },
+    {
+      "id": "LOAD",
+      "type": "Load",
+      "load_mva": 50,
+      "pf": 0.85,
+      "is_balanced": true,
+      "gx": 1200,
+      "gy": 320
+    },
+    {
+      "id": "GRID",
+      "type": "VoltageSource",
+      "nominal_voltage_kv": 230,
+      "nominal_power_mva": 100,
+      "pf": 0.85,
+      "gx": 320,
+      "gy": 320,
+      "connections": [
+        {
+          "id": "2L5",
+          "via_bushing": "X"
+        }
+      ]
+    },
+    {
+      "id": "DVT-2D1-980",
+      "type": "DualWindingVT",
+      "location": "2D1",
+      "bushing": "X",
+      "tap_ratios": {
+        "150:1": 150
+      },
+      "selected_tap": "150:1",
+      "sec2_ratio": "2000:1",
+      "gx": 880,
+      "gy": 320,
+      "secondary_connections": [
+        "FT-DVT-2D1-980-3"
+      ]
+    },
+    {
+      "id": "FT-DVT-2D1-980-3",
+      "type": "FTBlock",
+      "gx": 880,
+      "gy": 140,
+      "secondary_connections": [
+        "SEL 2L1"
+      ]
+    },
+    {
+      "id": "CT3",
+      "type": "CurrentTransformer",
+      "location": "2D1",
+      "bushing": "X",
+      "position": "inner",
+      "polarity_facing": "AWAY",
+      "tap_ratios": {
+        "2000:5": 400
+      },
+      "selected_tap": "2000:5",
+      "gx": 880,
+      "gy": 320,
+      "secondary_connections": [
+        "CTTB-CT3-47"
+      ]
+    },
+    {
+      "id": "CTTB-CT3-47",
+      "type": "CTTB",
+      "gx": 740,
+      "gy": 140,
+      "secondary_connections": [
+        "SEL 2L1"
+      ]
+    },
+    {
+      "id": "SEL 2L1",
+      "type": "Relay",
+      "function": "Differential",
+      "gx": 820,
+      "gy": -40
+    }
+  ],
+  "reference": {
+    "device_id": null,
+    "phase": null
+  },
+  "project_info": {
+    "station": "ALZ",
+    "device": ""
+  }
+}
