@@ -24,6 +24,7 @@ class VoltageRegulator:
         self.max_steps = max_steps
         self.upstream_device = None
         self.connections = []
+        self._cache = {}
         self._evaluating = False
 
     @property
@@ -51,6 +52,7 @@ class VoltageRegulator:
 
     @property
     def voltage(self):
+        if "voltage" in self._cache: return self._cache["voltage"]
         if self._evaluating: return None
         self._evaluating = True
         try:
@@ -67,7 +69,8 @@ class VoltageRegulator:
             def xform_v(p):
                 return VoltagePhasor(p.magnitude / r, p.angle_degrees)
             
-            return wye_voltages(xform_v(up_v.a), xform_v(up_v.b), xform_v(up_v.c))
+            res = wye_voltages(xform_v(up_v.a), xform_v(up_v.b), xform_v(up_v.c))
+            self._cache["voltage"] = res; return res
         finally:
             self._evaluating = False
 
@@ -77,6 +80,7 @@ class VoltageRegulator:
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         if self._evaluating: return None
         self._evaluating = True
         try:
@@ -93,7 +97,8 @@ class VoltageRegulator:
             def xform_i(p):
                 return CurrentPhasor(p.magnitude * r, p.angle_degrees)
             
-            return wye_currents(xform_i(up_i.a), xform_i(up_i.b), xform_i(up_i.c))
+            res = wye_currents(xform_i(up_i.a), xform_i(up_i.b), xform_i(up_i.c))
+            self._cache["current"] = res; return res
         finally:
             self._evaluating = False
 

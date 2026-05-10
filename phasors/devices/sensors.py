@@ -29,6 +29,7 @@ class InstrumentTransformer:
         self._evaluating = False
         self.secondary_connections = []
         self.winding_side = "Unknown"
+        self._cache = {}
 
     @property
     def ratio(self):
@@ -90,6 +91,7 @@ class InstrumentTransformer:
 
     @property
     def voltage(self):
+        if "voltage" in self._cache: return self._cache["voltage"]
         if self._evaluating:
             return None
         self._evaluating = True
@@ -98,22 +100,24 @@ class InstrumentTransformer:
                 b = getattr(self, "bushing", "X").upper()
                 if b in ("H", "Y", "PRIMARY"):
                     if hasattr(self.upstream_device, "primary_voltage"):
-                        return self.upstream_device.primary_voltage
+                        res = self.upstream_device.primary_voltage; self._cache["voltage"] = res; return res
                 else:
                     if hasattr(self.upstream_device, "secondary_voltage"):
-                        return self.upstream_device.secondary_voltage
+                        res = self.upstream_device.secondary_voltage; self._cache["voltage"] = res; return res
 
-                return getattr(
+                res = getattr(
                     self.upstream_device,
-                    "downstream_voltage",
-                    getattr(self.upstream_device, "voltage", None),
+                    'downstream_voltage',
+                    getattr(self.upstream_device, 'voltage', None),
                 )
+                self._cache['voltage'] = res; return res
             return None
         finally:
             self._evaluating = False
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         if self._evaluating:
             return None
         self._evaluating = True
@@ -122,16 +126,17 @@ class InstrumentTransformer:
                 b = getattr(self, "bushing", "X").upper()
                 if b in ("H", "Y", "PRIMARY"):
                     if hasattr(self.upstream_device, "primary_current"):
-                        return self.upstream_device.primary_current
+                        res = self.upstream_device.primary_current; self._cache["current"] = res; return res
                 else:
                     if hasattr(self.upstream_device, "secondary_current"):
-                        return self.upstream_device.secondary_current
+                        res = self.upstream_device.secondary_current; self._cache["current"] = res; return res
 
-                return getattr(
+                res = getattr(
                     self.upstream_device,
-                    "downstream_current",
-                    getattr(self.upstream_device, "current", None),
+                    'downstream_current',
+                    getattr(self.upstream_device, 'current', None),
                 )
+                self._cache['current'] = res; return res
             return None
         finally:
             self._evaluating = False

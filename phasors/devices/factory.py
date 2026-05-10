@@ -45,11 +45,16 @@ class DeviceFactory:
                 phase_shift_deg=ps,
             )
 
-        elif dtype == "Bus" or dtype == "Wire":
+        elif dtype in ["Bus", "Wire"]:
             return Bus(did)
 
-        elif dtype == "PowerLine":
-            return PowerLine(did)
+        elif dtype in ["PowerLine", "Line"]:
+            return PowerLine(
+                did,
+                length_km=data.get("length_km", 0.0),
+                r_per_km=data.get("r_per_km", 0.0),
+                x_per_km=data.get("x_per_km", 0.0)
+            )
 
         elif dtype == "CircuitBreaker":
             dev = CircuitBreaker(

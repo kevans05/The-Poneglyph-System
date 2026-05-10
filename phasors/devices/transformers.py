@@ -47,6 +47,7 @@ class PowerTransformer:
         self.upstream_device = None
         self.h_connections = []
         self.x_connections = []
+        self._cache = {}
         self._evaluating = False
 
         if tap_configs:
@@ -125,14 +126,17 @@ class PowerTransformer:
 
     @property
     def primary_voltage(self):
+        if "primary_voltage" in self._cache: return self._cache["primary_voltage"]
         if self.upstream_device:
             if hasattr(self.upstream_device, "downstream_voltage"):
-                return self.upstream_device.downstream_voltage
-            return getattr(self.upstream_device, "voltage", None)
+                res = self.upstream_device.downstream_voltage; self._cache["primary_voltage"] = res; return res
+            res = getattr(self.upstream_device, "voltage", None)
+            self._cache["primary_voltage"] = res; return res
         return None
 
     @property
     def secondary_voltage(self):
+        if "secondary_voltage" in self._cache: return self._cache["secondary_voltage"]
         up_v = self.primary_voltage
         if not up_v:
             return None
@@ -141,7 +145,8 @@ class PowerTransformer:
         def xform_v(p):
             return VoltagePhasor(p.magnitude / self.ratio, p.angle_degrees + shift)
 
-        return wye_voltages(xform_v(up_v.a), xform_v(up_v.b), xform_v(up_v.c))
+        res = wye_voltages(xform_v(up_v.a), xform_v(up_v.b), xform_v(up_v.c))
+        self._cache["secondary_voltage"] = res; return res
 
     @property
     def voltage(self):
@@ -162,14 +167,17 @@ class PowerTransformer:
 
     @property
     def primary_current(self):
+        if "primary_current" in self._cache: return self._cache["primary_current"]
         if self.upstream_device:
             if hasattr(self.upstream_device, "downstream_current"):
-                return self.upstream_device.downstream_current
-            return getattr(self.upstream_device, "current", None)
+                res = self.upstream_device.downstream_current; self._cache["primary_current"] = res; return res
+            res = getattr(self.upstream_device, "current", None)
+            self._cache["primary_current"] = res; return res
         return None
 
     @property
     def secondary_current(self):
+        if "secondary_current" in self._cache: return self._cache["secondary_current"]
         up_i = self.primary_current
         if not up_i:
             return None
@@ -178,7 +186,8 @@ class PowerTransformer:
         def xform_i(p):
             return CurrentPhasor(p.magnitude * self.ratio, p.angle_degrees + shift)
 
-        return wye_currents(xform_i(up_i.a), xform_i(up_i.b), xform_i(up_i.c))
+        res = wye_currents(xform_i(up_i.a), xform_i(up_i.b), xform_i(up_i.c))
+        self._cache["secondary_current"] = res; return res
 
     @property
     def current(self):

@@ -486,7 +486,7 @@ function render3LD(data) { if (!data || !data.nodes) return;
           el.append("line").attr("x1", 17).attr("y1", off).attr("x2", 22).attr("y2", off).attr("stroke", "#ff4444");
       });
       el.append("line").attr("x1", 22).attr("y1", -PHASE_GAP).attr("x2", 22).attr("y2", PHASE_GAP).attr("stroke", "#ff4444");
-    } else if (d.type === "Bus" || d.type === "Wire") {
+    } else if (["Bus", "Line", "PowerLine", "Wire"].includes(d.type)) {
       // 3-Phase Bus Bars Look
       const colors = ["#f44", "#ff4", "#44f"];
       [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
@@ -1266,7 +1266,7 @@ function updateMinimap() {
       if (d.type === "PowerTransformer") return "#4488ff";
       if (d.type === "VoltageRegulator") return "#44ff88";
       if (d.type === "Load") return "#ff4444";
-      if (d.type === "Bus") return "#555";
+      if (["Bus", "Line", "PowerLine", "Wire"].includes(d.type)) return "#555";
       return "#505050";
     });
   nodeSel.exit().remove();

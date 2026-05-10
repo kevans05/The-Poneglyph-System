@@ -4,36 +4,39 @@ from ..utilities.power_utilities import append_3phase_details
 import math
 
 class PowerLine:
-    def __init__(self, name: str):
+    def __init__(self, name: str, length_km: float = 0.0, r_per_km: float = 0.0, x_per_km: float = 0.0):
         self._cache = {}
         self.name = name
+        self.length_km = length_km
+        self.r_per_km = r_per_km
+        self.x_per_km = x_per_km
         self.upstream_device = None
         self.downstream_device = None
         self._evaluating = False
 
     @property
     def voltage(self):
-        if "voltage" in self._cache: return self._cache["voltage"]
+        if 'voltage' in self._cache: return self._cache['voltage']
         if self._evaluating: return None
         self._evaluating = True
         try:
             res = None
             if self.upstream_device:
                 res = getattr(self.upstream_device, 'downstream_voltage', getattr(self.upstream_device, 'voltage', None))
-            self._cache["voltage"] = res
+            self._cache['voltage'] = res
             return res
         finally: self._evaluating = False
 
     @property
     def current(self):
-        if "current" in self._cache: return self._cache["current"]
+        if 'current' in self._cache: return self._cache['current']
         if self._evaluating: return None
         self._evaluating = True
         try:
             res = None
             if self.upstream_device:
                 res = getattr(self.upstream_device, 'downstream_current', getattr(self.upstream_device, 'current', None))
-            self._cache["current"] = res
+            self._cache['current'] = res
             return res
         finally: self._evaluating = False
 
@@ -46,10 +49,10 @@ class PowerLine:
     def connection_type(self) -> str:
         if self.upstream_device:
             return getattr(
-                self.upstream_device, "downstream_connection_type",
-                getattr(self.upstream_device, "connection_type", "wye"),
+                self.upstream_device, 'downstream_connection_type',
+                getattr(self.upstream_device, 'connection_type', 'wye'),
             )
-        return "wye"
+        return 'wye'
 
     @property
     def downstream_connection_type(self) -> str:
@@ -61,8 +64,13 @@ class PowerLine:
         return downstream_device
 
     def get_summary_dict(self) -> dict:
-        is_delta = self.connection_type == "delta"
-        stats = {}
+        is_delta = self.connection_type == 'delta'
+        stats = {
+            'Type': 'Line',
+            'Length (km)': self.length_km,
+            'R (Ω/km)': self.r_per_km,
+            'X (Ω/km)': self.x_per_km
+        }
         up_name = self.upstream_device.name if self.upstream_device else 'Source'
         down_name = self.downstream_device.name if self.downstream_device else 'End of Line'
         stats['Logical Flow'] = f'{up_name} -> [ {self.name} ] -> {down_name}'

@@ -346,6 +346,8 @@ const _DEVICE_DEFAULTS = {
   Meter:                {},
   Indicator:            {},
   Wire:                {},
+  Line:                { length_km: 1.0, r_per_km: 0.1, x_per_km: 0.3 },
+  PowerLine:           { length_km: 1.0, r_per_km: 0.1, x_per_km: 0.3 },
   ShuntCapacitor:             { mvar_rating: 10, kv_rating: 115 },
   ShuntReactor:               { mvar_rating: 10, kv_rating: 115 },
   SurgeArrester:              { kv_rating: 115, bushing: "H" },
@@ -385,7 +387,7 @@ function showPlantMenu(pageX, pageY, gx, gy, hostId = null, bushing = null) {
 
   const title = hostId ? `PLANT AT ${hostId} (${bushing})` : "ADD NEW DEVICE";
   const groups = [
-    { label: "SOURCES & LOADS",  types: ["VoltageSource", "Load", "Wire"] },
+    { label: "SOURCES & LOADS",  types: ["VoltageSource", "Load", "Bus", "Line", "Wire"] },
     { label: "SWITCHING",        types: ["CircuitBreaker", "Disconnect"] },
     { label: "TRANSFORMERS",     types: ["PowerTransformer", "VoltageRegulator", "VoltageTransformer", "DualWindingVT", "CurrentTransformer"] },
     { label: "SHUNT DEVICES",    types: ["ShuntCapacitor", "ShuntReactor", "SurgeArrester", "SVC", "NeutralGroundingResistor"] },
@@ -1301,6 +1303,17 @@ function showConfigModal(id) {
       { label: "MVAr Setting (+cap / −ind)", key: "mvar_setting" },
       { label: "Rated kV", key: "kv_rating" },
     ],
+    PowerLine: [
+      { label: 'Length (km)', key: 'length_km' },
+      { label: 'R (Ω/km)', key: 'r_per_km' },
+      { label: 'X (Ω/km)', key: 'x_per_km' },
+    ],
+    Line: [
+      { label: 'Length (km)', key: 'length_km' },
+      { label: 'R (Ω/km)', key: 'r_per_km' },
+      { label: 'X (Ω/km)', key: 'x_per_km' },
+    ],
+
     LineTrap: [
       { label: "Carrier Frequency (Hz)", key: "carrier_frequency_hz" },
     ],
