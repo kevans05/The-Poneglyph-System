@@ -108,7 +108,7 @@ function _testsRenderCreate() {
                 <label style="font-size:10px; color:#888;">CREATED BY</label>
                 <input id="new-test-by" type="text"
                     placeholder="Technician name"
-                    value="${_esc(_technicianName || '')}"
+                    value="${_esc(window._technicianName || '')}"
                     style="background:#111; border:1px solid #333; color:#eee; padding:8px 10px;
                            font-family:inherit; font-size:11px; width:100%; box-sizing:border-box;" />
             </div>
@@ -269,10 +269,15 @@ function _testsRenderDetail(testId) {
                        font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer; letter-spacing:1px;">
                 ⎙ PRINT REPORT
             </button>
-            <button onclick="window.location='/api/tests/${testId}/report.xlsx'"
+            <button onclick="window.location='/api/tests/${testId}/report.xlsx?use360=' + (window._use360Lag !== undefined ? window._use360Lag : true)"
                 style="background:#001a0d; border:1px solid #3a7; color:#3a7;
                        font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer; letter-spacing:1px;">
                 ↓ DOWNLOAD EXCEL
+            </button>
+            <button onclick="_testsIngestExcel('${testId}')"
+                style="background:#1a1a00; border:1px solid #aa0; color:#aa0;
+                       font-family:inherit; font-size:10px; padding:6px 14px; cursor:pointer; letter-spacing:1px;">
+                ↑ UPLOAD COMPLETED EXCEL
             </button>
             <button onclick="if(confirm('Delete this test and all its drawings?')) deleteTest('${testId}').then(() => _testsRenderList())"
                 style="background:#1a0000; border:1px solid #600; color:#a00;
@@ -608,4 +613,41 @@ function _pickerShowDrawings(testId, testName, close) {
     // Clear the picker footer — navigation is inline
     document.getElementById("test-picker-footer").innerHTML = "";
     render();
+}
+
+function _testsIngestExcel(testId) {
+    let input = document.getElementById("excel-ingest-input");
+    if (!input) {
+        input = document.createElement("input");
+        input.id = "excel-ingest-input";
+        input.type = "file";
+        input.accept = ".xlsx";
+        input.style.display = "none";
+        document.body.appendChild(input);
+    }
+    input.onchange = e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const b64 = reader.result.split(",")[1];
+            fetch("/api/tests/ingest-report", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ test_id: testId, data: b64 })
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.ok) {
+                    alert("Import successful! Session ID: " + res.session_id);
+                    _testsRenderDetail(testId);
+                } else {
+                    alert("Import failed: " + (res.error || "Unknown error"));
+                }
+            })
+            .catch(err => alert("Network error: " + err));
+        };
+        reader.readAsDataURL(file);
+    };
+    input.click();
 }

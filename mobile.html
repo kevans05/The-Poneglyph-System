@@ -9,7 +9,7 @@
         body {
             background: #000;
             color: #0f0;
-            font-family: 'Courier New', Courier, monospace;
+            font-family: "Courier New", Courier, monospace;
             margin: 0;
             padding: 10px;
             display: flex;
@@ -122,7 +122,7 @@
             margin-top: 5px;
         }
 
-        select {
+        select, input[type="text"], input[type="number"] {
             background: #010;
             border: 1px solid #040;
             color: #0f0;
@@ -131,6 +131,7 @@
             font-family: inherit;
             font-size: 1em;
             border-radius: 4px;
+            box-sizing: border-box;
         }
 
         .switch-grid {
@@ -147,7 +148,20 @@
         .switch-btn.open { border-left-color: #f00; color: #f66; }
         .switch-btn.closed { border-left-color: #0f0; color: #6f6; }
 
-        /* Relay Specific */
+        .manual-inputs {
+            display: none;
+            background: #020;
+            border: 1px solid #080;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            gap: 10px;
+            flex-direction: column;
+        }
+        .manual-inputs.active { display: flex; }
+        .manual-row { display: flex; gap: 10px; align-items: center; }
+        .manual-row input { flex: 1; font-size: 1.2em; }
+
         .relay-group {
             background: #050505;
             border: 1px solid #1a1a1a;
@@ -196,6 +210,10 @@
     <div id="test-overlay">
         <div class="header">ATTACH TO TEST</div>
         <div id="site-warning" style="color: #f00; text-align: center; display: none; margin-bottom: 10px;">NO SITE LOADED</div>
+        <div style="margin-bottom: 15px;">
+            <label style="font-size: 0.7em; color: #080; display: block; margin-bottom: 5px;">TECHNICIAN NAME</label>
+            <input type="text" id="tech-name-input" placeholder="Enter your name">
+        </div>
         <div class="main-display" id="test-list-container"></div>
     </div>
 
@@ -227,19 +245,19 @@
             <button id="btn-ph-C" onclick="setPhase('C')">PH C</button>
         </div>
 
-        <div class="reading-card">
-            <div class="reading-label">Live Voltage</div>
-            <div class="reading-row">
-                <span class="reading-value" id="val-v">0.00</span>
-                <span class="reading-angle" id="val-v-ang">0.0°</span>
+        <div id="manual-entry-area" class="manual-inputs">
+            <div class="reading-label">Manual Entry</div>
+            <div class="manual-row">
+                <input type="number" id="manual-mag" placeholder="Magnitude" step="0.01">
+                <input type="number" id="manual-ang" placeholder="Angle" step="0.1">
             </div>
         </div>
 
         <div class="reading-card">
-            <div class="reading-label">Live Current</div>
+            <div class="reading-label">Live Signal (PMM)</div>
             <div class="reading-row">
-                <span class="reading-value" id="val-i">0.00</span>
-                <span class="reading-angle" id="val-i-ang">0.0°</span>
+                <span class="reading-value" id="val-pmm-mag">0.00</span>
+                <span class="reading-angle" id="val-pmm-ang">0.0°</span>
             </div>
         </div>
 
@@ -256,19 +274,36 @@
 
     <div class="status-bar">
         <span id="status-text">Ready.</span>
-        <span id="active-inst-display" onclick="showInstrumentSelect()">NONE</span>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <span id="angle-conv-toggle" onclick="toggleAngleConv()" style="color:#3af; border:1px solid #3af; padding:0 5px; border-radius:3px;">360°</span>
+            <span id="active-inst-display" onclick="showInstrumentSelect()">NONE</span>
+        </div>
     </div>
 
     <script src="/static/api-client.js"></script>
     <script>
+        
+        let _use360Lag = true;
+        function toggleAngleConv() {
+            _use360Lag = !_use360Lag;
+            document.getElementById("angle-conv-toggle").textContent = _use360Lag ? "360°" : "±180°";
+            document.getElementById("angle-conv-toggle").style.color = _use360Lag ? "#3af" : "#888";
+            document.getElementById("angle-conv-toggle").style.borderColor = _use360Lag ? "#3af" : "#555";
+        }
+
+        function _formatAngle(deg) {
+            if (_use360Lag) return ((deg % 360) + 360) % 360;
+            return ((deg + 180) % 360) - 180;
+        }
+
+        let _activePhase = 'A', _technicianName = localStorage.getItem('bp_tech_name') || '';
+        let _activeTestId = null, _activeSessionId = null, _instrumentType = null;
+        let _capturePoints = [], _isToggling = false;
+
         function refreshData() { updateUI(); }
         function render3LD() {}
         function updateMinimap() {}
         function updateStatusBar() {}
-
-        let _activePhase = 'A';
-        let _activeTestId = null, _activeSessionId = null, _instrumentType = null;
-        let _capturePoints = [], _isToggling = false;
 
         function hapticClick() { if (navigator.vibrate) navigator.vibrate(20); }
 
@@ -279,12 +314,13 @@
         }
 
         function loadTests() {
+            document.getElementById("tech-name-input").value = _technicianName;
             fetchActiveSite().then(res => {
                 if (!res.active) { document.getElementById('site-warning').style.display = 'block'; return; }
                 fetchTests().then(data => {
                     const container = document.getElementById('test-list-container');
                     container.innerHTML = (data.tests || []).map(t => `
-                        <div class="list-item" onclick="startAttach('${t.id}', '${t.name}')">
+                        <div class="list-item" onclick="startAttach('${t.id}', '${t.name.replace(/'/g, "\\\u0027")}')">
                             <b>${t.name}</b><br><small>${t.description || 'No description'}</small>
                         </div>
                     `).join('') || '<div style="text-align:center; color:#800">NO TESTS</div>';
@@ -293,6 +329,11 @@
         }
 
         function startAttach(id, name) {
+            const techName = document.getElementById("tech-name-input").value.trim();
+            if (!techName) return alert("Please enter technician name");
+            _technicianName = techName;
+            localStorage.setItem("bp_tech_name", techName);
+
             hapticClick();
             _activeTestId = id;
             fetchTestDetail(id).then(data => {
@@ -313,7 +354,11 @@
             document.getElementById('active-inst-display').innerText = type.toUpperCase();
             document.getElementById('instrument-overlay').style.display = 'none';
             
-            const finish = () => startSession("Mobile Remote", type, "Field Tech", _activeTestId).then(res => {
+            const manualArea = document.getElementById("manual-entry-area");
+            if (type === "manual") manualArea.classList.add("active");
+            else manualArea.classList.remove("active");
+
+            const finish = () => startSession("Mobile Remote", type, _technicianName, _activeTestId).then(res => {
                 _activeSessionId = res.session_id;
                 updateStatus('Connected.');
                 updateUI();
@@ -345,13 +390,14 @@
                 select.value = cur;
 
                 switches.innerHTML = data.nodes.filter(n => ['Breaker','Disconnect','Switch'].includes(n.type)).map(n => {
-                    const cl = n.status.toLowerCase();
+                    const cl = (n.status || 'UNKNOWN').toLowerCase();
                     return `<button class="switch-btn ${cl}" onclick="toggleRemote('${n.id}', this)">${n.id}<br><small>${n.status}</small></button>`;
                 }).join('');
 
                 relays.innerHTML = data.nodes.filter(n => n.type === 'Relay').map(n => {
-                    const tripActive = !!n.summary["TRIP (MANUAL)"] || n.summary["TRIP"] === "HIGH";
-                    const closeActive = !!n.summary["CLOSE (MANUAL)"] || n.summary["CLOSE"] === "HIGH";
+                    const summary = n.summary || {};
+                    const tripActive = !!summary["TRIP (MANUAL)"] || summary["TRIP"] === "HIGH";
+                    const closeActive = !!summary["CLOSE (MANUAL)"] || summary["CLOSE"] === "HIGH";
                     return `
                         <div class="relay-group">
                             <div class="relay-name">${n.id}</div>
@@ -370,7 +416,7 @@
             hapticClick();
             _isToggling = true;
             btn.classList.add('busy');
-            fetch(`/api/toggle/${encodeURIComponent(id)}`).then(() => {
+            fetch('/api/toggle/' + encodeURIComponent(id)).then(() => {
                 _isToggling = false;
                 updateUI();
             });
@@ -378,9 +424,7 @@
 
         function toggleRelayOut(id, out, state) {
             hapticClick();
-            const dev = currentData.nodes.find(n => n.id === id);
-            const overrides = Object.assign({}, dev.params?.output_manual_overrides || {});
-            overrides[out] = state;
+            const overrides = {}; overrides[out] = state;
             reconfigureAPI(id, "update_device", { properties: { output_manual_overrides: overrides } }).then(() => updateUI());
         }
 
@@ -392,14 +436,33 @@
         }
 
         function logPoint() {
-            const devId = document.getElementById('device-select').value;
-            if (!devId) return alert('Select device');
+            const devId = document.getElementById("device-select").value;
+            if (!devId) return alert("Select device");
             hapticClick();
-            const btn = document.getElementById('log-btn');
-            btn.classList.add('busy'); btn.textContent = 'LOGGING...';
+            const btn = document.getElementById("log-btn");
             
+            if (_instrumentType === "manual") {
+                const mag = parseFloat(document.getElementById("manual-mag").value);
+                const ang = parseFloat(document.getElementById("manual-ang").value);
+                if (isNaN(mag) || isNaN(ang)) return alert("Enter valid mag/ang");
+                
+                btn.classList.add("busy"); btn.textContent = "LOGGING...";
+                const measurements = {};
+                measurements[_activePhase + "_mag"] = mag;
+                measurements[_activePhase + "_ang"] = ang;
+                reconfigureAPI(devId, "record_measurement", {measurements}).then(() => {
+                    btn.classList.remove("busy"); btn.textContent = "LOG DATA POINT";
+                    updateStatus("Logged.");
+                });
+                return;
+            }
+
+            btn.classList.add('busy'); btn.textContent = 'LOGGING...';
             fetch("/api/pmm/query").then(r => r.json()).then(res => {
-                reconfigureAPI(devId, "record_measurement", {measurements:{[`${_activePhase}_mag`]:res.watts||0, [`${_activePhase}_ang`]:res.phase||0}}).then(() => {
+                const measurements = {};
+                measurements[_activePhase + "_mag"] = res.watts || 0;
+                measurements[_activePhase + "_ang"] = res.phase || 0;
+                reconfigureAPI(devId, "record_measurement", {measurements}).then(() => {
                     btn.classList.remove('busy'); btn.textContent = 'LOG DATA POINT';
                     updateStatus('Logged.');
                 });
@@ -407,11 +470,11 @@
         }
 
         function pollPMM() {
-            if (!_activeTestId || _instrumentType === 'manual') return;
+            if (!_activeTestId || _instrumentType === "manual") return;
             fetch("/api/pmm/query").then(r => r.json()).then(res => {
                 if (res.ok) {
-                    document.getElementById('val-v').textContent = res.watts.toFixed(2);
-                    document.getElementById('val-v-ang').textContent = res.phase.toFixed(1) + '°';
+                    document.getElementById("val-pmm-mag").textContent = (res.watts || 0).toFixed(2);
+                    document.getElementById("val-pmm-ang").textContent = (res.phase || 0).toFixed(1) + "°";
                 }
             });
         }
@@ -419,7 +482,7 @@
         setInterval(updateUI, 1000);
         setInterval(pollPMM, 400);
         loadTests();
-        setPhase('A');
+        setPhase("A");
     </script>
 </body>
 </html>

@@ -1,3 +1,4 @@
+from urllib.parse import urlparse, parse_qs
 import json
 import mimetypes
 import os
@@ -7,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import excel_report as _xrep
 import power_meters as _pmm
 import site_db as _sdb
-from phasors.devices.factory import DeviceFactory
+import model_loader
 
 # The substation configuration is now kept in-memory and persisted to the site DB.
 # The substation.json file is no longer used for active storage.
@@ -20,86 +21,11 @@ _active_session_id: str | None = None
 
 def load_substation(data=None):
     """Load the substation model from provided data or the current in-memory topology."""
-    if data is None:
-        data = _current_topology
-
-    if data is None:
-        return [], {}, [], {}, {}
-
-    devices = {}
-    sources = []
-    for d in data.get("devices", []):
-        dev = DeviceFactory.create_device(d)
-        if dev:
-            if d.get("type") == "VoltageSource":
-                sources.append(dev)
-            if "gx" in d:
-                dev.gx = d["gx"]
-            if "gy" in d:
-                dev.gy = d["gy"]
-            if "rotation" in d:
-                dev.rotation = d["rotation"]
-            devices[dev.name] = dev
-
-    for d in data.get("devices", []):
-        did = d["id"]
-        for c in d.get("connections", []):
-            tid = c if isinstance(c, str) else c["id"]
-            b = None if isinstance(c, str) else c.get("via_bushing")
-            if tid in devices:
-                if b and b.upper() in ("H", "Y"):
-                    devices[tid].connect(devices[did])
-                elif b:
-                    devices[did].connect(devices[tid], to_bushing=b)
-                else:
-                    devices[did].connect(devices[tid])
-        for c in d.get("secondary_connections", []):
-            if c in devices:
-                if hasattr(devices[did], "connect_secondary"):
-                    devices[did].connect_secondary(devices[c])
-                else:
-                    devices[did].connect(devices[c])
-        for c in d.get("dc_connections", []):
-            tid = c if isinstance(c, str) else c.get("id")
-            from_label = None if isinstance(c, str) else c.get("from")
-            to_label = None if isinstance(c, str) else c.get("to")
-            
-            if tid in devices:
-                if hasattr(devices[did], "connect_dc"):
-                    devices[did].connect_dc(devices[tid], from_label=from_label, to_label=to_label)
-                else:
-                    devices[did].connect(devices[tid])
-        for c in d.get("trip_connections", []):
-            if c in devices:
-                if hasattr(devices[did], "add_trip_dc"):
-                    devices[did].add_trip_dc(devices[c])
-                elif hasattr(devices[c], "add_trip_dc"):
-                    devices[c].add_trip_dc(devices[did])
-
-        for c in d.get("close_connections", []):
-            if c in devices:
-                if hasattr(devices[did], "add_close_dc"):
-                    devices[did].add_close_dc(devices[c])
-                elif hasattr(devices[c], "add_close_dc"):
-                    devices[c].add_close_dc(devices[did])
-
-    for did, dev in devices.items():
-        if hasattr(dev, "location") and dev.upstream_device is None:
-            host = devices.get(dev.location)
-            if host:
-                dev.upstream_device = host
-                if hasattr(dev, "auto_configure"):
-                    dev.auto_configure(host)
-
-    return (
-        sources,
-        devices,
-        data.get("devices", []),
-        data.get("reference", {}),
-        data.get("project_info", {"station": "", "device": ""}),
-    )
-
-
+    if data is None: data = _current_topology
+    if data is None: return [], {}, [], {}, {}
+    devices = model_loader.load_substation_model(data)
+    sources = [dev for dev in devices.values() if getattr(dev, "type", "") == "VoltageSource" or dev.__class__.__name__ == "VoltageSource"]
+    return sources, devices, data.get("devices", []), data.get("reference", {}), data.get("project_info", {"station": "", "device": ""})
 _PARAM_KEYS = [
     "nominal_voltage_kv",
     "nominal_power_mva",
@@ -834,6 +760,24 @@ class SCADAServer(BaseHTTPRequestHandler):
                         traceback.print_exc()
                 return _json_response(self, {"status": "success"})
 
+            
+            if self.path == "/api/tests/ingest-report":
+                if not _require_site(self):
+                    return
+                test_id = req.get("test_id")
+                b64_data = req.get("data") # Base64 encoded .xlsx
+                if not test_id or not b64_data:
+                    return _json_response(self, {"error": "test_id and data required"}, 400)
+                
+                import base64
+                try:
+                    xlsx_bytes = base64.b64decode(b64_data)
+                    sess_id = _xrep.ingest_load_test_report(_active_site, test_id, xlsx_bytes)
+                    return _json_response(self, {"ok": True, "session_id": sess_id})
+                except Exception as e:
+                    traceback.print_exc()
+                    return _json_response(self, {"error": str(e)}, 500)
+
             if self.path == "/api/sites/update":
                 if not _require_site(self):
                     return
@@ -900,7 +844,17 @@ class SCADAServer(BaseHTTPRequestHandler):
                     return
                 return _json_response(self, report)
 
-            if self.path.startswith("/api/tests/") and self.path.endswith("/report.xlsx"):
+            if self.path.startswith("/api/tests/") and "/report.xlsx" in self.path:
+                if not _require_site(self):
+                    return
+                parts = self.path.split("/")
+                test_id = parts[3]
+                # Parse query for angle convention
+                query = urlparse(self.path).query
+                params = parse_qs(query)
+                use360 = params.get("use360", ["true"])[0].lower() == "true"
+                
+                xlsx = _xrep.build_load_test_report(_active_site, test_id, use360=use360)
                 if not _require_site(self):
                     return
                 test_id = self.path.split("/")[3]

@@ -1081,7 +1081,7 @@ function _predKey(node, phase, qty) {
 }
 
 // 360 lag angle convention (default on — relays show 0–360°, no negative angles)
-let _use360Lag = true;
+var _use360Lag = true;
 function _lagAngle(deg) {
   return _use360Lag ? ((deg % 360) + 360) % 360 : deg;
 }
@@ -1126,7 +1126,7 @@ const FILTER_GROUPS = {
 };
 let _bpFilter = "PROTECTION";
 
-let _technicianName = "";
+var _technicianName = "";
 let _activeTestId   = null;
 let _activeTestName = null;
 
@@ -4661,6 +4661,39 @@ function _resetConfigModalPos() {
   _configModalDragged = false;
 }
 
+
+function _initMinimapDrag() {
+  const container = document.getElementById("minimap-container");
+  const header = document.getElementById("minimap-header");
+  if (!container || !header || header._dragInit) return;
+  header._dragInit = true;
+  header.style.cursor = "move";
+  let p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+  let dragged = false;
+
+  header.onmousedown = (e) => {
+    if (e.target.id === "minimap-toggle" || e.target.tagName === "BUTTON") return;
+    e.preventDefault();
+    if (!dragged) {
+      const r = container.getBoundingClientRect();
+      container.style.bottom = "auto";
+      container.style.left = r.left + "px";
+      container.style.top = r.top + "px";
+      dragged = true;
+    }
+    p3 = e.clientX; p4 = e.clientY;
+    document.onmouseup = () => { document.onmouseup = null; document.onmousemove = null; };
+    document.onmousemove = (e) => {
+      e.preventDefault();
+      p1 = p3 - e.clientX; p2 = p4 - e.clientY;
+      p3 = e.clientX; p4 = e.clientY;
+      const newTop = Math.max(0, Math.min(container.offsetTop - p2, window.innerHeight - 40));
+      const newLeft = Math.max(0, Math.min(container.offsetLeft - p1, window.innerWidth - 40));
+      container.style.top = newTop + "px";
+      container.style.left = newLeft + "px";
+    };
+  };
+}
 function _initConfigModalDrag() {
   const modal = document.getElementById("config-modal");
   const header = document.getElementById("config-modal-drag");
@@ -4785,7 +4818,7 @@ function toggleInputPolarity(deviceId, inputId, currentPol) {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
-document.addEventListener("DOMContentLoaded", _initConfigModalDrag);
+document.addEventListener("DOMContentLoaded", () => { _initConfigModalDrag(); _initMinimapDrag(); });
 
 
 function toggleRelayTrip(id, state) {
