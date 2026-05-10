@@ -39,7 +39,6 @@ from copy import copy
 from datetime import datetime, timezone
 
 import openpyxl
-from openpyxl.utils import get_column_letter
 
 import site_db
 

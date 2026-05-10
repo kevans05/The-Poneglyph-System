@@ -1,7 +1,6 @@
 import json
 import mimetypes
 import os
-import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 

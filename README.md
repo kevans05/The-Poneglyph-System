@@ -41,10 +41,11 @@ The system does three things:
 
 ## Getting Started
 
-**Requirements:** Python 3.10 or later. No external Python packages are required — the server uses only the standard library.
+**Requirements:** Python 3.10 or later. External dependencies are listed in `requirements.txt` (currently `openpyxl` for Excel reports).
 
 ```bash
 cd ~/Coding/LoadTest
+pip install -r requirements.txt
 python api.py
 ```
 
