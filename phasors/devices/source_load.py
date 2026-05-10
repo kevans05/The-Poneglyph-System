@@ -71,6 +71,7 @@ class VoltageSource(Bus):
     @property
     def current(self):
         """Dynamically calculate current based on downstream loads, per-phase."""
+        if "current" in self._cache: return self._cache["current"]
         loads = self.find_loads()
         if not loads: return None
 
@@ -102,7 +103,7 @@ class VoltageSource(Bus):
         if ia.magnitude == 0 and ib.magnitude == 0 and ic.magnitude == 0:
             return None
 
-        return wye_currents(ia, ib, ic)
+        res = wye_currents(ia, ib, ic); self._cache['current'] = res; return res
 
     @property
     def downstream_connection_type(self) -> str:
@@ -125,6 +126,7 @@ class Load:
     """A device that consumes power. Supports balanced and unbalanced configurations."""
 
     def __init__(self, name: str, load_va: float = 0, power_factor: float = 1.0, is_balanced: bool = True):
+        self._cache = {}
         self.name = name
         self.load_va = load_va
         self.power_factor = power_factor
@@ -178,6 +180,7 @@ class Load:
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         v_sys = self.voltage
         if not v_sys: return None
         
@@ -193,11 +196,9 @@ class Load:
             i_angle = v_phasor.angle_degrees - math.degrees(phi)
             return CurrentPhasor(i_mag, i_angle)
 
-        return wye_currents(
-            calc_i(0, v_sys.a),
-            calc_i(1, v_sys.b),
-            calc_i(2, v_sys.c)
-        )
+        res = wye_currents(calc_i(0, v_sys.a), calc_i(1, v_sys.b), calc_i(2, v_sys.c))
+        self._cache["current"] = res
+        return res
 
     def get_summary_dict(self) -> dict:
         p, q = self.get_total_pq()
@@ -221,6 +222,7 @@ class ShuntCapacitor(Load):
     """Shunt capacitor bank — supplies reactive power (leading current, Q < 0 consumed)."""
 
     def __init__(self, name: str, mvar_rating: float = 10.0, kv_rating: float = 115.0):
+        self._cache = {}
         super().__init__(name, load_va=mvar_rating * 1e6, power_factor=0.0, is_balanced=True)
         self.mvar_rating = mvar_rating
         self.kv_rating = kv_rating
@@ -231,6 +233,7 @@ class ShuntCapacitor(Load):
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         v = self.voltage
         if not v: return None
         q = self.mvar_rating * 1e6 / 3
@@ -239,7 +242,7 @@ class ShuntCapacitor(Load):
             if vp.magnitude == 0: return CurrentPhasor(0, 0)
             return CurrentPhasor(q / vp.magnitude, vp.angle_degrees + 90.0)
 
-        return wye_currents(_i(v.a), _i(v.b), _i(v.c))
+        res = wye_currents(_i(v.a), _i(v.b), _i(v.c)); self._cache['current'] = res; return res
 
     def get_summary_dict(self) -> dict:
         stats = {
@@ -256,6 +259,7 @@ class ShuntReactor(Load):
     """Shunt reactor — absorbs reactive power (lagging current, Q > 0 consumed)."""
 
     def __init__(self, name: str, mvar_rating: float = 10.0, kv_rating: float = 115.0):
+        self._cache = {}
         super().__init__(name, load_va=mvar_rating * 1e6, power_factor=0.0, is_balanced=True)
         self.mvar_rating = mvar_rating
         self.kv_rating = kv_rating
@@ -266,6 +270,7 @@ class ShuntReactor(Load):
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         v = self.voltage
         if not v: return None
         q = self.mvar_rating * 1e6 / 3
@@ -274,7 +279,7 @@ class ShuntReactor(Load):
             if vp.magnitude == 0: return CurrentPhasor(0, 0)
             return CurrentPhasor(q / vp.magnitude, vp.angle_degrees - 90.0)
 
-        return wye_currents(_i(v.a), _i(v.b), _i(v.c))
+        res = wye_currents(_i(v.a), _i(v.b), _i(v.c)); self._cache['current'] = res; return res
 
     def get_summary_dict(self) -> dict:
         stats = {
@@ -305,8 +310,10 @@ class SVC(Load):
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         v = self.voltage
         if not v or self.mvar_setting == 0: return None
+        if "current" in self._cache: return self._cache["current"]
         q_abs = abs(self.mvar_setting) * 1e6 / 3
         angle_offset = 90.0 if self.mvar_setting > 0 else -90.0
 
@@ -314,7 +321,7 @@ class SVC(Load):
             if vp.magnitude == 0: return CurrentPhasor(0, 0)
             return CurrentPhasor(q_abs / vp.magnitude, vp.angle_degrees + angle_offset)
 
-        return wye_currents(_i(v.a), _i(v.b), _i(v.c))
+        res = wye_currents(_i(v.a), _i(v.b), _i(v.c)); self._cache['current'] = res; return res
 
     def get_summary_dict(self) -> dict:
         mode = "Capacitive" if self.mvar_setting > 0 else "Inductive" if self.mvar_setting < 0 else "Off (Bypass)"

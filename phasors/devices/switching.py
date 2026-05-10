@@ -5,6 +5,7 @@ from ..wye_system import wye_voltages, wye_currents
 
 class Switch:
     def __init__(self, name: str, is_closed: bool = True, is_single_pole: bool = False):
+        self._cache = {}
         self.name = name
         self.is_single_pole = is_single_pole
         # Per-phase manual states
@@ -24,73 +25,124 @@ class Switch:
 
     def open(self):
         for ph in 'abc': self._manual_closed[ph] = False
+        self._cache.clear()
 
     def close(self):
         for ph in 'abc': self._manual_closed[ph] = True
+        self._cache.clear()
 
     def _is_ph_tripped(self, ph) -> bool:
         """True if global or phase-specific trip is active."""
+        cache_key = f"tripped_{ph}"
+        if cache_key in self._cache: return self._cache[cache_key]
+        res = False
         for src in self.trip_dc_inputs:
-            if getattr(src, "dc_output_state", False) or getattr(src, "dc_status", False): return True
-        for conn in self.dc_input_conns:
-            if conn["to"] in ["TRIP_COIL", f"TRIP_{ph.upper()}"]:
-                if conn["device"].get_terminal_state(conn["from"]): return True
-        return False
+            if getattr(src, "dc_output_state", False) or getattr(src, "dc_status", False):
+                res = True; break
+        if not res:
+            for conn in self.dc_input_conns:
+                if conn["to"] in ["TRIP_COIL", f"TRIP_{ph.upper()}"]:
+                    if conn["device"].get_terminal_state(conn["from"]):
+                        res = True; break
+        
+        # LATCHING LOGIC: If a trip is detected, permanently update manual state to OPEN.
+        if res and self._manual_closed.get(ph, True):
+            self._manual_closed[ph] = False
+
+        self._cache[cache_key] = res
+        return res
 
     def _is_ph_closed(self, ph) -> bool:
+        cache_key = f"closed_driven_{ph}"
+        if cache_key in self._cache: return self._cache[cache_key]
+        res = False
         for src in self.close_dc_inputs:
-            if getattr(src, "dc_output_state", False) or getattr(src, "dc_status", False): return True
-        for conn in self.dc_input_conns:
-            if conn["to"] in ["CLOSE_COIL", f"CLOSE_{ph.upper()}"]:
-                if conn["device"].get_terminal_state(conn["from"]): return True
-        return False
+            if getattr(src, "dc_output_state", False) or getattr(src, "dc_status", False):
+                res = True; break
+        if not res:
+            for conn in self.dc_input_conns:
+                if conn["to"] in ["CLOSE_COIL", f"CLOSE_{ph.upper()}"]:
+                    if conn["device"].get_terminal_state(conn["from"]):
+                        res = True; break
+        
+        # LATCHING LOGIC: If a close signal is detected, permanently update manual state to CLOSED.
+        if res and not self._manual_closed.get(ph, False):
+            self._manual_closed[ph] = True
+
+        self._cache[cache_key] = res
+        return res
 
     def is_ph_closed(self, ph) -> bool:
-        if self._is_ph_tripped(ph): return False
-        if self._is_ph_closed(ph): return True
-        return self._manual_closed.get(ph, True)
+        cache_key = f"is_ph_closed_{ph}"
+        if cache_key in self._cache: return self._cache[cache_key]
+        
+        # First check signals which might trigger a state latch
+        tripped = self._is_ph_tripped(ph)
+        closed_driven = self._is_ph_closed(ph)
+        
+        # State is now primarily driven by the latched _manual_closed state
+        res = self._manual_closed.get(ph, True)
+        
+        # However, if the TRIP signal is STILL active, it overrides the manual state (cannot close into a fault)
+        if tripped: res = False
+        
+        self._cache[cache_key] = res
+        return res
 
     @property
     def is_closed(self) -> bool:
-        return all(self.is_ph_closed(p) for p in 'abc')
+        if "is_closed" in self._cache: return self._cache["is_closed"]
+        res = all(self.is_ph_closed(p) for p in 'abc')
+        self._cache["is_closed"] = res
+        return res
 
     @is_closed.setter
     def is_closed(self, value):
         for ph in 'abc': self._manual_closed[ph] = value
+        self._cache.clear()
 
     @property
     def status(self):
+        if "status" in self._cache: return self._cache["status"]
         if self.is_single_pole:
             states = [("A" if self.is_ph_closed("a") else "."), 
                       ("B" if self.is_ph_closed("b") else "."), 
                       ("C" if self.is_ph_closed("c") else ".")]
-            return f"1-POLE [{' '.join(states)}]"
-        if any(self._is_ph_tripped(p) for p in 'abc'): return "OPEN (Tripped)"
-        if any(self._is_ph_closed(p) for p in 'abc') and not all(self._manual_closed.values()):
-            return "CLOSED (Driven)"
-        return "CLOSED" if self.is_closed else "OPEN"
+            res = f"1-POLE [{' '.join(states)}]"
+        elif any(self._is_ph_tripped(p) for p in 'abc'): res = "OPEN (Tripped)"
+        elif any(self._is_ph_closed(p) for p in 'abc') and not all(self._manual_closed.values()):
+            res = "CLOSED (Driven)"
+        else: res = "CLOSED" if self.is_closed else "OPEN"
+        self._cache["status"] = res
+        return res
 
     @property
     def voltage(self):
+        if "voltage" in self._cache: return self._cache["voltage"]
         if self._evaluating: return None
         self._evaluating = True
         try:
+            res = None
             if self.upstream_device:
-                return getattr(self.upstream_device, "downstream_voltage", getattr(self.upstream_device, "voltage", None))
-            return None
+                res = getattr(self.upstream_device, "downstream_voltage", getattr(self.upstream_device, "voltage", None))
+            self._cache["voltage"] = res
+            return res
         finally: self._evaluating = False
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         if self._evaluating: return None
         self._evaluating = True
         try:
+            res = None
             if self.upstream_device:
                 base_i = getattr(self.upstream_device, "downstream_current", getattr(self.upstream_device, "current", None))
-                if not base_i: return None
-                def ph_i(p, val): return val if self.is_ph_closed(p) else type(val)(0, 0)
-                return wye_currents(ph_i("a", base_i.a), ph_i("b", base_i.b), ph_i("c", base_i.c))
-            return None
+                if base_i:
+                    def ph_i(p, val): return val if self.is_ph_closed(p) else type(val)(0, 0)
+                    res = wye_currents(ph_i("a", base_i.a), ph_i("b", base_i.b), ph_i("c", base_i.c))
+            self._cache["current"] = res
+            return res
         finally: self._evaluating = False
 
     @property
@@ -193,6 +245,7 @@ class Disconnect(Switch):
 
 class CircuitBreaker(Switch):
     def __init__(self, name: str, continuous_amps: float, interrupt_ka: float, is_closed: bool = True, is_single_pole: bool = False):
+        self._cache = {}
         super().__init__(name, is_closed, is_single_pole)
         self.continuous_amps = continuous_amps
         self.interrupt_ka = interrupt_ka

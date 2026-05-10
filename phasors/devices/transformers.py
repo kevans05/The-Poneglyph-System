@@ -145,13 +145,14 @@ class PowerTransformer:
 
     @property
     def voltage(self):
-        if self._evaluating:
-            return None
+        if "voltage" in self._cache: return self._cache["voltage"]
+        if self._evaluating: return None
         self._evaluating = True
         try:
-            return self.secondary_voltage
-        finally:
-            self._evaluating = False
+            res = self.secondary_voltage
+            self._cache["voltage"] = res
+            return res
+        finally: self._evaluating = False
 
     @property
     def downstream_voltage(self):
@@ -181,13 +182,14 @@ class PowerTransformer:
 
     @property
     def current(self):
-        if self._evaluating:
-            return None
+        if "current" in self._cache: return self._cache["current"]
+        if self._evaluating: return None
         self._evaluating = True
         try:
-            return self.secondary_current
-        finally:
-            self._evaluating = False
+            res = self.secondary_current
+            self._cache["current"] = res
+            return res
+        finally: self._evaluating = False
 
     @property
     def downstream_current(self):

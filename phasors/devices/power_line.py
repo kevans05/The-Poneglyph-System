@@ -5,6 +5,7 @@ import math
 
 class PowerLine:
     def __init__(self, name: str):
+        self._cache = {}
         self.name = name
         self.upstream_device = None
         self.downstream_device = None
@@ -12,22 +13,28 @@ class PowerLine:
 
     @property
     def voltage(self):
+        if "voltage" in self._cache: return self._cache["voltage"]
         if self._evaluating: return None
         self._evaluating = True
         try:
+            res = None
             if self.upstream_device:
-                return getattr(self.upstream_device, 'downstream_voltage', getattr(self.upstream_device, 'voltage', None))
-            return None
+                res = getattr(self.upstream_device, 'downstream_voltage', getattr(self.upstream_device, 'voltage', None))
+            self._cache["voltage"] = res
+            return res
         finally: self._evaluating = False
 
     @property
     def current(self):
+        if "current" in self._cache: return self._cache["current"]
         if self._evaluating: return None
         self._evaluating = True
         try:
+            res = None
             if self.upstream_device:
-                return getattr(self.upstream_device, 'downstream_current', getattr(self.upstream_device, 'current', None))
-            return None
+                res = getattr(self.upstream_device, 'downstream_current', getattr(self.upstream_device, 'current', None))
+            self._cache["current"] = res
+            return res
         finally: self._evaluating = False
 
     @property

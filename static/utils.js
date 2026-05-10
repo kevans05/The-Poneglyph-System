@@ -63,7 +63,7 @@ const TYPE_LABELS = {
   ShuntCapacitor: "SHUNT CAP",
   ShuntReactor: "SHUNT RCT",
   SurgeArrester: "SURGE ARR",
-  SeriesCapacitor: "SERIES CAP",
+  SeriesCapacitor: "SC",
   SeriesReactor: "SERIES RCT",
   NeutralGroundingResistor: "NGR",
   SVC: "SVC",
@@ -167,8 +167,12 @@ function formatSI(value, unit) {
     return "0.00 " + (unit || "");
 
   const absVal = Math.abs(value);
+  
+  // For extremely small values, just return 0
+  if (absVal < 1e-15) return "0.00 " + (unit || "");
+
   // Find the power of 1000
-  const exponent = Math.floor(Math.log10(absVal) / 3) * 3;
+  let exponent = Math.floor(Math.log10(absVal) / 3) * 3;
 
   const prefixes = {
     12: "T",
@@ -177,9 +181,20 @@ function formatSI(value, unit) {
     3: "k",
     0: "",
     "-3": "m",
+    "-6": "μ",
+    "-9": "n",
+    "-12": "p",
   };
 
-  const prefix = prefixes[exponent.toString()] || "";
+  // If the exponent is not in our prefix list, fallback to scientific notation
+  // or clamp to the nearest supported prefix if appropriate.
+  if (!(exponent.toString() in prefixes)) {
+    if (exponent > 12) exponent = 12;
+    else if (exponent < -12) return value.toExponential(2) + " " + (unit || "");
+    else exponent = 0; // Fallback to 0 if something is weird
+  }
+
+  const prefix = prefixes[exponent.toString()];
   const scaled = value / Math.pow(10, exponent);
 
   return `${scaled.toFixed(2)} ${prefix}${unit || ""}`;

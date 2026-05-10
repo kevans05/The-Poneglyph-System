@@ -413,12 +413,15 @@ def _require_site(handler) -> bool:
 
 
 def _json_response(handler, data, status=200):
-    body = json.dumps(data).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-type", "application/json")
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        body = json.dumps(data).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-type", "application/json")
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        pass # Client disconnected before response could be sent
 
 
 class SCADAServer(BaseHTTPRequestHandler):
@@ -841,11 +844,16 @@ class SCADAServer(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass # Client disconnected
         except Exception as e:
             traceback.print_exc()
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            try:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def do_GET(self):
         try:
@@ -1048,6 +1056,13 @@ class SCADAServer(BaseHTTPRequestHandler):
                             dev.close()
                         save_substation(devices, label=f"auto:toggle:{device_name}")
                         toggled = True
+                    elif node_type := getattr(dev, "type", None) or dev.__class__.__name__:
+                        if node_type == "Relay":
+                            # For Relay, toggle the TRIP manual override
+                            current_trip = dev.output_manual_overrides.get("TRIP", False)
+                            dev.output_manual_overrides["TRIP"] = not current_trip
+                            save_substation(devices, label=f"auto:toggle:{device_name}")
+                            toggled = True
                 if toggled:
                     return _json_response(self, {"status": "toggled"})
                 else:
@@ -1085,11 +1100,16 @@ class SCADAServer(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass # Client disconnected
         except Exception as e:
             traceback.print_exc()
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            try:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Server Error: {e}".encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def log_message(self, format, *args):
         pass  # suppress per-request console noise
