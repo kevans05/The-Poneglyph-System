@@ -25,6 +25,8 @@ function startSim() {
         .then(r => r.json())
         .then(res => {
             simActive = true;
+            const toggleBtn = document.getElementById("sim-toggle-btn");
+            if (toggleBtn) toggleBtn.innerText = "EXIT SIM";
             simPaused = true;
             lastFrameId = -1;
             frameQueue = [];
@@ -41,13 +43,15 @@ function stopSim() {
     fetch("/api/sim/stop", { method: "POST" })
         .then(() => {
             simActive = false;
+            simPaused = true;
             document.getElementById("sim-bar").style.display = "none";
             document.body.classList.remove("sim-mode-active");
+            const toggleBtn = document.getElementById("sim-toggle-btn");
+            if (toggleBtn) toggleBtn.innerText = "SIMULATION";
             simData = null;
-            // No, refreshData is disabled if simActive is true. 
-            // So now that it's false, we can refresh.
-            // But we need to call it manually.
-            location.reload(); // Simplest way to exit sim mode cleanly
+            frameQueue = [];
+            // Trigger a refresh of the real data
+            refreshData();
         });
 }
 
@@ -271,4 +275,15 @@ function commitFault(deviceId) {
     }).then(() => {
         document.getElementById("fault-config-modal").style.display = "none";
     });
+}
+
+/**
+ * Toggle simulation mode on/off
+ */
+function toggleSimMode() {
+    if (simActive) {
+        stopSim();
+    } else {
+        startSim();
+    }
 }

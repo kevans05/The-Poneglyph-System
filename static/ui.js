@@ -902,8 +902,8 @@ function showContextMenu(e, d) {
 
       (typeof simActive !== 'undefined' && simActive ? 
         '<div style="padding:4px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #222;">SIMULATION</div>' +
-        '<div class="menu-item" style="color:#f55;" onclick="showFaultConfig(\'" + d.id + "\')">CONFIGURE & INJECT FAULT...</div>' +
-        '<div class="menu-item" style="color:#0f0;" onclick="clearFault(\'" + d.id + "\')">CLEAR FAULT</div>'
+        '<div class="menu-item" style="color:#f55;" onclick="showFaultConfig(\'' + d.id + '\')">CONFIGURE & INJECT FAULT...</div>' +
+        '<div class="menu-item" style="color:#0f0;" onclick="clearFault(\'' + d.id + '\')">CLEAR FAULT</div>'
       : '') +
 
       (function() {
