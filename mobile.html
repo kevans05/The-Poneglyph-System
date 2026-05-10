@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BRAIN POINT Mobile</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: 'Courier New', Courier, monospace;
+            margin: 0;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .header {
+            border-bottom: 1px solid #040;
+            padding-bottom: 10px;
+            margin-bottom: 10px;
+            text-align: center;
+            font-weight: bold;
+            letter-spacing: 2px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+        #heartbeat {
+            width: 8px;
+            height: 8px;
+            background: #040;
+            border-radius: 50%;
+            transition: background 0.1s;
+        }
+        #heartbeat.active { background: #0f0; box-shadow: 0 0 5px #0f0; }
+
+        .main-display {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .reading-card {
+            background: #010;
+            border: 1px solid #040;
+            padding: 12px 15px;
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+        }
+        .reading-label {
+            font-size: 0.75em;
+            color: #080;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .reading-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        .reading-value {
+            font-size: 2.2em;
+            font-weight: bold;
+            color: #0f0;
+        }
+        .reading-angle {
+            font-size: 1.2em;
+            color: #0a0;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        button {
+            background: #020;
+            border: 1px solid #040;
+            color: #0f0;
+            padding: 14px;
+            font-family: inherit;
+            font-size: 1em;
+            cursor: pointer;
+            border-radius: 4px;
+            touch-action: manipulation;
+            transition: all 0.05s;
+            outline: none;
+        }
+        button:active {
+            background: #0f0;
+            color: #000;
+            transform: scale(0.96);
+        }
+        button.selected {
+            background: #040;
+            border-color: #0f0;
+            box-shadow: inset 0 0 10px rgba(0,255,0,0.2);
+        }
+        button.busy {
+            background: #330 !important;
+            border-color: #ff0 !important;
+            color: #ff0 !important;
+            opacity: 0.8;
+        }
+        button.primary {
+            grid-column: span 3;
+            background: #040;
+            font-weight: bold;
+            font-size: 1.1em;
+            border-color: #0f0;
+            padding: 18px;
+            margin-top: 5px;
+        }
+
+        select {
+            background: #010;
+            border: 1px solid #040;
+            color: #0f0;
+            padding: 12px;
+            width: 100%;
+            font-family: inherit;
+            font-size: 1em;
+            border-radius: 4px;
+        }
+
+        .switch-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .switch-btn {
+            font-size: 0.85em;
+            padding: 10px;
+            text-align: left;
+            border-left: 4px solid #444;
+        }
+        .switch-btn.open { border-left-color: #f00; color: #f66; }
+        .switch-btn.closed { border-left-color: #0f0; color: #6f6; }
+
+        /* Relay Specific */
+        .relay-group {
+            background: #050505;
+            border: 1px solid #1a1a1a;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 5px;
+        }
+        .relay-name { font-size: 0.7em; color: #666; margin-bottom: 5px; text-transform: uppercase; }
+        .relay-ctrls { display: flex; gap: 5px; }
+        .relay-btn { flex: 1; padding: 12px; font-size: 0.8em; font-weight: bold; }
+        .relay-btn.trip { border-color: #f44; color: #f44; }
+        .relay-btn.trip.active { background: #811; color: #fff; }
+        .relay-btn.close { border-color: #3af; color: #3af; }
+        .relay-btn.close.active { background: #046; color: #fff; }
+
+        #test-overlay, #instrument-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .list-item {
+            border: 1px solid #040;
+            padding: 18px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            background: #010;
+        }
+        .list-item:active { background: #040; }
+        
+        .status-bar {
+            font-size: 0.7em;
+            border-top: 1px solid #040;
+            padding-top: 8px;
+            color: #080;
+            display: flex;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <div id="test-overlay">
+        <div class="header">ATTACH TO TEST</div>
+        <div id="site-warning" style="color: #f00; text-align: center; display: none; margin-bottom: 10px;">NO SITE LOADED</div>
+        <div class="main-display" id="test-list-container"></div>
+    </div>
+
+    <div id="instrument-overlay" style="display: none;">
+        <div class="header">SELECT INSTRUMENT</div>
+        <div class="main-display">
+            <div class="list-item" onclick="setInstrument('pmm1')"><b>PMM-1</b><br><small>Serial Hardware</small></div>
+            <div class="list-item" onclick="setInstrument('sim')"><b>SIMULATOR</b><br><small>Mock Data</small></div>
+            <div class="list-item" onclick="setInstrument('manual')"><b>MANUAL</b><br><small>Hand Entry</small></div>
+        </div>
+        <button style="border-color: #444; color: #888; margin-top: 10px;" onclick="backToTests()">← BACK</button>
+    </div>
+
+    <div class="header">
+        <div id="heartbeat"></div> BRAIN POINT REMOTE
+    </div>
+
+    <div class="main-display">
+        <div style="display: flex; justify-content: space-between; font-size: 0.7em; color: #080;">
+            <span id="connection-status">DISCONNECTED</span>
+            <span id="active-test-display">NO TEST</span>
+        </div>
+
+        <select id="device-select" onchange="hapticClick()"></select>
+
+        <div class="controls">
+            <button id="btn-ph-A" onclick="setPhase('A')">PH A</button>
+            <button id="btn-ph-B" onclick="setPhase('B')">PH B</button>
+            <button id="btn-ph-C" onclick="setPhase('C')">PH C</button>
+        </div>
+
+        <div class="reading-card">
+            <div class="reading-label">Live Voltage</div>
+            <div class="reading-row">
+                <span class="reading-value" id="val-v">0.00</span>
+                <span class="reading-angle" id="val-v-ang">0.0°</span>
+            </div>
+        </div>
+
+        <div class="reading-card">
+            <div class="reading-label">Live Current</div>
+            <div class="reading-row">
+                <span class="reading-value" id="val-i">0.00</span>
+                <span class="reading-angle" id="val-i-ang">0.0°</span>
+            </div>
+        </div>
+
+        <button class="primary" id="log-btn" onclick="logPoint()">LOG DATA POINT</button>
+
+        <div class="header" style="margin-top: 10px; font-size: 0.8em;">REMOTE SWITCHES</div>
+        <div id="switch-list" class="switch-grid"></div>
+
+        <div class="header" style="margin-top: 10px; font-size: 0.8em;">RELAY CONTROLS</div>
+        <div id="relay-list"></div>
+        
+        <button style="margin-top: 20px; border-color: #444; color: #888; padding: 10px;" onclick="detachTest()">DETACH</button>
+    </div>
+
+    <div class="status-bar">
+        <span id="status-text">Ready.</span>
+        <span id="active-inst-display" onclick="showInstrumentSelect()">NONE</span>
+    </div>
+
+    <script src="/static/api-client.js"></script>
+    <script>
+        function refreshData() { updateUI(); }
+        function render3LD() {}
+        function updateMinimap() {}
+        function updateStatusBar() {}
+
+        let _activePhase = 'A';
+        let _activeTestId = null, _activeSessionId = null, _instrumentType = null;
+        let _capturePoints = [], _isToggling = false;
+
+        function hapticClick() { if (navigator.vibrate) navigator.vibrate(20); }
+
+        function updateStatus(txt) {
+            document.getElementById('status-text').textContent = txt;
+            document.getElementById('heartbeat').classList.add('active');
+            setTimeout(() => document.getElementById('heartbeat').classList.remove('active'), 100);
+        }
+
+        function loadTests() {
+            fetchActiveSite().then(res => {
+                if (!res.active) { document.getElementById('site-warning').style.display = 'block'; return; }
+                fetchTests().then(data => {
+                    const container = document.getElementById('test-list-container');
+                    container.innerHTML = (data.tests || []).map(t => `
+                        <div class="list-item" onclick="startAttach('${t.id}', '${t.name}')">
+                            <b>${t.name}</b><br><small>${t.description || 'No description'}</small>
+                        </div>
+                    `).join('') || '<div style="text-align:center; color:#800">NO TESTS</div>';
+                });
+            });
+        }
+
+        function startAttach(id, name) {
+            hapticClick();
+            _activeTestId = id;
+            fetchTestDetail(id).then(data => {
+                const points = data.test.capture_points;
+                _capturePoints = typeof points === 'string' ? JSON.parse(points) : (points || []);
+                document.getElementById('test-overlay').style.display = 'none';
+                document.getElementById('active-test-display').innerText = name;
+                showInstrumentSelect();
+            });
+        }
+
+        function showInstrumentSelect() { document.getElementById('instrument-overlay').style.display = 'flex'; }
+        function backToTests() { hapticClick(); document.getElementById('instrument-overlay').style.display = 'none'; document.getElementById('test-overlay').style.display = 'flex'; }
+
+        function setInstrument(type) {
+            hapticClick();
+            _instrumentType = type;
+            document.getElementById('active-inst-display').innerText = type.toUpperCase();
+            document.getElementById('instrument-overlay').style.display = 'none';
+            
+            const finish = () => startSession("Mobile Remote", type, "Field Tech", _activeTestId).then(res => {
+                _activeSessionId = res.session_id;
+                updateStatus('Connected.');
+                updateUI();
+            });
+
+            if (type === 'pmm1') {
+                fetch("/api/pmm/ports").then(r => r.json()).then(data => {
+                    if (data.ports?.[0]) fetch("/api/pmm/connect", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({port:data.ports[0].device, model:"pmm1"})}).then(finish);
+                    else alert('No ports.');
+                });
+            } else if (type === 'sim') {
+                fetch("/api/pmm/connect", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({port:"SIMULATOR", model:"sim"})}).then(finish);
+            } else finish();
+        }
+
+        function detachTest() { hapticClick(); location.reload(); }
+
+        function updateUI() {
+            if (!_activeTestId) return;
+            fetchActiveSite().then(res => {
+                const s = document.getElementById('connection-status');
+                s.innerText = res.active ? res.info.station : 'OFFLINE';
+                s.style.color = res.active ? '#0f0' : '#f00';
+            });
+            fetch("/api/topology").then(r => r.json()).then(data => {
+                const select = document.getElementById('device-select'), switches = document.getElementById('switch-list'), relays = document.getElementById('relay-list');
+                const cur = select.value;
+                select.innerHTML = '<option value="">SELECT DEVICE...</option>' + data.nodes.filter(n => _capturePoints.length===0 || _capturePoints.includes(n.id)).map(n => `<option value="${n.id}">${n.id}</option>`).join('');
+                select.value = cur;
+
+                switches.innerHTML = data.nodes.filter(n => ['Breaker','Disconnect','Switch'].includes(n.type)).map(n => {
+                    const cl = n.status.toLowerCase();
+                    return `<button class="switch-btn ${cl}" onclick="toggleRemote('${n.id}', this)">${n.id}<br><small>${n.status}</small></button>`;
+                }).join('');
+
+                relays.innerHTML = data.nodes.filter(n => n.type === 'Relay').map(n => {
+                    const tripActive = !!n.summary["TRIP (MANUAL)"] || n.summary["TRIP"] === "HIGH";
+                    const closeActive = !!n.summary["CLOSE (MANUAL)"] || n.summary["CLOSE"] === "HIGH";
+                    return `
+                        <div class="relay-group">
+                            <div class="relay-name">${n.id}</div>
+                            <div class="relay-ctrls">
+                                <button class="relay-btn trip ${tripActive?'active':''}" onclick="toggleRelayOut('${n.id}', 'TRIP', ${!tripActive})">TRIP</button>
+                                <button class="relay-btn close ${closeActive?'active':''}" onclick="toggleRelayOut('${n.id}', 'CLOSE', ${!closeActive})">CLOSE</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            });
+        }
+
+        function toggleRemote(id, btn) {
+            if (_isToggling) return;
+            hapticClick();
+            _isToggling = true;
+            btn.classList.add('busy');
+            fetch(`/api/toggle/${encodeURIComponent(id)}`).then(() => {
+                _isToggling = false;
+                updateUI();
+            });
+        }
+
+        function toggleRelayOut(id, out, state) {
+            hapticClick();
+            const dev = currentData.nodes.find(n => n.id === id);
+            const overrides = Object.assign({}, dev.params?.output_manual_overrides || {});
+            overrides[out] = state;
+            reconfigureAPI(id, "update_device", { properties: { output_manual_overrides: overrides } }).then(() => updateUI());
+        }
+
+        function setPhase(p) {
+            hapticClick();
+            _activePhase = p;
+            ['A','B','C'].forEach(ph => document.getElementById('btn-ph-'+ph).classList.toggle('selected', ph===p));
+            updateStatus('Phase ' + p);
+        }
+
+        function logPoint() {
+            const devId = document.getElementById('device-select').value;
+            if (!devId) return alert('Select device');
+            hapticClick();
+            const btn = document.getElementById('log-btn');
+            btn.classList.add('busy'); btn.textContent = 'LOGGING...';
+            
+            fetch("/api/pmm/query").then(r => r.json()).then(res => {
+                reconfigureAPI(devId, "record_measurement", {measurements:{[`${_activePhase}_mag`]:res.watts||0, [`${_activePhase}_ang`]:res.phase||0}}).then(() => {
+                    btn.classList.remove('busy'); btn.textContent = 'LOG DATA POINT';
+                    updateStatus('Logged.');
+                });
+            });
+        }
+
+        function pollPMM() {
+            if (!_activeTestId || _instrumentType === 'manual') return;
+            fetch("/api/pmm/query").then(r => r.json()).then(res => {
+                if (res.ok) {
+                    document.getElementById('val-v').textContent = res.watts.toFixed(2);
+                    document.getElementById('val-v-ang').textContent = res.phase.toFixed(1) + '°';
+                }
+            });
+        }
+
+        setInterval(updateUI, 1000);
+        setInterval(pollPMM, 400);
+        loadTests();
+        setPhase('A');
+    </script>
+</body>
+</html>
