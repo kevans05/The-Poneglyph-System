@@ -1,3 +1,4 @@
+from .bus import Bus
 from ..wye_system import wye_currents, wye_voltages
 from ..current_phasor import CurrentPhasor
 from ..voltage_phasor import VoltagePhasor
@@ -5,7 +6,7 @@ from ..utilities.power_utilities import append_3phase_details
 import cmath
 import math
 
-class ProtectionDevice:
+class ProtectionDevice(Bus):
     def __init__(self, name: str):
         self._cache = {}
         self.name = name
@@ -74,9 +75,9 @@ class ProtectionDevice:
             return res
         finally:
             self._evaluating_dc = False
-
     @property
     def current(self):
+        """Protection devices aggregate current from their analog inputs."""
         if "current" in self._cache: return self._cache["current"]
         if self._evaluating: return None
         self._evaluating = True
@@ -93,11 +94,17 @@ class ProtectionDevice:
                     total_a += sign * i_sys.a.to_complex(); total_b += sign * i_sys.b.to_complex(); total_c += sign * i_sys.c.to_complex()
                     found = True
             if found:
-                def from_c(c): from ..current_phasor import CurrentPhasor; mag, ang = cmath.polar(c); return CurrentPhasor(mag, math.degrees(ang))
+                def from_c(c): 
+                    from ..current_phasor import CurrentPhasor
+                    mag, ang = cmath.polar(c)
+                    return CurrentPhasor(mag, math.degrees(ang))
                 res = wye_currents(from_c(total_a), from_c(total_b), from_c(total_c))
             self._cache["current"] = res
             return res
         finally: self._evaluating = False
+
+
+    
 
     @property
     def voltage(self):
@@ -157,6 +164,7 @@ class Relay(ProtectionDevice):
         self.settings = settings or {"50P1P": 5.0, "59P1P": 120.0}
         self.logic = logic or {"TRIP": "50P1 OR IN101", "CLOSE": "0", "OUT101": "50P1"}
         self.output_manual_overrides = {} # {label: bool}
+        self._sim_pickup_timers = {} # {label: start_time_ms}
 
     def get_logic_bits(self):
         if "logic_bits" in self._cache: return self._cache["logic_bits"]
@@ -179,6 +187,11 @@ class Relay(ProtectionDevice):
         cache_key = f"term_{label}"
         if cache_key in self._cache: return self._cache[cache_key]
         if self.output_manual_overrides.get(label, False): return True
+        
+        # In SIM mode, some outputs might be delayed
+        if getattr(self, "is_sim", False) and label in getattr(self, "_sim_active_outputs", {}):
+            return self._sim_active_outputs[label]
+
         if self._evaluating_dc: return False
         self._evaluating_dc = True
         try:
@@ -188,6 +201,68 @@ class Relay(ProtectionDevice):
             return res
         finally:
             self._evaluating_dc = False
+    @property
+    def current(self):
+        """Protection devices aggregate current from their analog inputs."""
+        if "current" in self._cache: return self._cache["current"]
+        if self._evaluating: return None
+        self._evaluating = True
+        try:
+            res = None
+            total_a, total_b, total_c = complex(0), complex(0), complex(0)
+            found = False
+            for i, src in enumerate(self.inputs):
+                i_sys = getattr(src, "secondary_current", None)
+                if i_sys:
+                    sign = self.input_polarities.get(src.name, 1)
+                    if getattr(self, "mode", None) == "DIFFERENTIAL" and i > 0 and src.name not in self.input_polarities:
+                        sign = -1
+                    total_a += sign * i_sys.a.to_complex(); total_b += sign * i_sys.b.to_complex(); total_c += sign * i_sys.c.to_complex()
+                    found = True
+            if found:
+                def from_c(c): 
+                    from ..current_phasor import CurrentPhasor
+                    mag, ang = cmath.polar(c)
+                    return CurrentPhasor(mag, math.degrees(ang))
+                res = wye_currents(from_c(total_a), from_c(total_b), from_c(total_c))
+            self._cache["current"] = res
+            return res
+        finally: self._evaluating = False
+
+
+    def sim_step(self, sim_time_ms):
+        fault_events = self._sim_step_fault(sim_time_ms)
+        if not getattr(self, "is_sim", False): return []
+        if not hasattr(self, "_sim_active_outputs"): self._sim_active_outputs = {}
+        
+        events = fault_events
+        logic_bits = self.get_logic_bits()
+        
+        for label, eq in self.logic.items():
+            raw_state = self._evaluate_equation(eq, logic_bits)
+            delay = float(self.settings.get(f"{label}_DELAY", 0.0))
+            
+            if delay <= 0:
+                self._sim_active_outputs[label] = raw_state
+                continue
+                
+            if raw_state:
+                if label not in self._sim_pickup_timers:
+                    self._sim_pickup_timers[label] = sim_time_ms
+                
+                elapsed = sim_time_ms - self._sim_pickup_timers[label]
+                if elapsed >= delay:
+                    if not self._sim_active_outputs.get(label):
+                        self._sim_active_outputs[label] = True
+                        events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
+            else:
+                if label in self._sim_pickup_timers:
+                    del self._sim_pickup_timers[label]
+                if self._sim_active_outputs.get(label):
+                    self._sim_active_outputs[label] = False
+                    events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
+        
+        return events
 
     @property
     def dc_output_state(self) -> bool:
@@ -253,3 +328,55 @@ class Indicator(ProtectionDevice):
         stats = super().get_summary_dict()
         stats["Status"] = "ON (Energized)" if self.dc_status else "OFF"
         return stats
+
+    
+
+    
+
+    def inject_fault(self, data):
+        """
+        data: {
+            "fault_type": str (3PH, SLG-A, LL-AB, etc.),
+            "impedance": float,
+            "persistence": str (persistent, transient),
+            "duration": float (ms),
+            "arcing": bool,
+            "internal": bool
+        }
+        """
+        self.fault_state = data
+        self._fault_start_time = None # Set on first sim_step
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def clear_fault(self):
+        self.fault_state = None
+        self._fault_start_time = None
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def _sim_step_fault(self, sim_time_ms):
+        if not getattr(self, "fault_state", None): return []
+        
+        fs = self.fault_state
+        if self._fault_start_time is None:
+            self._fault_start_time = sim_time_ms
+        
+        elapsed = sim_time_ms - self._fault_start_time
+        
+        # 1. Handle Transient persistence
+        if fs.get("persistence") == "transient":
+            duration = float(fs.get("duration", 100.0))
+            if elapsed >= duration:
+                self.clear_fault()
+                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name, "reason": "transient_expired"}}]
+        
+        # 2. Handle Arcing (fluctuating impedance)
+        if fs.get("arcing"):
+            import random
+            base_z = float(fs.get("impedance", 0.01))
+            # Arc resistance fluctuates between 1x and 5x base impedance
+            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
+            if hasattr(self, "_cache"): self._cache.clear()
+        else:
+            fs["current_impedance"] = fs.get("impedance", 0.01)
+
+        return []

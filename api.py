@@ -1,3 +1,5 @@
+import topology_utils
+import sim_engine as _sim
 from urllib.parse import urlparse, parse_qs
 import json
 import mimetypes
@@ -361,8 +363,28 @@ class SCADAServer(BaseHTTPRequestHandler):
         global _active_site, _active_session_id, _current_topology
         try:
             content_length = int(self.headers["Content-Length"])
-            post_data = self.rfile.read(content_length)
-            req = json.loads(post_data)
+            post_data = self.rfile.read(content_length) if content_length > 0 else b'{}'
+            req = json.loads(post_data) if post_data else {}
+            # ── Simulation endpoints ──────────────────────────────────────────
+            if self.path == "/api/sim/start":
+                _sim.sim_engine.start(_current_topology)
+                return _json_response(self, {"ok": True})
+            if self.path == "/api/sim/stop":
+                _sim.sim_engine.stop()
+                return _json_response(self, {"ok": True})
+            if self.path == "/api/sim/pause":
+                _sim.sim_engine.pause(req.get("paused", True))
+                return _json_response(self, {"ok": True})
+            if self.path == "/api/sim/speed":
+                _sim.sim_engine.set_speed(req.get("multiplier", 1.0))
+                return _json_response(self, {"ok": True})
+            if self.path == "/api/sim/fault":
+                _sim.sim_engine.schedule_event(0, "FAULT", req)
+                return _json_response(self, {"ok": True})
+            if self.path == "/api/sim/clear_fault":
+                _sim.sim_engine.schedule_event(0, "CLEAR_FAULT", req)
+                return _json_response(self, {"ok": True})
+
 
             # ── PMM endpoints ──────────────────────────────────────────────────
             if self.path == "/api/pmm/connect":
@@ -540,6 +562,21 @@ class SCADAServer(BaseHTTPRequestHandler):
                 return _json_response(self, {"ok": True})
 
             if self.path == "/api/reconfigure":
+                if _sim.sim_engine.running:
+                    _sim.sim_engine.mutate(req)
+                    return _json_response(self, {"ok": True})
+                
+                if _current_topology is None:
+                    return _json_response(self, {"error": "No site loaded"}, 409)
+
+                _current_topology = topology_utils.apply_reconfiguration(
+                    _current_topology, req, _active_site, _active_session_id
+                )
+                if req.get("action") not in ["update_position", "update_rotation", "record_measurement"]:
+                    _autosave(_current_topology, "reconfigure:" + req.get("action", "unknown"))
+                return _json_response(self, {"ok": True})
+
+            if False: # Old logic preserved for context but unreachable
                 if _current_topology is None:
                     return _json_response(self, {"error": "No site loaded"}, 409)
 
@@ -799,6 +836,19 @@ class SCADAServer(BaseHTTPRequestHandler):
                 pass
 
     def do_GET(self):
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
+        params = parse_qs(parsed_path.query)
+        if path == "/api/sim/frames":
+            since = int(params.get("since", [-1])[0])
+            frames = _sim.sim_engine.get_frames(since)
+            return _json_response(self, {
+                "frames": frames, 
+                "sim_time": _sim.sim_engine.sim_time_ms, 
+                "running": _sim.sim_engine.running, 
+                "paused": _sim.sim_engine.paused
+            })
+
         try:
             # ── PMM GET endpoints ──────────────────────────────────────────────
             if self.path == "/api/pmm/ports":

@@ -1,3 +1,4 @@
+from .bus import Bus
 import math
 
 from ..current_phasor import CurrentPhasor
@@ -28,7 +29,7 @@ def _is_cross_family(h: str, x: str) -> bool:
     return (h.upper() in _Y_FAMILY) != (x.upper() in _Y_FAMILY)
 
 
-class PowerTransformer:
+class PowerTransformer(Bus):
     def __init__(
         self,
         name: str,
@@ -165,46 +166,57 @@ class PowerTransformer:
 
     # ── Current ──────────────────────────────────────────────────────────────
 
+    
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+
+    
+    
     @property
     def primary_current(self):
+        """Current on the High-Side (H) calculated via Power Conservation."""
         if "primary_current" in self._cache: return self._cache["primary_current"]
-        if self.upstream_device:
-            if hasattr(self.upstream_device, "downstream_current"):
-                res = self.upstream_device.downstream_current; self._cache["primary_current"] = res; return res
-            res = getattr(self.upstream_device, "current", None)
-            self._cache["primary_current"] = res; return res
-        return None
+        v_pri = self.primary_voltage
+        if not v_pri: return None
+        
+        # We use the same downstream impacts as 'current' (X side)
+        loads, faults = self.find_downstream_impacts()
+        if not loads and not faults: return None
+
+        # Sum total downstream power
+        phase_s = {"a": complex(0), "b": complex(0), "c": complex(0)}
+        for load, mask in loads:
+            pq = load.get_phase_pq()
+            for ph in ("a", "b", "c"):
+                if mask[ph]: phase_s[ph] += complex(pq[ph][0], pq[ph][1])
+        
+        # Transformers might have their own faults
+        for f_dev, mask in faults:
+            fs = f_dev.fault_state
+            z = float(fs.get("current_impedance", fs.get("impedance", 0.01)))
+            v_local = f_dev.voltage
+            if not v_local: continue
+            # Sum fault power... (simplified version for now, should ideally match Bus.py)
+            # Power conservation handles the ratio/shift automatically because v_local is correct.
+            for ph, v_ph in zip("abc", [v_local.a, v_local.b, v_local.c]):
+                if mask[ph]: phase_s[ph] += (v_ph.magnitude ** 2) / z
+
+        def make_i(v_phasor, s):
+            if s == 0 or v_phasor.magnitude == 0: return CurrentPhasor(0, v_phasor.angle_degrees)
+            i_comp = (s / v_phasor.to_complex()).conjugate()
+            import cmath
+            mag, ang = cmath.polar(i_comp)
+            return CurrentPhasor(mag, math.degrees(ang))
+
+        res = wye_currents(make_i(v_pri.a, phase_s["a"]), make_i(v_pri.b, phase_s["b"]), make_i(v_pri.c, phase_s["c"]))
+        self._cache["primary_current"] = res
+        return res
 
     @property
     def secondary_current(self):
-        if "secondary_current" in self._cache: return self._cache["secondary_current"]
-        up_i = self.primary_current
-        if not up_i:
-            return None
-        shift = self.phase_shift_deg
-
-        def xform_i(p):
-            return CurrentPhasor(p.magnitude * self.ratio, p.angle_degrees + shift)
-
-        res = wye_currents(xform_i(up_i.a), xform_i(up_i.b), xform_i(up_i.c))
-        self._cache["secondary_current"] = res; return res
-
-    @property
-    def current(self):
-        if "current" in self._cache: return self._cache["current"]
-        if self._evaluating: return None
-        self._evaluating = True
-        try:
-            res = self.secondary_current
-            self._cache["current"] = res
-            return res
-        finally: self._evaluating = False
-
-    @property
-    def downstream_current(self):
+        """Current on the Low-Side (X). Inherits Bus.current logic (crawls downstream)."""
         return self.current
 
-    # ── Summary ───────────────────────────────────────────────────────────────
 
     def get_summary_dict(self):
         h_name = _WINDING_NAMES.get(self.h_winding, self.h_winding)
@@ -270,3 +282,58 @@ class PowerTransformer:
                     stats[f"Sec Current Phase {label}"] = ip.magnitude
                     stats[f"Phase {label} I-Angle"] = ip.angle_degrees
         return stats
+
+    
+
+    
+
+    def inject_fault(self, data):
+        """
+        data: {
+            "fault_type": str (3PH, SLG-A, LL-AB, etc.),
+            "impedance": float,
+            "persistence": str (persistent, transient),
+            "duration": float (ms),
+            "arcing": bool,
+            "internal": bool
+        }
+        """
+        self.fault_state = data
+        self._fault_start_time = None # Set on first sim_step
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def clear_fault(self):
+        self.fault_state = None
+        self._fault_start_time = None
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def _sim_step_fault(self, sim_time_ms):
+        if not getattr(self, "fault_state", None): return []
+        
+        fs = self.fault_state
+        if self._fault_start_time is None:
+            self._fault_start_time = sim_time_ms
+        
+        elapsed = sim_time_ms - self._fault_start_time
+        
+        # 1. Handle Transient persistence
+        if fs.get("persistence") == "transient":
+            duration = float(fs.get("duration", 100.0))
+            if elapsed >= duration:
+                self.clear_fault()
+                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name, "reason": "transient_expired"}}]
+        
+        # 2. Handle Arcing (fluctuating impedance)
+        if fs.get("arcing"):
+            import random
+            base_z = float(fs.get("impedance", 0.01))
+            # Arc resistance fluctuates between 1x and 5x base impedance
+            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
+            if hasattr(self, "_cache"): self._cache.clear()
+        else:
+            fs["current_impedance"] = fs.get("impedance", 0.01)
+
+        return []
+
+    def sim_step(self, sim_time_ms):
+        return self._sim_step_fault(sim_time_ms)

@@ -1,9 +1,10 @@
+from .bus import Bus
 import math
 from ..utilities.formatter import SIPrefix
 from ..utilities.power_utilities import append_3phase_details
 from ..wye_system import wye_voltages, wye_currents
 
-class Switch:
+class Switch(Bus):
     def __init__(self, name: str, is_closed: bool = True, is_single_pole: bool = False):
         self._cache = {}
         self.name = name
@@ -46,7 +47,8 @@ class Switch:
                         res = True; break
         
         # LATCHING LOGIC: If a trip is detected, permanently update manual state to OPEN.
-        if res and self._manual_closed.get(ph, True):
+        # In SIM mode, we handle this timing in sim_step instead.
+        if res and self._manual_closed.get(ph, True) and not getattr(self, "is_sim", False):
             self._manual_closed[ph] = False
 
         self._cache[cache_key] = res
@@ -66,11 +68,50 @@ class Switch:
                         res = True; break
         
         # LATCHING LOGIC: If a close signal is detected, permanently update manual state to CLOSED.
-        if res and not self._manual_closed.get(ph, False):
+        # In SIM mode, we handle this timing in sim_step instead.
+        if res and not self._manual_closed.get(ph, False) and not getattr(self, "is_sim", False):
             self._manual_closed[ph] = True
 
         self._cache[cache_key] = res
         return res
+
+    def sim_step(self, sim_time_ms):
+        fault_events = self._sim_step_fault(sim_time_ms)
+        """Simulation-specific logic for timed operations."""
+        if not getattr(self, "is_sim", False): return []
+        
+        # Initialize sim state if needed
+        if not hasattr(self, "_sim_pending_ops"):
+            self._sim_pending_ops = {} # {phase: {"target": bool, "time": ms}}
+            
+            self.operating_time_ms = 50.0 if self.__class__.__name__ == "CircuitBreaker" else 1000.0
+
+        events = fault_events
+        for ph in 'abc':
+            tripped = self._is_ph_tripped(ph)
+            closed_driven = self._is_ph_closed(ph)
+            
+            # If a trip signal is active and we are closed (and not already opening)
+            if tripped and self._manual_closed.get(ph, True):
+                if self._sim_pending_ops.get(ph, {}).get("target") != False:
+                    self._sim_pending_ops[ph] = {"target": False, "time": sim_time_ms + self.operating_time_ms}
+            
+            # If a close signal is active and we are open (and not already closing)
+            elif closed_driven and not self._manual_closed.get(ph, False):
+                if self._sim_pending_ops.get(ph, {}).get("target") != True:
+                    self._sim_pending_ops[ph] = {"target": True, "time": sim_time_ms + self.operating_time_ms}
+            
+            # Check if pending operation is complete
+            if ph in self._sim_pending_ops:
+                op = self._sim_pending_ops[ph]
+                if sim_time_ms >= op["time"]:
+                    self._manual_closed[ph] = op["target"]
+                    del self._sim_pending_ops[ph]
+                    self._cache.clear()
+                    # Event for the frame buffer
+                    events.append({"type": "SWITCH_OP", "delay": 0, "data": {"device_id": self.name, "phase": ph, "state": op["target"]}})
+        
+        return events
 
     def is_ph_closed(self, ph) -> bool:
         cache_key = f"is_ph_closed_{ph}"
@@ -129,21 +170,7 @@ class Switch:
             return res
         finally: self._evaluating = False
 
-    @property
-    def current(self):
-        if "current" in self._cache: return self._cache["current"]
-        if self._evaluating: return None
-        self._evaluating = True
-        try:
-            res = None
-            if self.upstream_device:
-                base_i = getattr(self.upstream_device, "downstream_current", getattr(self.upstream_device, "current", None))
-                if base_i:
-                    def ph_i(p, val): return val if self.is_ph_closed(p) else type(val)(0, 0)
-                    res = wye_currents(ph_i("a", base_i.a), ph_i("b", base_i.b), ph_i("c", base_i.c))
-            self._cache["current"] = res
-            return res
-        finally: self._evaluating = False
+    
 
     @property
     def downstream_voltage(self):
@@ -152,8 +179,7 @@ class Switch:
         def ph_v(p, val): return val if self.is_ph_closed(p) else type(val)(0, 0)
         return wye_voltages(ph_v("a", v.a), ph_v("b", v.b), ph_v("c", v.c))
 
-    @property
-    def downstream_current(self): return self.current
+    
 
     @property
     def connection_type(self) -> str:
@@ -254,3 +280,55 @@ class CircuitBreaker(Switch):
         stats["Continuous Rating"] = self.continuous_amps
         stats["Interrupt Rating"] = f"{self.interrupt_ka} kA"
         return stats
+
+    
+
+    
+
+    def inject_fault(self, data):
+        """
+        data: {
+            "fault_type": str (3PH, SLG-A, LL-AB, etc.),
+            "impedance": float,
+            "persistence": str (persistent, transient),
+            "duration": float (ms),
+            "arcing": bool,
+            "internal": bool
+        }
+        """
+        self.fault_state = data
+        self._fault_start_time = None # Set on first sim_step
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def clear_fault(self):
+        self.fault_state = None
+        self._fault_start_time = None
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def _sim_step_fault(self, sim_time_ms):
+        if not getattr(self, "fault_state", None): return []
+        
+        fs = self.fault_state
+        if self._fault_start_time is None:
+            self._fault_start_time = sim_time_ms
+        
+        elapsed = sim_time_ms - self._fault_start_time
+        
+        # 1. Handle Transient persistence
+        if fs.get("persistence") == "transient":
+            duration = float(fs.get("duration", 100.0))
+            if elapsed >= duration:
+                self.clear_fault()
+                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name, "reason": "transient_expired"}}]
+        
+        # 2. Handle Arcing (fluctuating impedance)
+        if fs.get("arcing"):
+            import random
+            base_z = float(fs.get("impedance", 0.01))
+            # Arc resistance fluctuates between 1x and 5x base impedance
+            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
+            if hasattr(self, "_cache"): self._cache.clear()
+        else:
+            fs["current_impedance"] = fs.get("impedance", 0.01)
+
+        return []

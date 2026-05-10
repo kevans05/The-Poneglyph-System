@@ -1170,3 +1170,22 @@ svg {
 .dc-wire { stroke: #ff8800; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
 .trip-wire { stroke: #ff4444; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
 .close-wire { stroke: #44ff44; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
+
+/* Simulation Mode Styles */
+body.sim-mode-active #header {
+    background-color: #180505;
+    border-bottom: 2px solid #f55;
+}
+
+body.sim-mode-active #canvas-container {
+    background-color: #0c0202;
+}
+
+#sim-bar button:hover {
+    background: #411 !important;
+    color: #fff !important;
+}
+
+#sim-speed-slider {
+    accent-color: #f55;
+}

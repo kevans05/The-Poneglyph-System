@@ -287,6 +287,25 @@ function render3LD(data) { if (!data || !data.nodes) return;
     const el = d3.select(this);
     el.append("circle").attr("class", "node-hitbox").attr("r", 60);
 
+    // Fault Highlight
+    const hasFault = d.fault_state;
+    if (hasFault) {
+        el.append("circle")
+            .attr("r", 50)
+            .attr("fill", "rgba(255,0,0,0.1)")
+            .attr("stroke", "#f00")
+            .attr("stroke-width", 3)
+            .attr("stroke-dasharray", "5,5");
+        
+        el.append("text")
+            .attr("y", 60)
+            .attr("text-anchor", "middle")
+            .attr("fill", "#f00")
+            .style("font-size", "10px")
+            .style("font-weight", "bold")
+            .text("!!! FAULT !!!");
+    }
+
     // Draw symbols...
     if (d.type === "CurrentTransformer") {
       // 3-Phase Circular CT with winding loop and polarity

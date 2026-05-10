@@ -1,9 +1,10 @@
+from .bus import Bus
 from ..wye_system import wye_voltages, wye_currents
 from ..phasor_operations import voltage_current_multiplier
 from ..utilities.power_utilities import append_3phase_details 
 import math
 
-class PowerLine:
+class PowerLine(Bus):
     def __init__(self, name: str, length_km: float = 0.0, r_per_km: float = 0.0, x_per_km: float = 0.0):
         self._cache = {}
         self.name = name
@@ -27,23 +28,11 @@ class PowerLine:
             return res
         finally: self._evaluating = False
 
-    @property
-    def current(self):
-        if 'current' in self._cache: return self._cache['current']
-        if self._evaluating: return None
-        self._evaluating = True
-        try:
-            res = None
-            if self.upstream_device:
-                res = getattr(self.upstream_device, 'downstream_current', getattr(self.upstream_device, 'current', None))
-            self._cache['current'] = res
-            return res
-        finally: self._evaluating = False
+    
 
     @property
     def downstream_voltage(self): return self.voltage
-    @property
-    def downstream_current(self): return self.current
+    
 
     @property
     def connection_type(self) -> str:
@@ -62,6 +51,10 @@ class PowerLine:
         self.downstream_device = downstream_device
         downstream_device.upstream_device = self
         return downstream_device
+
+    
+
+    
 
     def get_summary_dict(self) -> dict:
         is_delta = self.connection_type == 'delta'
@@ -89,3 +82,54 @@ class PowerLine:
                 stats['Apparent Power'] = abs(s_total)
             except: pass
         return append_3phase_details(stats, v, i, is_delta=is_delta)
+
+    def inject_fault(self, data):
+        """
+        data: {
+            "fault_type": str (3PH, SLG-A, LL-AB, etc.),
+            "impedance": float,
+            "persistence": str (persistent, transient),
+            "duration": float (ms),
+            "arcing": bool,
+            "internal": bool
+        }
+        """
+        self.fault_state = data
+        self._fault_start_time = None # Set on first sim_step
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def clear_fault(self):
+        self.fault_state = None
+        self._fault_start_time = None
+        if hasattr(self, "_cache"): self._cache.clear()
+
+    def _sim_step_fault(self, sim_time_ms):
+        if not getattr(self, "fault_state", None): return []
+        
+        fs = self.fault_state
+        if self._fault_start_time is None:
+            self._fault_start_time = sim_time_ms
+        
+        elapsed = sim_time_ms - self._fault_start_time
+        
+        # 1. Handle Transient persistence
+        if fs.get("persistence") == "transient":
+            duration = float(fs.get("duration", 100.0))
+            if elapsed >= duration:
+                self.clear_fault()
+                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name, "reason": "transient_expired"}}]
+        
+        # 2. Handle Arcing (fluctuating impedance)
+        if fs.get("arcing"):
+            import random
+            base_z = float(fs.get("impedance", 0.01))
+            # Arc resistance fluctuates between 1x and 5x base impedance
+            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
+            if hasattr(self, "_cache"): self._cache.clear()
+        else:
+            fs["current_impedance"] = fs.get("impedance", 0.01)
+
+        return []
+
+    def sim_step(self, sim_time_ms):
+        return self._sim_step_fault(sim_time_ms)

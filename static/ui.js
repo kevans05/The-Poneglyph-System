@@ -886,6 +886,7 @@ function addVTToBushingManual(hostId, isDual, bushing) {
 }
 
 function showContextMenu(e, d) {
+  if (typeof simActive !== 'undefined' && simActive) console.log('Sim mode menu showing for', d.id);
   e.preventDefault();
   const menu = d3
     .select("#context-menu")
@@ -898,6 +899,12 @@ function showContextMenu(e, d) {
       "('" +
       d.id +
       "')\">CONFIGURE DEVICE</div>" +
+
+      (typeof simActive !== 'undefined' && simActive ? 
+        '<div style="padding:4px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #222;">SIMULATION</div>' +
+        '<div class="menu-item" style="color:#f55;" onclick="showFaultConfig(\'" + d.id + "\')">CONFIGURE & INJECT FAULT...</div>' +
+        '<div class="menu-item" style="color:#0f0;" onclick="clearFault(\'" + d.id + "\')">CLEAR FAULT</div>'
+      : '') +
 
       (function() {
         let breakHtml = "";
