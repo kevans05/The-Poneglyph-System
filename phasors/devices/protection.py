@@ -8,16 +8,16 @@ import math
 
 class ProtectionDevice(Bus):
     def __init__(self, name: str):
-        self._cache = {}
-        self.name = name
+        super().__init__(name)
         self.inputs = [] # Analog Inputs (CT/VT)
         self.input_polarities = {}
         self.secondary_connections = [] # Analog Outputs
         
-        self.dc_input_conns = [] # List of {"device": dev, "from": label, "to": label}
-        self.dc_output_conns = [] # List of {"device": dev, "from": label, "to": label}
+        self.dc_input_conns = [] 
+        self.dc_output_conns = []
         
-        self._evaluating = False
+        self._evaluating_prot_current = False
+        self._evaluating_prot_voltage = False
         self._evaluating_dc = False
 
     def add_input(self, source_device):
@@ -25,15 +25,12 @@ class ProtectionDevice(Bus):
             self.inputs.append(source_device)
         return self
 
-    def connect(self, downstream_device, **kwargs):
+    def connect_secondary(self, downstream_device):
         if downstream_device not in self.secondary_connections:
             self.secondary_connections.append(downstream_device)
             if hasattr(downstream_device, 'add_input'):
                 downstream_device.add_input(self)
         return downstream_device
-
-    def connect_secondary(self, downstream_device):
-        return self.connect(downstream_device)
 
     def add_dc_input_conn(self, source_device, from_label=None, to_label=None):
         conn = {"device": source_device, "from": from_label, "to": to_label}
@@ -49,16 +46,10 @@ class ProtectionDevice(Bus):
                 downstream_device.add_dc_input_conn(self, from_label, to_label)
         return downstream_device
 
-    def get_terminal_state(self, label=None) -> bool:
-        """Returns the digital state of a specific output terminal."""
-        # Base implementation: just return global dc_status
-        return self.dc_status
-
     @property
     def dc_status(self) -> bool:
-        """True if ANY input to this device is active."""
         if "dc_status" in self._cache: return self._cache["dc_status"]
-        if self._evaluating_dc: return False
+        if getattr(self, '_evaluating_dc', False): return False
         self._evaluating_dc = True
         try:
             res = False
@@ -67,104 +58,106 @@ class ProtectionDevice(Bus):
                     res = True; break
             if not res:
                 for src in self.inputs:
-                    if getattr(src, "dc_output_state", False):
-                        res = True; break
-                    if hasattr(src, "dc_status") and src.dc_status:
+                    if getattr(src, "dc_output_state", False) or getattr(src, "dc_status", False):
                         res = True; break
             self._cache["dc_status"] = res
             return res
         finally:
             self._evaluating_dc = False
+
+    def get_terminal_state(self, label=None) -> bool:
+        return self.dc_status
+
     @property
     def current(self):
-        """Protection devices aggregate current from their analog inputs."""
+        """Protection devices ONLY aggregate current from their analog inputs."""
         if "current" in self._cache: return self._cache["current"]
-        if self._evaluating: return None
-        self._evaluating = True
+        if getattr(self, '_evaluating_prot_current', False): return wye_currents()
+        self._evaluating_prot_current = True
         try:
-            res = None
             total_a, total_b, total_c = complex(0), complex(0), complex(0)
             found = False
             for i, src in enumerate(self.inputs):
+                # We specifically check for secondary_current
                 i_sys = getattr(src, "secondary_current", None)
-                if i_sys:
+                if i_sys and i_sys.is_energized():
                     sign = self.input_polarities.get(src.name, 1)
                     if getattr(self, "mode", None) == "DIFFERENTIAL" and i > 0 and src.name not in self.input_polarities:
                         sign = -1
-                    total_a += sign * i_sys.a.to_complex(); total_b += sign * i_sys.b.to_complex(); total_c += sign * i_sys.c.to_complex()
+                    total_a += sign * i_sys.a.to_complex()
+                    total_b += sign * i_sys.b.to_complex()
+                    total_c += sign * i_sys.c.to_complex()
                     found = True
-            if found:
-                def from_c(c): 
-                    from ..current_phasor import CurrentPhasor
-                    mag, ang = cmath.polar(c)
-                    return CurrentPhasor(mag, math.degrees(ang))
-                res = wye_currents(from_c(total_a), from_c(total_b), from_c(total_c))
-            self._cache["current"] = res
-            return res
-        finally: self._evaluating = False
-
-
-    
+            
+            def from_c(c): mag, ang = cmath.polar(c); return CurrentPhasor(mag, math.degrees(ang))
+            res = wye_currents(from_c(total_a), from_c(total_b), from_c(total_c)) if found else wye_currents()
+            self._cache["current"] = res; return res
+        finally: 
+            self._evaluating_prot_current = False
 
     @property
     def voltage(self):
+        """Protection devices ONLY aggregate voltage from their analog inputs."""
         if "voltage" in self._cache: return self._cache["voltage"]
-        if self._evaluating: return None
-        self._evaluating = True
+        if getattr(self, '_evaluating_prot_voltage', False): return wye_voltages()
+        self._evaluating_prot_voltage = True
         try:
-            res = None
             total_a, total_b, total_c = complex(0), complex(0), complex(0)
-            found, valid_inputs = False, 0
+            found, count = False, 0
             for src in self.inputs:
                 v_sys = getattr(src, "secondary_voltage", None) or getattr(src, "secondary2_voltage", None)
-                if v_sys:
+                if v_sys and v_sys.is_energized():
                     sign = self.input_polarities.get(src.name, 1)
-                    total_a += sign * v_sys.a.to_complex(); total_b += sign * v_sys.b.to_complex(); total_c += sign * v_sys.c.to_complex()
-                    found = True; valid_inputs += 1
+                    total_a += sign * v_sys.a.to_complex()
+                    total_b += sign * v_sys.b.to_complex()
+                    total_c += sign * v_sys.c.to_complex()
+                    found = True; count += 1
+            
             if found:
-                if valid_inputs > 1:
-                    total_a /= valid_inputs; total_b /= valid_inputs; total_c /= valid_inputs
-                def from_c(c): from ..voltage_phasor import VoltagePhasor; mag, ang = cmath.polar(c); return VoltagePhasor(mag, math.degrees(ang))
+                if count > 1: total_a /= count; total_b /= count; total_c /= count
+                def from_c(c): mag, ang = cmath.polar(c); return VoltagePhasor(mag, math.degrees(ang))
                 res = wye_voltages(from_c(total_a), from_c(total_b), from_c(total_c))
-            self._cache["voltage"] = res
-            return res
-        finally: self._evaluating = False
+            else:
+                res = wye_voltages()
+            self._cache["voltage"] = res; return res
+        finally: 
+            self._evaluating_prot_voltage = False
 
     @property
-    def secondary_current(self): return self.current
+    def secondary_current(self): return None # Base protection doesn't have secondary winding
     @property
-    def secondary_voltage(self): return self.voltage
+    def secondary_voltage(self): return None
 
     def get_summary_dict(self):
         stats = {"Type": self.__class__.__name__, "Inputs": len(self.inputs)}
-        if not self.inputs: stats["Status"] = "No Input Sources"
         return append_3phase_details(stats, self.voltage, self.current)
 
 class CTTB(ProtectionDevice):
     def __init__(self, name: str, mode: str = "SUM", input_polarities: dict = None):
-        self._cache = {}
         super().__init__(name)
         self.mode = mode.upper().strip()
         self.input_polarities = input_polarities or {}
+    @property
+    def secondary_current(self): return self.current
 
-class FTBlock(ProtectionDevice): pass
+class FTBlock(ProtectionDevice):
+    @property
+    def secondary_voltage(self): return self.voltage
+
 class IsoBlock(FTBlock): pass
 
 class Relay(ProtectionDevice):
     def __init__(self, name: str, function: str = "Differential", input_polarities: dict = None, category: str = "Numerical",
                  logic: dict = None, settings: dict = None, digital_inputs: list = None, digital_outputs: list = None):
         super().__init__(name)
-        self.function = function
-        self.input_polarities = input_polarities or {}
-        self.category = category
+        self.function, self.input_polarities, self.category = function, input_polarities or {}, category
         self.target_dropped = False
-        
         self.digital_inputs = digital_inputs or ["IN101", "IN102"]
         self.digital_outputs = digital_outputs or ["OUT101", "OUT102"]
         self.settings = settings or {"50P1P": 5.0, "59P1P": 120.0}
         self.logic = logic or {"TRIP": "50P1 OR IN101", "CLOSE": "0", "OUT101": "50P1"}
-        self.output_manual_overrides = {} # {label: bool}
-        self._sim_pickup_timers = {} # {label: start_time_ms}
+        self.output_manual_overrides = {}
+        self._sim_pickup_timers = {}
 
     def get_logic_bits(self):
         if "logic_bits" in self._cache: return self._cache["logic_bits"]
@@ -176,103 +169,49 @@ class Relay(ProtectionDevice):
             bits[label] = False
             for conn in self.dc_input_conns:
                 if conn["to"] == label:
-                    if conn["device"].get_terminal_state(conn["from"]):
-                        bits[label] = True; break
-        self._cache["logic_bits"] = bits
-        return bits
+                    if conn["device"].get_terminal_state(conn["from"]): bits[label] = True; break
+        self._cache["logic_bits"] = bits; return bits
 
     def get_terminal_state(self, label=None) -> bool:
-        """Evaluates the state of a specific output terminal."""
         if not label or label == "DC_OUT": label = "TRIP"
         cache_key = f"term_{label}"
         if cache_key in self._cache: return self._cache[cache_key]
         if self.output_manual_overrides.get(label, False): return True
-        
-        # In SIM mode, some outputs might be delayed
-        if getattr(self, "is_sim", False) and label in getattr(self, "_sim_active_outputs", {}):
-            return self._sim_active_outputs[label]
-
-        if self._evaluating_dc: return False
+        if getattr(self, "is_sim", False) and label in getattr(self, "_sim_active_outputs", {}): return self._sim_active_outputs[label]
+        if getattr(self, '_evaluating_dc', False): return False
         self._evaluating_dc = True
         try:
             eq = self.logic.get(label, "0")
             res = self._evaluate_equation(eq, self.get_logic_bits())
-            self._cache[cache_key] = res
-            return res
-        finally:
-            self._evaluating_dc = False
-    @property
-    def current(self):
-        """Protection devices aggregate current from their analog inputs."""
-        if "current" in self._cache: return self._cache["current"]
-        if self._evaluating: return None
-        self._evaluating = True
-        try:
-            res = None
-            total_a, total_b, total_c = complex(0), complex(0), complex(0)
-            found = False
-            for i, src in enumerate(self.inputs):
-                i_sys = getattr(src, "secondary_current", None)
-                if i_sys:
-                    sign = self.input_polarities.get(src.name, 1)
-                    if getattr(self, "mode", None) == "DIFFERENTIAL" and i > 0 and src.name not in self.input_polarities:
-                        sign = -1
-                    total_a += sign * i_sys.a.to_complex(); total_b += sign * i_sys.b.to_complex(); total_c += sign * i_sys.c.to_complex()
-                    found = True
-            if found:
-                def from_c(c): 
-                    from ..current_phasor import CurrentPhasor
-                    mag, ang = cmath.polar(c)
-                    return CurrentPhasor(mag, math.degrees(ang))
-                res = wye_currents(from_c(total_a), from_c(total_b), from_c(total_c))
-            self._cache["current"] = res
-            return res
-        finally: self._evaluating = False
-
+            self._cache[cache_key] = res; return res
+        finally: self._evaluating_dc = False
 
     def sim_step(self, sim_time_ms):
         fault_events = self._sim_step_fault(sim_time_ms)
         if not getattr(self, "is_sim", False): return []
         if not hasattr(self, "_sim_active_outputs"): self._sim_active_outputs = {}
-        
-        events = fault_events
-        logic_bits = self.get_logic_bits()
-        
+        events, logic_bits = fault_events, self.get_logic_bits()
         for label, eq in self.logic.items():
             raw_state = self._evaluate_equation(eq, logic_bits)
             delay = float(self.settings.get(f"{label}_DELAY", 0.0))
-            
-            if delay <= 0:
-                self._sim_active_outputs[label] = raw_state
-                continue
-                
+            if delay <= 0: self._sim_active_outputs[label] = raw_state; continue
             if raw_state:
-                if label not in self._sim_pickup_timers:
-                    self._sim_pickup_timers[label] = sim_time_ms
-                
-                elapsed = sim_time_ms - self._sim_pickup_timers[label]
-                if elapsed >= delay:
-                    if not self._sim_active_outputs.get(label):
-                        self._sim_active_outputs[label] = True
-                        events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
+                if label not in self._sim_pickup_timers: self._sim_pickup_timers[label] = sim_time_ms
+                if sim_time_ms - self._sim_pickup_timers[label] >= delay and not self._sim_active_outputs.get(label):
+                    self._sim_active_outputs[label] = True
+                    events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
             else:
-                if label in self._sim_pickup_timers:
-                    del self._sim_pickup_timers[label]
+                if label in self._sim_pickup_timers: del self._sim_pickup_timers[label]
                 if self._sim_active_outputs.get(label):
                     self._sim_active_outputs[label] = False
                     events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
-        
         return events
 
     @property
-    def dc_output_state(self) -> bool:
-        """Global active state (for UI/Visuals). High if TRIP is active."""
-        return self.get_terminal_state("TRIP")
+    def dc_output_state(self) -> bool: return self.get_terminal_state("TRIP")
 
     @dc_output_state.setter
-    def dc_output_state(self, value):
-        """Set manual override for TRIP output."""
-        self.output_manual_overrides["TRIP"] = value
+    def dc_output_state(self, value): self.output_manual_overrides["TRIP"] = value
 
     def _evaluate_equation(self, eq, bits):
         if eq == "0": return False
@@ -290,20 +229,17 @@ class Relay(ProtectionDevice):
         for b, val in bits.items(): stats[b] = "ASSERTED" if val else "0"
         stats["--- OUTPUTS ---"] = "HEADER"
         for out in self.digital_outputs + ([o for o in ["TRIP", "CLOSE"] if o not in self.digital_outputs]):
-            res = self.get_terminal_state(out)
-            man = " (MANUAL)" if self.output_manual_overrides.get(out) else ""
+            res, man = self.get_terminal_state(out), " (MANUAL)" if self.output_manual_overrides.get(out) else ""
             stats[f"{out}{man}"] = "HIGH" if res else "0"
-        if self.category == "Electromechanical":
-            stats["Target / Flag"] = "DROPPED" if self.target_dropped else "SET" 
+        if self.category == "Electromechanical": stats["Target / Flag"] = "DROPPED" if self.target_dropped else "SET" 
         return stats
 
 class AuxiliaryTransformer(ProtectionDevice):
     def __init__(self, name: str, phase_shift_deg: float = 0.0, ratio: float = 1.0):
-        self._cache = {}
         super().__init__(name)
         self.phase_shift_deg, self.ratio = phase_shift_deg, ratio
     def _apply(self, system):
-        if not system: return None
+        if not system or not system.is_energized(): return system
         rotation = cmath.rect(1, math.radians(self.phase_shift_deg))
         def p(ph):
             c = (ph.to_complex() * self.ratio) * rotation; m, a = cmath.polar(c)
@@ -318,7 +254,7 @@ class Meter(ProtectionDevice):
     def get_summary_dict(self):
         stats = super().get_summary_dict()
         v, i = self.voltage, self.current
-        if v and i:
+        if v and i and v.is_energized() and i.is_energized():
             p = sum((getattr(v,ph).to_complex() * getattr(i,ph).to_complex().conjugate()).real for ph in 'abc')
             stats["Total Active Power"] = f"{p/1e6:.2f} MW"
         return stats
@@ -328,55 +264,3 @@ class Indicator(ProtectionDevice):
         stats = super().get_summary_dict()
         stats["Status"] = "ON (Energized)" if self.dc_status else "OFF"
         return stats
-
-    
-
-    
-
-    def inject_fault(self, data):
-        """
-        data: {
-            "fault_type": str (3PH, SLG-A, LL-AB, etc.),
-            "impedance": float,
-            "persistence": str (persistent, transient),
-            "duration": float (ms),
-            "arcing": bool,
-            "internal": bool
-        }
-        """
-        self.fault_state = data
-        self._fault_start_time = None # Set on first sim_step
-        if hasattr(self, "_cache"): self._cache.clear()
-
-    def clear_fault(self):
-        self.fault_state = None
-        self._fault_start_time = None
-        if hasattr(self, "_cache"): self._cache.clear()
-
-    def _sim_step_fault(self, sim_time_ms):
-        if not getattr(self, "fault_state", None): return []
-        
-        fs = self.fault_state
-        if self._fault_start_time is None:
-            self._fault_start_time = sim_time_ms
-        
-        elapsed = sim_time_ms - self._fault_start_time
-        
-        # 1. Handle Transient persistence
-        if fs.get("persistence") == "transient":
-            duration = float(fs.get("duration", 100.0))
-            if elapsed >= duration:
-                self.clear_fault()
-                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name, "reason": "transient_expired"}}]
-        
-        # 2. Handle Arcing (fluctuating impedance)
-        if fs.get("arcing"):
-            import random
-            base_z = float(fs.get("impedance", 0.01))
-            # Arc resistance fluctuates between 1x and 5x base impedance
-            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
-            if hasattr(self, "_cache"): self._cache.clear()
-        else:
-            fs["current_impedance"] = fs.get("impedance", 0.01)
-
-        return []

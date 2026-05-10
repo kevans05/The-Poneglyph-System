@@ -44,6 +44,15 @@ def print_device_summary(device_name: str, values_dict: dict, custom_units_map: 
     
 def append_3phase_details(stats_dict: dict, voltage_obj, current_obj, is_delta: bool = False):
     if not voltage_obj and not current_obj: return stats_dict
+    
+    # Check if we are totally de-energized (both 0V and 0A)
+    v_active = voltage_obj and voltage_obj.is_energized()
+    i_active = current_obj and current_obj.is_energized()
+    
+    if not v_active and not i_active:
+        if "Status" not in stats_dict:
+            stats_dict["Status"] = "DE-ENERGIZED / DEAD"
+        return stats_dict
 
     if is_delta:
         # Delta has no neutral — voltages are line-to-line: A-B, B-C, C-A.
@@ -51,25 +60,31 @@ def append_3phase_details(stats_dict: dict, voltage_obj, current_obj, is_delta: 
         ll_pairs = [('A-B', 'a', 'b'), ('B-C', 'b', 'c'), ('C-A', 'c', 'a')]
         i_phases  = [('A', 'a'), ('B', 'b'), ('C', 'c')]
         for (ll_label, from_attr, to_attr), (i_label, i_attr) in zip(ll_pairs, i_phases):
-            stats_dict[f'--- PHASE {ll_label} ---'] = 'HEADER'
-            if voltage_obj:
-                # V_AB = V_A − V_B  (VoltagePhasor supports __sub__)
-                v_ll = getattr(voltage_obj, from_attr) - getattr(voltage_obj, to_attr)
-                stats_dict[f'Phase {ll_label} Voltage'] = v_ll.magnitude
-                stats_dict[f'Phase {ll_label} V-Angle'] = v_ll.angle_degrees
-            if current_obj:
-                i_phasor = getattr(current_obj, i_attr)
-                stats_dict[f'Phase {i_label} Current'] = i_phasor.magnitude
-                stats_dict[f'Phase {i_label} I-Angle'] = i_phasor.angle_degrees
+            v_ll = (getattr(voltage_obj, from_attr) - getattr(voltage_obj, to_attr)) if voltage_obj else None
+            i_p = getattr(current_obj, i_attr) if current_obj else None
+            
+            if (v_ll and v_ll.magnitude > 1e-3) or (i_p and i_p.magnitude > 1e-3):
+                stats_dict[f'--- PHASE {ll_label} ---'] = 'HEADER'
+                if v_ll:
+                    stats_dict[f'Phase {ll_label} Voltage'] = v_ll.magnitude
+                    stats_dict[f'Phase {ll_label} V-Angle'] = v_ll.angle_degrees
+                if i_p:
+                    stats_dict[f'Phase {i_label} Current'] = i_p.magnitude
+                    stats_dict[f'Phase {i_label} I-Angle'] = i_p.angle_degrees
     else:
         for phase_label, attr in [('A', 'a'), ('B', 'b'), ('C', 'c')]:
-            stats_dict[f'--- PHASE {phase_label} ---'] = 'HEADER'
-            if voltage_obj:
-                v_phasor = getattr(voltage_obj, attr)
-                stats_dict[f'Phase {phase_label} Voltage (LN)'] = v_phasor.magnitude
-                stats_dict[f'Phase {phase_label} V-Angle'] = v_phasor.angle_degrees
-            if current_obj:
-                i_phasor = getattr(current_obj, attr)
-                stats_dict[f'Phase {phase_label} Current'] = i_phasor.magnitude
-                stats_dict[f'Phase {phase_label} I-Angle'] = i_phasor.angle_degrees
+            if not v_active and not i_active: break # Safety, should be handled above
+            
+            # Only add header if at least one quantity is non-zero
+            v_p = getattr(voltage_obj, attr) if voltage_obj else None
+            i_p = getattr(current_obj, attr) if current_obj else None
+            
+            if (v_p and v_p.magnitude > 1e-3) or (i_p and i_p.magnitude > 1e-3):
+                stats_dict[f'--- PHASE {phase_label} ---'] = 'HEADER'
+                if v_p:
+                    stats_dict[f'Phase {phase_label} Voltage (LN)'] = v_p.magnitude
+                    stats_dict[f'Phase {phase_label} V-Angle'] = v_p.angle_degrees
+                if i_p:
+                    stats_dict[f'Phase {phase_label} Current'] = i_p.magnitude
+                    stats_dict[f'Phase {phase_label} I-Angle'] = i_p.angle_degrees
     return stats_dict

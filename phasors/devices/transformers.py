@@ -41,15 +41,12 @@ class PowerTransformer(Bus):
         tap_configs: list | None = None,
         selected_tap_index: int = 0,
     ):
-        self.name = name
+        super().__init__(name)
         self.h_winding = h_winding.upper()
         self.x_winding = x_winding.upper()
         self.polarity_reversed = polarity_reversed
-        self.upstream_device = None
         self.h_connections = []
         self.x_connections = []
-        self._cache = {}
-        self._evaluating = False
 
         if tap_configs:
             self.tap_configs = tap_configs
@@ -91,9 +88,9 @@ class PowerTransformer(Bus):
     @property
     def connection_type(self) -> str:
         """Connection type on the primary (H) side — inherited from upstream."""
-        if self._evaluating:
+        if getattr(self, '_evaluating_v', False):
             return "wye"
-        self._evaluating = True
+        self._evaluating_v = True
         try:
             if self.upstream_device:
                 return getattr(
@@ -103,7 +100,7 @@ class PowerTransformer(Bus):
                 )
             return "wye"
         finally:
-            self._evaluating = False
+            self._evaluating_v = False
 
     @property
     def downstream_connection_type(self) -> str:
@@ -152,8 +149,8 @@ class PowerTransformer(Bus):
     @property
     def voltage(self):
         if "voltage" in self._cache: return self._cache["voltage"]
-        if self._evaluating: return None
-        self._evaluating = True
+        if getattr(self, '_evaluating_v', False): return None
+        self._evaluating_v = True
         try:
             res = self.secondary_voltage
             self._cache["voltage"] = res

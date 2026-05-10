@@ -13,6 +13,7 @@ let simInterval = null;
 
 function startSim() {
     if (simActive) return;
+    if (!confirm("Enter Simulation Mode? This will snapshot the current topology and start the virtual clock.")) return;
     
     // Snapshot current topology
     if (!currentData) {

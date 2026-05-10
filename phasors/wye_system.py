@@ -110,6 +110,14 @@ class wye_currents:
         I2 = (self.a + alpha ** 2 * self.b + alpha * self.c) / 3
         return (I0, I1, I2)  # Complex phasors (zero, positive, negative)
 
+    def is_energized(self, tolerance=1e-3):
+        """True if any phase has significant magnitude."""
+        return self.a.magnitude > tolerance or self.b.magnitude > tolerance or self.c.magnitude > tolerance
+
+    def is_energized(self, tolerance=1e-3):
+        """True if any phase has significant magnitude."""
+        return self.a.magnitude > tolerance or self.b.magnitude > tolerance or self.c.magnitude > tolerance
+
     def is_balanced(self, tolerance=1e-5):
         """Check if currents form a balanced set"""
         I0, I1, I2 = self.get_sequence_components()
@@ -253,6 +261,14 @@ class wye_voltages:
         v1 = (self.a + alpha * self.b + (alpha ** 2) * self.c) / 3
         v2 = (self.a + (alpha ** 2) * self.b + alpha * self.c) / 3
         return (v0, v1, v2)
+
+    def is_energized(self, tolerance=1e-3):
+        """True if any phase has significant magnitude."""
+        return self.a.magnitude > tolerance or self.b.magnitude > tolerance or self.c.magnitude > tolerance
+
+    def is_energized(self, tolerance=1e-3):
+        """True if any phase has significant magnitude."""
+        return self.a.magnitude > tolerance or self.b.magnitude > tolerance or self.c.magnitude > tolerance
 
     def is_balanced(self, tolerance=1e-5):
         """Check if phase voltages are balanced"""

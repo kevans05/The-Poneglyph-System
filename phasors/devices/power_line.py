@@ -6,6 +6,7 @@ import math
 
 class PowerLine(Bus):
     def __init__(self, name: str, length_km: float = 0.0, r_per_km: float = 0.0, x_per_km: float = 0.0):
+        super().__init__(name)
         self._cache = {}
         self.name = name
         self.length_km = length_km
@@ -13,22 +14,20 @@ class PowerLine(Bus):
         self.x_per_km = x_per_km
         self.upstream_device = None
         self.downstream_device = None
-        self._evaluating = False
+        
 
     @property
     def voltage(self):
         if 'voltage' in self._cache: return self._cache['voltage']
-        if self._evaluating: return None
-        self._evaluating = True
+        if self._evaluating_v: return None
+        self._evaluating_v = True
         try:
             res = None
             if self.upstream_device:
                 res = getattr(self.upstream_device, 'downstream_voltage', getattr(self.upstream_device, 'voltage', None))
             self._cache['voltage'] = res
             return res
-        finally: self._evaluating = False
-
-    
+        finally: self._evaluating_v = False
 
     @property
     def downstream_voltage(self): return self.voltage

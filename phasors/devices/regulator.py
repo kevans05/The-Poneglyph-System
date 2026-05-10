@@ -1,10 +1,11 @@
+from .bus import Bus
 import math
 from ..voltage_phasor import VoltagePhasor
 from ..current_phasor import CurrentPhasor
 from ..wye_system import wye_currents, wye_voltages
 from ..utilities.power_utilities import append_3phase_details
 
-class VoltageRegulator:
+class VoltageRegulator(Bus):
     """
     A 3-phase Step Voltage Regulator.
     Typically has 32 steps (16 boost, 16 buck), each 0.625%, for a +/- 10% range.
@@ -25,7 +26,7 @@ class VoltageRegulator:
         self.upstream_device = None
         self.connections = []
         self._cache = {}
-        self._evaluating = False
+        
 
     @property
     def ratio(self) -> float:
@@ -53,8 +54,8 @@ class VoltageRegulator:
     @property
     def voltage(self):
         if "voltage" in self._cache: return self._cache["voltage"]
-        if self._evaluating: return None
-        self._evaluating = True
+        if self._evaluating_v: return None
+        self._evaluating_v = True
         try:
             up_v = None
             if self.upstream_device:
@@ -71,8 +72,7 @@ class VoltageRegulator:
             
             res = wye_voltages(xform_v(up_v.a), xform_v(up_v.b), xform_v(up_v.c))
             self._cache["voltage"] = res; return res
-        finally:
-            self._evaluating = False
+        finally: self._evaluating_v = False
 
     @property
     def downstream_voltage(self):
@@ -81,8 +81,8 @@ class VoltageRegulator:
     @property
     def current(self):
         if "current" in self._cache: return self._cache["current"]
-        if self._evaluating: return None
-        self._evaluating = True
+        if self._evaluating_v: return None
+        self._evaluating_v = True
         try:
             up_i = None
             if self.upstream_device:
@@ -99,8 +99,7 @@ class VoltageRegulator:
             
             res = wye_currents(xform_i(up_i.a), xform_i(up_i.b), xform_i(up_i.c))
             self._cache["current"] = res; return res
-        finally:
-            self._evaluating = False
+        finally: self._evaluating_v = False
 
     @property
     def downstream_current(self):

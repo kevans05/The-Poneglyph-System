@@ -6,8 +6,7 @@ from ..wye_system import wye_voltages, wye_currents
 
 class Switch(Bus):
     def __init__(self, name: str, is_closed: bool = True, is_single_pole: bool = False):
-        self._cache = {}
-        self.name = name
+        super().__init__(name)
         self.is_single_pole = is_single_pole
         # Per-phase manual states
         self._manual_closed = {"a": is_closed, "b": is_closed, "c": is_closed}
@@ -17,11 +16,9 @@ class Switch(Bus):
         self.dc_input_conns = []
         self.dc_output_conns = []
         
-        self.upstream_device = None
         self.h_connections = []
         self.x_connections = []
         self.sensors = []
-        self._evaluating = False
         self._evaluating_dc = False
 
     def open(self):
@@ -160,15 +157,16 @@ class Switch(Bus):
     @property
     def voltage(self):
         if "voltage" in self._cache: return self._cache["voltage"]
-        if self._evaluating: return None
-        self._evaluating = True
+        if getattr(self, '_evaluating_v', False): return wye_voltages()
+        self._evaluating_v = True
         try:
             res = None
             if self.upstream_device:
                 res = getattr(self.upstream_device, "downstream_voltage", getattr(self.upstream_device, "voltage", None))
+            if res is None: res = wye_voltages()
             self._cache["voltage"] = res
             return res
-        finally: self._evaluating = False
+        finally: self._evaluating_v = False
 
     
 
@@ -202,7 +200,7 @@ class Switch(Bus):
     def get_terminal_state(self, label=None) -> bool:
         # Recursion Guard: If we are already evaluating DC logic, 
         # return the base manual state to break the loop.
-        if self._evaluating_dc:
+        if getattr(self, '_evaluating_dc', False):
             # Fallback to manual state
             def _cl(p): return self._manual_closed.get(p, True)
             is_all_cl = all(self._manual_closed.values())

@@ -214,12 +214,17 @@ class SimEngine:
     def mutate(self, req):
         with self.lock:
             self.topology_data = topology_utils.apply_reconfiguration(self.topology_data, req)
-            # Re-load model while attempting to preserve state?
-            # For now, let's just reload. It's the safest way to ensure connections are right.
-            # We preserve sim_time_ms.
+            
+            # Re-load model
             new_sources, new_devices, _, _, _ = self._load_model(self.topology_data)
             
-            # Attempt to transfer state (breaker positions, etc.)
+            # TRANSFER ANALOG INPUTS (Crucial for cascaded sensors!)
+            # When we reload the model, the secondary_connections lists are rebuilt,
+            # but we need to ensure the cascaded CTs keep their analog input links.
+            # Wait, model_loader.py handles secondary_connections based on topology JSON.
+            # So if topology JSON is updated, reload should work.
+
+            # Transfer state (breaker positions, fault states)
             for did, old_dev in self.devices.items():
                 if did in new_devices:
                     new_dev = new_devices[did]
@@ -227,6 +232,8 @@ class SimEngine:
                         new_dev._manual_closed = copy.deepcopy(old_dev._manual_closed)
                     if hasattr(old_dev, "fault_state") and hasattr(new_dev, "fault_state"):
                         new_dev.fault_state = old_dev.fault_state
+                    if hasattr(old_dev, "_sim_active_outputs") and hasattr(new_dev, "_sim_active_outputs"):
+                        new_dev._sim_active_outputs = copy.deepcopy(old_dev._sim_active_outputs)
             
             self.sources = new_sources
             self.devices = new_devices
