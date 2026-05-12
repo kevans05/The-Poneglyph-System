@@ -10,18 +10,19 @@ let simSpeed = 1.0;
 let simData = null; // Local copy of topology for simulation
 let frameQueue = [];
 let simInterval = null;
+let simLogOpen = false;
 
 function startSim() {
     if (simActive) return;
     if (!confirm("Enter Simulation Mode? This will snapshot the current topology and start the virtual clock.")) return;
-    
+
     // Snapshot current topology
     if (!currentData) {
         alert("Load a site first!");
         return;
     }
     simData = JSON.parse(JSON.stringify(currentData));
-    
+
     fetch("/api/sim/start", { method: "POST" })
         .then(r => r.json())
         .then(res => {
@@ -33,7 +34,10 @@ function startSim() {
             frameQueue = [];
             document.getElementById("sim-bar").style.display = "flex";
             document.body.classList.add("sim-mode-active");
-            
+
+            clearSimLog();
+            addSimLogEntry(0, "SIM_START", {});
+
             // Start polling and playback loops
             simPoll();
             requestAnimationFrame(simPlaybackLoop);
@@ -51,6 +55,8 @@ function stopSim() {
             if (toggleBtn) toggleBtn.innerText = "SIMULATION";
             simData = null;
             frameQueue = [];
+            // Hide log panel
+            if (simLogOpen) toggleSimLog();
             // Trigger a refresh of the real data
             refreshData();
         });
@@ -138,7 +144,7 @@ function simPlaybackLoop(now) {
 
 function applyFrame(frame) {
     if (!simData) return;
-    
+
     if (frame.full_sld) {
         simData = JSON.parse(JSON.stringify(frame.full_sld));
     }
@@ -151,9 +157,15 @@ function applyFrame(frame) {
             if (change.fault_state === null) delete node.fault_state;
         }
     }
-    
+
+    if (frame.events && frame.events.length > 0) {
+        for (let e of frame.events) {
+            addSimLogEntry(e.sim_time, e.type, e);
+        }
+    }
+
     render3LD(simData);
-    
+
     Object.keys(openWindows).forEach((id) => {
         const node = simData.nodes.find((n) => n.id === id);
         if (node) updateWindow(id, node);
@@ -241,6 +253,11 @@ function showFaultConfig(deviceId) {
                 <input type="number" id="fault-duration" value="100" step="1" style="width:100%;">
             </div>
             
+            <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:10px; color:#888;">SYSTEM X/R RATIO (typ: 10–40 transmission, 5–15 distribution)</label>
+                <input type="number" id="fault-xr" value="15" step="1" min="1" max="100" style="width:100%;">
+            </div>
+
             <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
                 <input type="checkbox" id="fault-arcing">
                 <label for="fault-arcing" style="font-size:11px; color:#ccc; cursor:pointer;">Arcing Fault (Variable Z)</label>
@@ -263,6 +280,7 @@ function commitFault(deviceId) {
         device_id: deviceId,
         fault_type: document.getElementById("fault-type").value,
         impedance: parseFloat(document.getElementById("fault-impedance").value),
+        x_r_ratio: parseFloat(document.getElementById("fault-xr").value) || 15,
         persistence: document.getElementById("fault-persistence").value,
         duration: parseFloat(document.getElementById("fault-duration").value),
         arcing: document.getElementById("fault-arcing").checked,
@@ -287,4 +305,91 @@ function toggleSimMode() {
     } else {
         startSim();
     }
+}
+
+/**
+ * Simulation Event Log
+ */
+
+const SIM_LOG_EVENT_STYLES = {
+    SIM_START:     { color: "#ffffff", label: "SIM START" },
+    FAULT:         { color: "#ff4444", label: "FAULT" },
+    CLEAR_FAULT:   { color: "#44ffff", label: "CLR FAULT" },
+    RELAY_PICKUP:  { color: "#ffff44", label: "PICKUP" },
+    RELAY_DROPOUT: { color: "#777777", label: "DROPOUT" },
+    SWITCH_OP:     null, // handled inline based on state
+};
+
+function addSimLogEntry(sim_time_ms, type, data) {
+    const entries = document.getElementById("sim-log-entries");
+    if (!entries) return;
+
+    const t = (sim_time_ms / 1000).toFixed(3);
+    let style = SIM_LOG_EVENT_STYLES[type];
+    let color, label, detail;
+
+    if (type === "SWITCH_OP") {
+        color = data.state ? "#44ff88" : "#ff8833";
+        label = data.state ? "CB CLOSE" : "CB OPEN";
+        detail = `${data.device_id} ph-${(data.phase || "").toUpperCase()}`;
+    } else if (type === "RELAY_PICKUP") {
+        color = style.color;
+        label = style.label;
+        detail = `${data.device_id}: ${data.label}`;
+        if (data.multiple != null) {
+            const tStr = data.t_op_s != null ? `, ${data.t_op_s}s` : '';
+            detail += ` (${data.multiple}× ${data.curve || 'IDMT'}${tStr})`;
+        }
+    } else if (type === "RELAY_DROPOUT") {
+        color = style.color;
+        label = style.label;
+        detail = `${data.device_id}: ${data.label}`;
+    } else if (type === "FAULT") {
+        color = style.color;
+        label = style.label;
+        detail = `${data.device_id}: ${data.fault_type || "?"}, Z=${data.impedance != null ? data.impedance : "?"}Ω`;
+    } else if (type === "CLEAR_FAULT") {
+        color = style.color;
+        label = style.label;
+        detail = data.device_id || "";
+    } else if (type === "SIM_START") {
+        color = style.color;
+        label = style.label;
+        detail = "topology snapshot";
+    } else {
+        color = "#aaaaaa";
+        label = type;
+        detail = data.device_id || "";
+    }
+
+    const row = document.createElement("div");
+    row.className = "sim-log-entry";
+    row.innerHTML =
+        `<span class="sim-log-time">T=${t}s</span>` +
+        `<span class="sim-log-type" style="color:${color}">[${label}]</span>` +
+        `<span class="sim-log-detail">${detail}</span>`;
+    entries.appendChild(row);
+
+    // Auto-scroll if already near bottom
+    const threshold = 40;
+    const nearBottom = entries.scrollHeight - entries.scrollTop - entries.clientHeight < threshold;
+    if (nearBottom) entries.scrollTop = entries.scrollHeight;
+
+    // Cap at 500 entries to avoid DOM bloat
+    while (entries.children.length > 500) {
+        entries.removeChild(entries.firstChild);
+    }
+}
+
+function toggleSimLog() {
+    simLogOpen = !simLogOpen;
+    const panel = document.getElementById("sim-log-panel");
+    const btn = document.getElementById("sim-log-btn");
+    panel.style.display = simLogOpen ? "flex" : "none";
+    if (btn) btn.innerText = simLogOpen ? "LOG ▼" : "LOG";
+}
+
+function clearSimLog() {
+    const entries = document.getElementById("sim-log-entries");
+    if (entries) entries.innerHTML = "";
 }
