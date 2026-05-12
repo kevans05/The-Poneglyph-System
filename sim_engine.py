@@ -49,6 +49,7 @@ class SimEngine:
         self.frame_buffer = []
         self.next_frame_id = 0
         self.max_buffer_size = 10000
+        self._frame_events = []  # notification events collected between frames
         
         self.thread = None
         self.heartbeat_interval_ms = 100.0
@@ -66,6 +67,7 @@ class SimEngine:
             self.paused = True
             self.frame_buffer = []
             self.next_frame_id = 0
+            self._frame_events = []
             self.event_queue = queue.PriorityQueue()
             
             # Initial frame
@@ -153,12 +155,14 @@ class SimEngine:
                 dev = self.devices[device_id]
                 if hasattr(dev, "inject_fault"):
                     dev.inject_fault(data)
+            self._frame_events.append({"type": "FAULT", "sim_time": self.sim_time_ms, **data})
         elif event_type == "CLEAR_FAULT":
             device_id = data.get("device_id")
             if device_id in self.devices:
                 dev = self.devices[device_id]
                 if hasattr(dev, "clear_fault"):
                     dev.clear_fault()
+            self._frame_events.append({"type": "CLEAR_FAULT", "sim_time": self.sim_time_ms, **data})
         elif event_type == "TOGGLE":
             device_id = data.get("device_id")
             if device_id in self.devices:
@@ -181,23 +185,30 @@ class SimEngine:
                 if hasattr(dev, "handle_close_signal"):
                     dev.handle_close_signal(phase)
 
+    _NOTIFICATION_EVENT_TYPES = {"RELAY_PICKUP", "RELAY_DROPOUT", "SWITCH_OP", "CLEAR_FAULT"}
+
     def _update_physics(self):
         # Force recalculation by clearing all caches
         self._cache_clear_all()
-        
+
         for dev in self.devices.values():
             if hasattr(dev, "sim_step"):
                 events = dev.sim_step(self.sim_time_ms)
                 for e in events:
-                    self.schedule_event(e["delay"], e["type"], e["data"])
+                    if e["type"] in self._NOTIFICATION_EVENT_TYPES:
+                        # Log directly — these are notifications, not actions to re-process
+                        self._frame_events.append({"type": e["type"], "sim_time": self.sim_time_ms, **e["data"]})
+                    else:
+                        self.schedule_event(e["delay"], e["type"], e["data"])
 
     def _emit_frame(self, is_snapshot=False):
         frame = {
             "id": self.next_frame_id,
             "sim_time": self.sim_time_ms,
-            "events": [], 
-            "changes": {} 
+            "events": list(self._frame_events),
+            "changes": {}
         }
+        self._frame_events = []
         
         if is_snapshot:
             # Generate full SLD response for structural changes

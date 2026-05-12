@@ -1189,3 +1189,82 @@ body.sim-mode-active #canvas-container {
 #sim-speed-slider {
     accent-color: #f55;
 }
+
+#sim-log-panel {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 280px;
+    height: 100%;
+    background: #0d0101;
+    border-left: 1px solid #500;
+    font-family: monospace;
+    font-size: 11px;
+    color: #ccc;
+    z-index: 100;
+    flex-direction: column;
+}
+
+#sim-log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 10px;
+    background: #200;
+    border-bottom: 1px solid #500;
+    color: #f55;
+    font-weight: bold;
+    letter-spacing: 1px;
+    flex-shrink: 0;
+}
+
+#sim-log-header button {
+    background: none;
+    border: 1px solid #500;
+    color: #888;
+    cursor: pointer;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-family: monospace;
+}
+
+#sim-log-header button:hover {
+    border-color: #f55;
+    color: #f55;
+}
+
+#sim-log-entries {
+    overflow-y: auto;
+    flex: 1;
+    padding: 2px 0;
+}
+
+.sim-log-entry {
+    display: flex;
+    gap: 5px;
+    padding: 2px 8px;
+    border-bottom: 1px solid #1a0000;
+    line-height: 1.5;
+    word-break: break-all;
+}
+
+.sim-log-entry:hover {
+    background: #1a0505;
+}
+
+.sim-log-time {
+    color: #555;
+    min-width: 55px;
+    flex-shrink: 0;
+}
+
+.sim-log-type {
+    min-width: 72px;
+    flex-shrink: 0;
+    font-weight: bold;
+}
+
+.sim-log-detail {
+    color: #999;
+}
