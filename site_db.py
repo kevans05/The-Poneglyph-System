@@ -111,9 +111,25 @@ CREATE TABLE IF NOT EXISTS device_history (
 );
 CREATE INDEX IF NOT EXISTS idx_dev_hist_id    ON device_history(device_id);
 CREATE INDEX IF NOT EXISTS idx_dev_hist_epoch ON device_history(epoch DESC);
+
+-- Device serial number changelog.
+-- Each row records a serial number assignment or change for a physical device.
+-- This lets you track relay swaps, CT replacements, etc. over time.
+CREATE TABLE IF NOT EXISTS device_serials (
+    id          TEXT    PRIMARY KEY,   -- UUID
+    device_id   TEXT    NOT NULL,      -- logical device ID in the topology
+    epoch       INTEGER NOT NULL,      -- when the serial was recorded
+    serial      TEXT    NOT NULL,      -- serial number string (free-form)
+    notes       TEXT    DEFAULT '',    -- reason for change (e.g. "replaced after failure")
+    technician  TEXT    DEFAULT ''     -- who made the change
+);
+CREATE INDEX IF NOT EXISTS idx_serials_device ON device_serials(device_id);
+CREATE INDEX IF NOT EXISTS idx_serials_epoch  ON device_serials(epoch DESC);
 """
 
 # Columns added after initial release — applied to existing DBs on open.
+# The device_serials table is created by _SCHEMA (via CREATE TABLE IF NOT EXISTS),
+# so it does not need a column migration entry.
 _MIGRATIONS = [
     ("site_info",  "site_name",   "TEXT    DEFAULT ''"),
     ("site_info",  "number_code", "TEXT    DEFAULT ''"),
@@ -529,3 +545,52 @@ def get_device_config_history(db_path: str, device_id: str, limit: int = 100) ->
 def update_test_capture_points(db_path: str, test_id: str, devices: list[str]):
     with _conn(db_path) as c:
         c.execute("UPDATE tests SET capture_points = ? WHERE id = ?", (json.dumps(devices), test_id))
+
+
+# ── Device Serial Numbers ─────────────────────────────────────────────────────
+
+def record_device_serial(
+    db_path: str,
+    device_id: str,
+    serial: str,
+    notes: str = "",
+    technician: str = "",
+) -> str:
+    """Record a serial number assignment or swap for a device.
+
+    Returns the UUID of the new row.  Each call creates a new row so the full
+    swap history is preserved — you can always trace what serial was installed
+    at any point in time.
+    """
+    row_id = str(uuid.uuid4())
+    with _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO device_serials (id, device_id, epoch, serial, notes, technician)
+               VALUES (?,?,?,?,?,?)""",
+            (row_id, device_id, int(time.time()), serial.strip(), notes.strip(), technician.strip()),
+        )
+    _touch(db_path)
+    return row_id
+
+
+def get_device_serials(db_path: str, device_id: str, limit: int = 50) -> list[dict]:
+    """Return serial number history for a device, newest first."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            """SELECT id, epoch, serial, notes, technician
+               FROM device_serials
+               WHERE device_id = ?
+               ORDER BY epoch DESC LIMIT ?""",
+            (device_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_serial(db_path: str, device_id: str) -> str | None:
+    """Return the most recent serial number for a device, or None."""
+    with _conn(db_path) as c:
+        row = c.execute(
+            "SELECT serial FROM device_serials WHERE device_id = ? ORDER BY epoch DESC LIMIT 1",
+            (device_id,),
+        ).fetchone()
+    return row["serial"] if row else None

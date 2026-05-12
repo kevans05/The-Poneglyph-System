@@ -1,3 +1,62 @@
+"""
+The Poneglyph System — HTTP API Server (api.py)
+
+Single-file Python HTTP server built on stdlib http.server.  Every REST
+endpoint lives in do_GET / do_POST on SCADAServer.  No framework required.
+
+Concurrency model: single-threaded.  All state is in module-level globals
+(_current_topology, _active_site, _active_session_id).  This is safe because
+CPython's GIL means only one request runs at a time, and the sim_engine
+mutates topology in a dedicated thread via sim_engine.mutate().
+
+Endpoint summary
+----------------
+GET  /api/topology                    — computed power-flow topology
+GET  /api/topology/export             — raw substation JSON download
+POST /api/topology/import             — replace topology from JSON upload
+GET  /api/toggle/<device>             — open/close a breaker or disconnect
+POST /api/reconfigure                 — apply a topology mutation (add/delete/move/etc.)
+GET  /api/sites                       — list all site databases
+POST /api/sites/create                — create a new site DB
+POST /api/sites/load                  — activate a site and load its latest topology
+GET  /api/sites/active                — info about the currently active site
+POST /api/sites/update                — patch editable site_info fields
+GET  /api/tests                       — list all tests for active site
+POST /api/tests/create                — create a new test
+POST /api/tests/delete                — delete a test and all its sessions
+POST /api/tests/status                — update test status (IN PROGRESS / COMPLETE / ARCHIVED)
+POST /api/tests/capture-points        — save capture-point device list for a test
+POST /api/tests/vref                  — store the reference VT for a test
+POST /api/tests/drawings/add          — attach a drawing to a test
+POST /api/tests/drawings/delete       — remove a drawing
+GET  /api/tests/<id>/devices          — distinct device IDs with measurements for a test
+GET  /api/tests/<id>/report-data      — full measurement data for report rendering
+GET  /api/tests/<id>/report.xlsx      — download XLSX load-test report
+POST /api/tests/ingest-report         — import hand-entered measurements from XLSX
+GET  /api/db/snapshots                — list topology snapshots
+GET  /api/db/snapshots/<id>           — computed topology at a snapshot
+POST /api/db/snapshots/delete         — delete a snapshot
+GET  /api/db/sessions                 — list all measurement sessions
+POST /api/db/sessions                 — start a new measurement session
+POST /api/db/sessions/delete          — delete a session and its measurements
+GET  /api/db/sessions/<id>/measurements — all measurements for a session
+GET  /api/db/history/<device>/<key>   — time-series measurements for one analog key
+GET  /api/db/device-config-history/<id> — per-device config/snapshot audit trail
+POST /api/pmm/connect                 — connect to power meter (pmm1 / pmm2 / sim)
+POST /api/pmm/configure               — set channel assignments on connected meter
+POST /api/pmm/disconnect              — disconnect from meter
+GET  /api/pmm/ports                   — list available serial ports
+GET  /api/pmm/status                  — meter connection status
+GET  /api/pmm/query                   — read one set of phasor measurements
+POST /api/sim/start                   — start physics simulation engine
+POST /api/sim/stop                    — stop simulation engine
+POST /api/sim/pause                   — pause / resume simulation
+POST /api/sim/speed                   — set simulation time multiplier
+POST /api/sim/fault                   — schedule a fault event
+POST /api/sim/clear_fault             — clear an active fault
+GET  /api/sim/frames                  — poll simulation animation frames
+"""
+
 import topology_utils
 import sim_engine as _sim
 from urllib.parse import urlparse, parse_qs
@@ -12,12 +71,17 @@ import power_meters as _pmm
 import site_db as _sdb
 import model_loader
 
-# The substation configuration is now kept in-memory and persisted to the site DB.
-# The substation.json file is no longer used for active storage.
+# In-memory substation topology.  Loaded from the active site DB on /api/sites/load
+# and kept in sync by every /api/reconfigure call.  Persisted to the DB via _autosave().
 _current_topology: dict | None = None
 
-# Active site DB path — set when a site is loaded via /api/sites/load
+# Path to the active site's SQLite file (e.g. "sites/ALZ.db").
+# None when no site has been loaded this session.
 _active_site: str | None = None
+
+# UUID of the most recently started measurement session.  Measurements recorded
+# via record_measurement are tagged with this session so they appear together in
+# the history view.
 _active_session_id: str | None = None
 
 
@@ -28,6 +92,10 @@ def load_substation(data=None):
     devices = model_loader.load_substation_model(data)
     sources = [dev for dev in devices.values() if getattr(dev, "type", "") == "VoltageSource" or dev.__class__.__name__ == "VoltageSource"]
     return sources, devices, data.get("devices", []), data.get("reference", {}), data.get("project_info", {"station": "", "device": ""})
+
+# Raw topology keys forwarded to the frontend as device.params.
+# Only fields listed here are exposed — keeps the JSON payload small and
+# prevents leaking internal computed state.
 _PARAM_KEYS = [
     "nominal_voltage_kv",
     "nominal_power_mva",
@@ -78,6 +146,7 @@ _PARAM_KEYS = [
     "resistance_ohm",
     "carrier_frequency_hz",
     "input_polarities",
+    "serial_number",   # physical asset serial; stored in topology JSON and tracked in device_serials table
 ]
 
 
@@ -576,198 +645,6 @@ class SCADAServer(BaseHTTPRequestHandler):
                     _autosave(_current_topology, "reconfigure:" + req.get("action", "unknown"))
                 return _json_response(self, {"ok": True})
 
-            if False: # Old logic preserved for context but unreachable
-                if _current_topology is None:
-                    return _json_response(self, {"error": "No site loaded"}, 409)
-
-                data = _current_topology
-                target_id = req.get("id")
-                action = req.get("action")
-
-                if action == "update_device":
-                    for d in data["devices"]:
-                        if d["id"] == target_id:
-                            props = req.get("properties", {})
-                            for k, v in props.items():
-                                if v is None:
-                                    d.pop(k, None)
-                                else:
-                                    d[k] = v
-                            break
-                elif action == "update_position":
-                    for d in data["devices"]:
-                        if d["id"] == target_id:
-                            d["gx"] = req.get("gx")
-                            d["gy"] = req.get("gy")
-                            break
-                elif action == "update_rotation":
-                    for d in data["devices"]:
-                        if d["id"] == target_id:
-                            d["rotation"] = req.get("rotation", 0)
-                            break
-                elif action == "delete_device":
-                    data["devices"] = [
-                        d for d in data["devices"] if d["id"] != target_id
-                    ]
-                    for d in data["devices"]:
-                        if "connections" in d:
-                            d["connections"] = [
-                                c
-                                for c in d["connections"]
-                                if (c if isinstance(c, str) else c["id"]) != target_id
-                            ]
-                        if "secondary_connections" in d:
-                            d["secondary_connections"] = [
-                                c for c in d["secondary_connections"] if c != target_id
-                            ]
-                elif action == "add_device":
-                    new_dev = req.get("device")
-                    if "gx" in req:
-                        new_dev["gx"] = req["gx"]
-                    if "gy" in req:
-                        new_dev["gy"] = req["gy"]
-                    data["devices"].append(new_dev)
-                    if "connect_to" in req:
-                        source_id = req["connect_to"]["id"]
-                        bushing = req["connect_to"]["bushing"]
-                        for d in data["devices"]:
-                            if d["id"] == source_id:
-                                if "connections" not in d:
-                                    d["connections"] = []
-                                conn = new_dev["id"]
-                                if bushing:
-                                    conn = {"id": new_dev["id"], "via_bushing": bushing}
-                                d["connections"].append(conn)
-                                break
-                elif action == "rename_device":
-                    old_id = target_id
-                    new_id = req.get("new_id", "").strip()
-                    if new_id and new_id != old_id:
-                        for d in data["devices"]:
-                            if d["id"] == old_id:
-                                d["id"] = new_id
-                            if "connections" in d:
-                                d["connections"] = [
-                                    (new_id if c == old_id else c)
-                                    if isinstance(c, str)
-                                    else (
-                                        {**c, "id": new_id} if c["id"] == old_id else c
-                                    )
-                                    for c in d["connections"]
-                                ]
-                            if "secondary_connections" in d:
-                                d["secondary_connections"] = [
-                                    new_id if c == old_id else c
-                                    for c in d["secondary_connections"]
-                                ]
-                            if d.get("location") == old_id:
-                                d["location"] = new_id
-                        if data.get("reference", {}).get("device_id") == old_id:
-                            data["reference"]["device_id"] = new_id
-                elif action == "record_measurement":
-                    meas = req.get("measurements", {})
-                    if _active_site:
-                        _sdb.record_measurements(
-                            _active_site,
-                            session_id=_active_session_id,
-                            device_id=target_id,
-                            measurements=meas,
-                        )
-                elif action == "add_connection":
-                    source_id = req.get("id")
-                    target_id = req.get("target_id")
-                    bushing = req.get("bushing")
-                    for d in data["devices"]:
-                        if d["id"] == source_id:
-                            if "connections" not in d:
-                                d["connections"] = []
-                            new_conn = target_id
-                            if bushing:
-                                new_conn = {"id": target_id, "via_bushing": bushing}
-                            d["connections"].append(new_conn)
-                            break
-                elif action == "add_secondary_connection":
-                    source_id = req.get("id")
-                    target_id = req.get("target_id")
-                    for d in data["devices"]:
-                        if d["id"] == source_id:
-                            if "secondary_connections" not in d:
-                                d["secondary_connections"] = []
-                            if target_id not in d["secondary_connections"]:
-                                d["secondary_connections"].append(target_id)
-                            break
-                elif action == "delete_connection":
-                    source_id = req.get("id")
-                    target_id = req.get("target_id")
-                    conn_type = req.get("type", "primary") # primary, secondary, dc, trip, close
-                    
-                    for d in data["devices"]:
-                        if d["id"] == source_id:
-                            # Handle all list types
-                            for list_key in ["connections", "secondary_connections", "dc_connections", "trip_connections", "close_connections"]:
-                                if list_key in d:
-                                    # Handle both string IDs and object-based connections
-                                    d[list_key] = [
-                                        c for c in d[list_key] 
-                                        if (c if isinstance(c, str) else c.get("id")) != target_id
-                                    ]
-                            break
-                elif action == "add_dc_connection":
-                    source_id = req.get("id")
-                    target_id = req.get("target_id")
-                    from_label = req.get("from")
-                    to_label = req.get("to")
-                    for d in data["devices"]:
-                        if d["id"] == source_id:
-                            if "dc_connections" not in d: d["dc_connections"] = []
-                            new_conn = {"id": target_id, "from": from_label, "to": to_label}
-                            # Check for duplicates
-                            if not any(c["id"] == target_id and c.get("from") == from_label and c.get("to") == to_label for c in [x for x in d["dc_connections"] if isinstance(x, dict)]):
-                                d["dc_connections"].append(new_conn)
-                            break
-                elif action == "add_trip_connection":
-                    source_id = req.get("id")
-                    target_id = req.get("target_id")
-                    for d in data["devices"]:
-                        if d["id"] == source_id:
-                            if "trip_connections" not in d:
-                                d["trip_connections"] = []
-                            if target_id not in d["trip_connections"]:
-                                d["trip_connections"].append(target_id)
-                            break
-                elif action == "add_close_connection":
-                    source_id = req.get("id")
-                    target_id = req.get("target_id")
-                    for d in data["devices"]:
-                        if d["id"] == source_id:
-                            if "close_connections" not in d:
-                                d["close_connections"] = []
-                            if target_id not in d["close_connections"]:
-                                d["close_connections"].append(target_id)
-                            break
-                elif action == "set_reference":
-                    data["reference"] = {
-                        "device_id": req.get("device_id"),
-                        "phase": req.get("phase"),
-                    }
-                elif action == "create_snapshot":
-                    if not _require_site(self):
-                        return
-                    snap_id = _sdb.save_snapshot(
-                        _active_site,
-                        label=req.get("label", "Snapshot"),
-                        topology=data,
-                    )
-
-                # Auto-save to site DB on every structural change
-                if action not in ("create_snapshot", "record_measurement"):
-                    _autosave(data, label=f"auto:{action}")
-
-                resp_body = {"status": "success"}
-                if action == "create_snapshot":
-                    resp_body["snapshot_id"] = snap_id
-                return _json_response(self, resp_body)
-
             if self.path == "/api/topology/import":
                 if not _require_site(self):
                     return
@@ -820,6 +697,32 @@ class SCADAServer(BaseHTTPRequestHandler):
                     return
                 info = _sdb.update_site_info(_active_site, req or {})
                 return _json_response(self, {"ok": True, "info": info})
+
+            # Record a serial number or swap for a device.
+            # Body: {device_id, serial, notes, technician}
+            if self.path == "/api/db/serials/record":
+                if not _require_site(self):
+                    return
+                device_id = req.get("device_id", "").strip()
+                serial    = req.get("serial", "").strip()
+                if not device_id or not serial:
+                    return _json_response(self, {"error": "device_id and serial required"}, 400)
+                row_id = _sdb.record_device_serial(
+                    _active_site,
+                    device_id=device_id,
+                    serial=serial,
+                    notes=req.get("notes", "").strip(),
+                    technician=req.get("technician", "").strip(),
+                )
+                # Also store the serial_number on the in-memory topology device so
+                # it appears in the params panel and persists on the next snapshot.
+                if _current_topology:
+                    for d in _current_topology.get("devices", []):
+                        if d["id"] == device_id:
+                            d["serial_number"] = serial
+                            break
+                    _autosave(_current_topology, label=f"serial:{device_id}")
+                return _json_response(self, {"ok": True, "id": row_id})
 
             else:
                 self.send_response(404)
@@ -905,10 +808,6 @@ class SCADAServer(BaseHTTPRequestHandler):
                 use360 = params.get("use360", ["true"])[0].lower() == "true"
                 
                 xlsx = _xrep.build_load_test_report(_active_site, test_id, use360=use360)
-                if not _require_site(self):
-                    return
-                test_id = self.path.split("/")[3]
-                xlsx = _xrep.build_load_test_report(_active_site, test_id)
                 if xlsx is None:
                     self.send_response(404)
                     self.end_headers()
@@ -1018,6 +917,15 @@ class SCADAServer(BaseHTTPRequestHandler):
                         except Exception:
                             pass
                 return _json_response(self, {"history": rows})
+
+            # Serial number history for a device
+            if self.path.startswith("/api/db/serials/"):
+                if not _require_site(self):
+                    return
+                device_id = self.path.split("/", 4)[-1]
+                rows = _sdb.get_device_serials(_active_site, device_id)
+                latest = _sdb.get_latest_serial(_active_site, device_id)
+                return _json_response(self, {"serials": rows, "current": latest})
 
             if self.path == "/api/topology":
                 sources, devices, raw_devices, reference, project_info = (

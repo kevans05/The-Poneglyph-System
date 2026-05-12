@@ -1,3 +1,39 @@
+"""
+sensors.py — Instrument transformer models (CT and VT).
+
+CurrentTransformer
+  Maps primary line current to a scaled secondary current fed into the
+  protection analog chain.
+
+  Ratio convention: ratio stored as primary/secondary (e.g. 400 for 2000:5).
+  secondary_current = primary_current / ratio  (with optional phase shift and polarity)
+
+  Secondary wiring options:
+    Y         — standard wye, phases independent
+    DAB/DAC   — inter-phase delta (I_sec_DAB = Ia−Ib, Ib−Ic, Ic−Ia)
+                 MATH: |I_sec_delta| = √3 × |I_sec_wye| at balance
+    RESIDUAL  — 3I₀ (all three phases set to Ia+Ib+Ic)
+    A/B/C     — single-phase tap; zero on other phases
+    N         — neutral / ground CT
+
+  Polarity reversal (polarity_normal=False) adds 180° to the secondary angle,
+  equivalent to reversing the CT lead markings.
+
+VoltageTransformer
+  Maps primary line voltage to scaled secondary voltage.
+  ratio = primary_voltage / secondary_voltage (e.g. 2000 for 2000:1).
+
+  Secondary wiring:
+    Y   — wye (LN)
+    D   — delta (LL), using DAB rotation
+    DAB — explicit phase AB-BC-CA
+    DAC — explicit phase AC-CB-BA
+
+DualWindingVT
+  Two independent secondary windings with separate ratios and wiring configurations.
+  Winding 1 feeds metering / revenue; Winding 2 typically feeds protection relays.
+"""
+
 from .protection import ProtectionDevice
 import cmath
 import math

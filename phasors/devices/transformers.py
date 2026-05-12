@@ -1,3 +1,33 @@
+"""
+transformers.py — Power transformer model.
+
+ELECTRICAL MATH
+---------------
+Turns ratio:    ratio = pri_kv / sec_kv  (line-to-line kV)
+Secondary voltage:  V_sec = V_pri / ratio
+Secondary current:  derived via Bus.current (power conservation on X side)
+Primary current:    derived via power conservation on H side (see primary_current)
+
+Phase shift (ANSI C57.12.00):
+  • Same winding family (Y↔Y, D↔D): 0° shift
+  • Cross family (Y↔D, Y↔Z):       −30° normal polarity (H leads X)
+                                    +30° reversed polarity
+
+The phase shift is applied as a rotation to the voltage phasor:
+  V_sec.angle = V_pri.angle + phase_shift_deg
+
+Primary current via power conservation:
+  S_total = Σ (P_load + jQ_load) for all downstream loads
+  I_pri = conj(S_total / V_pri)   per phase
+  This correctly accounts for the turns ratio because V_pri is the H-side
+  voltage and S is conserved across an ideal transformer.
+
+Tap changer:
+  tap_configs is a list of {label, pri_kv, sec_kv} dicts.  Selecting a tap
+  changes self.ratio, which immediately affects all computed voltages and
+  currents without requiring a topology reload.
+"""
+
 from .bus import Bus
 import math
 
@@ -155,7 +185,7 @@ class PowerTransformer(Bus):
             res = self.secondary_voltage
             self._cache["voltage"] = res
             return res
-        finally: self._evaluating = False
+        finally: self._evaluating_v = False  # was incorrectly `_evaluating` — would leave flag set and starve re-entrant callers
 
     @property
     def downstream_voltage(self):

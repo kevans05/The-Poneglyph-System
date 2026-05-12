@@ -1,3 +1,29 @@
+"""
+topology_utils.py — Pure topology mutation helpers.
+
+apply_reconfiguration() is the single entry point for all structural changes
+to the in-memory topology dict.  It is called from api.py after the HTTP
+request is validated and from sim_engine when mutations arrive while the
+simulation is running.
+
+All mutations operate on the raw topology dict (lists of device dicts) rather
+than instantiated model objects, so they are fast and require no re-import.
+
+Supported actions
+-----------------
+update_device         — patch arbitrary params on a device dict
+update_position       — move device's (gx, gy) canvas coordinates
+update_rotation       — rotate device symbol (0 / 90 / 180 / 270°)
+delete_device         — remove device and scrub all references to it
+add_device            — append a new device dict; optionally wire it up
+rename_device         — change device ID everywhere (dict + all connection lists)
+record_measurement    — save analog readings to the site DB (no topology change)
+add_connection        — add primary bushing connection
+add_secondary_connection — add analog (CT/VT secondary) connection
+add_dc_connection     — add DC control wire with from/to terminal labels
+delete_connection     — remove any connection type by target ID
+"""
+
 import site_db as _sdb
 
 def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
