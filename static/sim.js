@@ -69,6 +69,22 @@ function stopSim() {
         });
 }
 
+function resetSim() {
+    if (!simActive) return;
+    fetch("/api/sim/reset", { method: "POST" })
+        .then(r => r.json())
+        .then(() => {
+            simPaused = true;
+            lastFrameId = -1;
+            frameQueue = [];
+            _oscBuffer = [];
+            _oscEvents = [];
+            document.getElementById("sim-pause-btn").innerText = "RESUME";
+            clearSimLog();
+            addSimLogEntry(0, "SIM_START", {});
+        });
+}
+
 function toggleSimPause() {
     simPaused = !simPaused;
     fetch("/api/sim/pause", {

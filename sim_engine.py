@@ -91,6 +91,14 @@ class SimEngine:
                 # We don't join here to avoid blocking the API thread
                 self.thread = None
 
+    def reset(self):
+        with self.lock:
+            saved_topology = self.topology_data
+            self.running = False
+            self.thread = None
+        if saved_topology is not None:
+            self.start(saved_topology)
+
     def pause(self, paused=True):
         with self.lock:
             self.paused = paused

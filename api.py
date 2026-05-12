@@ -457,6 +457,9 @@ class SCADAServer(BaseHTTPRequestHandler):
             if self.path == "/api/sim/stop":
                 _sim.sim_engine.stop()
                 return _json_response(self, {"ok": True})
+            if self.path == "/api/sim/reset":
+                _sim.sim_engine.reset()
+                return _json_response(self, {"ok": True})
             if self.path == "/api/sim/pause":
                 _sim.sim_engine.pause(req.get("paused", True))
                 return _json_response(self, {"ok": True})
