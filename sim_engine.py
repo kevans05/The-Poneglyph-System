@@ -291,7 +291,8 @@ class SimEngine:
                         if hasattr(old_dev, "_elem_prev_time"):
                             new_dev._elem_prev_time = old_dev._elem_prev_time
                     for attr in ("_ar_state", "_ar_shot_count", "_ar_timer", "_ar_locked_out",
-                                 "_bf_timer", "_bf_operated"):
+                                 "_bf_timer", "_bf_operated",
+                                 "tap_pos", "_avr_hold_ms", "_avr_prev_time"):
                         if hasattr(old_dev, attr):
                             setattr(new_dev, attr, getattr(old_dev, attr))
             

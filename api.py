@@ -148,6 +148,16 @@ _PARAM_KEYS = [
     "carrier_frequency_hz",
     "input_polarities",
     "serial_number",   # physical asset serial; stored in topology JSON and tracked in device_serials table
+    # VoltageRegulator
+    "nominal_kv",
+    "tap_pos",
+    "step_percent",
+    "max_steps",
+    "avr_enabled",
+    "avr_deadband_pct",
+    "avr_delay_ms",
+    # VoltageTransformer primary winding
+    "primary_winding",
 ]
 
 

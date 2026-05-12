@@ -382,10 +382,10 @@ const _DEVICE_DEFAULTS = {
   CircuitBreaker:      { continuous_amps: 2000, interrupt_ka: 40, status: "OPEN" },
   Disconnect:          { status: "OPEN" },
   PowerTransformer:    { pri_kv: 230, sec_kv: 115, h_winding: "Y", x_winding: "D", polarity_reversed: false },
-  VoltageRegulator:    { nominal_kv: 13.8, tap_pos: 0, step_percent: 0.625, max_steps: 16 },
+  VoltageRegulator:    { nominal_kv: 13.8, tap_pos: 0, step_percent: 0.625, max_steps: 16, avr_enabled: false, avr_deadband_pct: 2.5, avr_delay_ms: 30000 },
   Load:                { load_mva: 50, pf: 0.85, is_balanced: true },
-  VoltageTransformer:  { ratio: "2000:1", bushing: "X", polarity_normal: true, secondary_wiring: "Y" },
-  DualWindingVT:       { ratio: "2000:1", sec2_ratio: "2000:1", bushing: "X", polarity_normal: true, secondary_wiring: "Y", secondary2_wiring: "Y" },
+  VoltageTransformer:  { ratio: "2000:1", bushing: "X", polarity_normal: true, primary_winding: "Y", secondary_wiring: "Y" },
+  DualWindingVT:       { ratio: "2000:1", sec2_ratio: "2000:1", bushing: "X", polarity_normal: true, primary_winding: "Y", secondary_wiring: "Y", secondary2_wiring: "Y" },
   CurrentTransformer:  { ratio: "2000:5", bushing: "X", position: "inner", polarity_facing: "AWAY", secondary_wiring: "Y" },
   FTBlock:             {},
   IsoBlock:            {},
@@ -1384,6 +1384,9 @@ function showConfigModal(id) {
       { label: "Tap Position (-16 to +16)", key: "tap_pos" },
       { label: "Step % (default 0.625)", key: "step_percent" },
       { label: "Max Steps (default 16)", key: "max_steps" },
+      { label: "Auto Voltage Regulation (AVR)", key: "avr_enabled", type: "checkbox" },
+      { label: "AVR Deadband (%)", key: "avr_deadband_pct" },
+      { label: "AVR Step Delay (ms)", key: "avr_delay_ms" },
     ],
     PowerTransformer: [
       { label: "Pri (kV)", key: "pri_kv" },
@@ -1456,6 +1459,16 @@ function showConfigModal(id) {
       { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
       { label: "Phase Shift (°)", key: "phase_shift_deg" },
       {
+        label: "Primary Winding",
+        key: "primary_winding",
+        type: "select",
+        options: [
+          { value: "Y",  label: "Y — Wye (measures L-N)" },
+          { value: "YG", label: "YG — Wye Grounded (measures L-N)" },
+          { value: "D",  label: "Δ — Delta (measures L-L)" },
+        ],
+      },
+      {
         label: "Secondary Wiring",
         key: "secondary_wiring",
         type: "select",
@@ -1471,6 +1484,16 @@ function showConfigModal(id) {
       { label: "Bushing", key: "bushing", type: "text" },
       { label: "Polarity Normal", key: "polarity_normal", type: "checkbox" },
       { label: "Phase Shift (°)", key: "phase_shift_deg" },
+      {
+        label: "Primary Winding",
+        key: "primary_winding",
+        type: "select",
+        options: [
+          { value: "Y",  label: "Y — Wye (measures L-N)" },
+          { value: "YG", label: "YG — Wye Grounded (measures L-N)" },
+          { value: "D",  label: "Δ — Delta (measures L-L)" },
+        ],
+      },
       { label: "W2 Ratio (e.g. 2000:1)", key: "sec2_ratio", type: "text" },
       {
         label: "W1 Secondary Wiring",
