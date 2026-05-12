@@ -416,7 +416,7 @@ def _json_response(handler, data, status=200):
         handler.send_header("Access-Control-Allow-Origin", "*")
         handler.end_headers()
         handler.wfile.write(body)
-    except (BrokenPipeError, ConnectionResetError):
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
         pass # Client disconnected before response could be sent
 
 
@@ -727,7 +727,7 @@ class SCADAServer(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass # Client disconnected
         except Exception as e:
             traceback.print_exc()
@@ -735,7 +735,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.end_headers()
                 self.wfile.write(f"Server Error: {e}".encode("utf-8"))
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
     def do_GET(self):
@@ -1011,7 +1011,7 @@ class SCADAServer(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass # Client disconnected
         except Exception as e:
             traceback.print_exc()
@@ -1019,7 +1019,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.end_headers()
                 self.wfile.write(f"Server Error: {e}".encode("utf-8"))
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
     def log_message(self, format, *args):
