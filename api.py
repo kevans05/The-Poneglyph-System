@@ -454,6 +454,13 @@ class SCADAServer(BaseHTTPRequestHandler):
                 _sim.sim_engine.schedule_event(0, "CLEAR_FAULT", req)
                 return _json_response(self, {"ok": True})
 
+            if self.path == "/api/sim/relay_settings":
+                ok = _sim.sim_engine.update_relay_settings(
+                    req.get("device_id", ""),
+                    req.get("settings", {})
+                )
+                return _json_response(self, {"ok": ok})
+
 
             # ── PMM endpoints ──────────────────────────────────────────────────
             if self.path == "/api/pmm/connect":

@@ -297,6 +297,93 @@ function commitFault(deviceId) {
 }
 
 /**
+ * Relay Settings Editor (live, during simulation)
+ */
+
+function showRelaySettingsEditor(deviceId) {
+    // Resolve current settings from simData
+    const node = simData && simData.nodes.find(n => n.id === deviceId);
+    const settings = (node && node.params && node.params.settings) ? node.params.settings : {};
+
+    let modal = document.getElementById("relay-settings-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "relay-settings-modal";
+        modal.className = "config-modal";
+        modal.style.width = "420px";
+        modal.style.maxHeight = "80vh";
+        modal.style.flexDirection = "column";
+        document.body.appendChild(modal);
+    }
+
+    // Build rows for existing settings + one blank "add" row
+    let rowsHtml = Object.entries(settings).map(([k, v]) =>
+        `<div class="rs-row" style="display:flex; gap:4px; align-items:center;">
+            <input class="rs-key"   value="${_escAttr(String(k))}" style="flex:2; font-family:monospace;" placeholder="KEY">
+            <input class="rs-value" value="${_escAttr(String(v))}" style="flex:2;" placeholder="VALUE">
+            <button onclick="this.closest('.rs-row').remove()" style="flex:0 0 22px; background:#200; color:#f55; border:1px solid #f55; cursor:pointer; font-size:11px; padding:0;">✕</button>
+         </div>`
+    ).join("");
+
+    modal.style.display = "flex";
+    modal.innerHTML = `
+        <div class="config-modal-header">
+            <span>RELAY SETTINGS: ${deviceId}</span>
+            <span class="modal-close" onclick="this.closest('.config-modal').style.display='none'">[X]</span>
+        </div>
+        <div class="config-modal-body" style="padding:10px; gap:6px; overflow-y:auto; flex:1;">
+            <div style="font-size:9px; color:#666; margin-bottom:4px;">Changes apply immediately to the running simulation. Accumulator state is preserved for unchanged elements.</div>
+            <div id="rs-rows" style="display:flex; flex-direction:column; gap:4px;">
+                ${rowsHtml}
+            </div>
+            <button onclick="_rsAddRow()" style="margin-top:6px; width:100%; background:#001a00; color:#4f4; border:1px solid #4f4; padding:4px; cursor:pointer; font-size:11px;">+ ADD SETTING</button>
+        </div>
+        <div class="config-modal-footer">
+            <button onclick="commitRelaySettings('${deviceId}')" style="flex:1; border-color:#3af; color:#3af;">APPLY</button>
+            <button onclick="this.closest('.config-modal').style.display='none'" class="wiz-secondary">CANCEL</button>
+        </div>`;
+}
+
+function _escAttr(s) {
+    return s.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+}
+
+function _rsAddRow() {
+    const container = document.getElementById("rs-rows");
+    const div = document.createElement("div");
+    div.className = "rs-row";
+    div.style.cssText = "display:flex; gap:4px; align-items:center;";
+    div.innerHTML = `<input class="rs-key"   style="flex:2; font-family:monospace;" placeholder="KEY (e.g. 51N1P)">
+                     <input class="rs-value" style="flex:2;" placeholder="VALUE">
+                     <button onclick="this.closest('.rs-row').remove()" style="flex:0 0 22px; background:#200; color:#f55; border:1px solid #f55; cursor:pointer; font-size:11px; padding:0;">✕</button>`;
+    container.appendChild(div);
+    div.querySelector(".rs-key").focus();
+}
+
+function commitRelaySettings(deviceId) {
+    const rows = document.querySelectorAll("#rs-rows .rs-row");
+    const settings = {};
+    rows.forEach(row => {
+        const k = row.querySelector(".rs-key").value.trim();
+        const v = row.querySelector(".rs-value").value.trim();
+        if (!k) return;
+        // Coerce to number where possible
+        settings[k] = isNaN(v) || v === "" ? v : parseFloat(v);
+    });
+
+    fetch("/api/sim/relay_settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: deviceId, settings })
+    }).then(r => r.json()).then(res => {
+        if (res.ok) {
+            document.getElementById("relay-settings-modal").style.display = "none";
+            addSimLogEntry(simTime, "SETTINGS_CHANGE", { device_id: deviceId });
+        }
+    });
+}
+
+/**
  * Toggle simulation mode on/off
  */
 function toggleSimMode() {
@@ -312,12 +399,13 @@ function toggleSimMode() {
  */
 
 const SIM_LOG_EVENT_STYLES = {
-    SIM_START:     { color: "#ffffff", label: "SIM START" },
-    FAULT:         { color: "#ff4444", label: "FAULT" },
-    CLEAR_FAULT:   { color: "#44ffff", label: "CLR FAULT" },
-    RELAY_PICKUP:  { color: "#ffff44", label: "PICKUP" },
-    RELAY_DROPOUT: { color: "#777777", label: "DROPOUT" },
-    SWITCH_OP:     null, // handled inline based on state
+    SIM_START:       { color: "#ffffff", label: "SIM START" },
+    FAULT:           { color: "#ff4444", label: "FAULT" },
+    CLEAR_FAULT:     { color: "#44ffff", label: "CLR FAULT" },
+    RELAY_PICKUP:    { color: "#ffff44", label: "PICKUP" },
+    RELAY_DROPOUT:   { color: "#777777", label: "DROPOUT" },
+    SETTINGS_CHANGE: { color: "#88aaff", label: "SETTINGS" },
+    SWITCH_OP:       null, // handled inline based on state
 };
 
 function addSimLogEntry(sim_time_ms, type, data) {
@@ -356,6 +444,10 @@ function addSimLogEntry(sim_time_ms, type, data) {
         color = style.color;
         label = style.label;
         detail = "topology snapshot";
+    } else if (type === "SETTINGS_CHANGE") {
+        color = style.color;
+        label = style.label;
+        detail = data.device_id || "";
     } else {
         color = "#aaaaaa";
         label = type;

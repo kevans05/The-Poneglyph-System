@@ -700,6 +700,11 @@ function updateWindow(id, node) {
     }
     html += "<button class=\"cmd-btn\" style=\"background:#001530; color:#3af; border-color:#3af; margin-top:4px;\" " +
             "onclick=\"showLogicDesigner(\'" + node.id + "\')\">LOGIC DESIGNER <span>CONFIG</span></button>";
+
+    if (typeof simActive !== "undefined" && simActive) {
+      html += "<button class=\"cmd-btn\" style=\"background:#001a00; color:#4f4; border-color:#4f4; margin-top:4px;\" " +
+              "onclick=\"showRelaySettingsEditor(\'" + node.id + "\')\">RELAY SETTINGS <span>SIM</span></button>";
+    }
   }
   // 4. ENGINEERING CONTROLS (Grouped)
   html += '<div class="section-title">ENGINEERING CONTROLS</div>';
@@ -1090,10 +1095,11 @@ function showContextMenu(e, d) {
       d.id +
       "')\">CONFIGURE DEVICE</div>" +
 
-      (typeof simActive !== 'undefined' && simActive ? 
+      (typeof simActive !== 'undefined' && simActive ?
         '<div style="padding:4px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #222;">SIMULATION</div>' +
         '<div class="menu-item" style="color:#f55;" onclick="showFaultConfig(\'' + d.id + '\')">CONFIGURE & INJECT FAULT...</div>' +
-        '<div class="menu-item" style="color:#0f0;" onclick="clearFault(\'' + d.id + '\')">CLEAR FAULT</div>'
+        '<div class="menu-item" style="color:#0f0;" onclick="clearFault(\'' + d.id + '\')">CLEAR FAULT</div>' +
+        (d.type === 'Relay' ? '<div class="menu-item" style="color:#4af;" onclick="showRelaySettingsEditor(\'' + d.id + '\')">EDIT RELAY SETTINGS...</div>' : '')
       : '') +
 
       (function() {

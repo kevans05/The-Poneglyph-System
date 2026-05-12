@@ -295,6 +295,40 @@ class SimEngine:
             self.devices = new_devices
             self._emit_frame(is_snapshot=True)
 
+    def update_relay_settings(self, device_id: str, new_settings: dict):
+        """Merge new_settings into a running relay's settings dict.
+
+        Because ProtectionElement holds a shared reference to relay.settings,
+        numeric/curve changes take effect on the very next sim_step with no
+        rebuild needed.  If the new settings introduce element types that don't
+        yet exist (e.g. a freshly added 51N1P key), elements are rebuilt and
+        existing accumulator state is transferred.
+        """
+        with self.lock:
+            dev = self.devices.get(device_id)
+            if dev is None or not hasattr(dev, "elements"):
+                return False
+
+            # Merge in-place so element shared-references stay valid
+            dev.settings.update(new_settings)
+
+            # Rebuild elements — preserves state for unchanged elements
+            from phasors.devices.protection_elements import build_elements_from_settings
+            new_elements = {e.bit_name: e for e in build_elements_from_settings(dev.settings)}
+            for bit_name, old_elem in dev.elements.items():
+                if bit_name in new_elements:
+                    new_elements[bit_name].copy_state_from(old_elem)
+            dev.elements = new_elements
+
+            dev._cache.clear()
+            # Log the change as a sim event so the log panel shows it
+            self._frame_events.append({
+                "type": "SETTINGS_CHANGE",
+                "sim_time": self.sim_time_ms,
+                "device_id": device_id,
+            })
+            return True
+
     def _cache_clear_all(self):
         for dev in self.devices.values():
             if hasattr(dev, "_cache"):
