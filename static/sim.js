@@ -336,6 +336,10 @@ function addSimLogEntry(sim_time_ms, type, data) {
         color = style.color;
         label = style.label;
         detail = `${data.device_id}: ${data.label}`;
+        if (data.multiple != null) {
+            const tStr = data.t_op_s != null ? `, ${data.t_op_s}s` : '';
+            detail += ` (${data.multiple}× ${data.curve || 'IDMT'}${tStr})`;
+        }
     } else if (type === "RELAY_DROPOUT") {
         color = style.color;
         label = style.label;
