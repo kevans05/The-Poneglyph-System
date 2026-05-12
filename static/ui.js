@@ -706,6 +706,8 @@ function updateWindow(id, node) {
     if (typeof simActive !== "undefined" && simActive) {
       html += "<button class=\"cmd-btn\" style=\"background:#001a00; color:#4f4; border-color:#4f4; margin-top:4px;\" " +
               "onclick=\"showRelaySettingsEditor(\'" + node.id + "\')\">RELAY SETTINGS <span>SIM</span></button>";
+      html += "<button class=\"cmd-btn\" style=\"background:#0a0018; color:#c8a0ff; border-color:#c8a0ff; margin-top:4px;\" " +
+              "onclick=\"showOscillography(\'" + node.id + "\')\">OSCILLOGRAPHY <span>SIM</span></button>";
     }
   }
   // 4. ENGINEERING CONTROLS (Grouped)
@@ -1102,7 +1104,8 @@ function showContextMenu(e, d) {
         '<div style="padding:4px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #222;">SIMULATION</div>' +
         '<div class="menu-item" style="color:#f55;" onclick="showFaultConfig(\'' + d.id + '\')">CONFIGURE & INJECT FAULT...</div>' +
         '<div class="menu-item" style="color:#0f0;" onclick="clearFault(\'' + d.id + '\')">CLEAR FAULT</div>' +
-        (d.type === 'Relay' ? '<div class="menu-item" style="color:#4af;" onclick="showRelaySettingsEditor(\'' + d.id + '\')">EDIT RELAY SETTINGS...</div>' : '')
+        (d.type === 'Relay' ? '<div class="menu-item" style="color:#4af;" onclick="showRelaySettingsEditor(\'' + d.id + '\')">EDIT RELAY SETTINGS...</div>' : '') +
+        '<div class="menu-item" style="color:#c8a0ff;" onclick="showOscillography(\'' + d.id + '\')">VIEW OSCILLOGRAPHY...</div>'
       : '') +
 
       (function() {

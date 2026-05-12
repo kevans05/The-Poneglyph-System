@@ -12,6 +12,11 @@ let frameQueue = [];
 let simInterval = null;
 let simLogOpen = false;
 
+// Oscillography buffer — rolling 60-second window of per-device current samples
+let _oscBuffer = [];  // [{sim_time_ms, data: {device_id: {ia,ib,ic}}}]
+let _oscEvents = [];  // [{sim_time, type, device_id, ...}] for markers
+const OSC_WINDOW_MS = 60000;
+
 function startSim() {
     if (simActive) return;
     if (!confirm("Enter Simulation Mode? This will snapshot the current topology and start the virtual clock.")) return;
@@ -55,6 +60,8 @@ function stopSim() {
             if (toggleBtn) toggleBtn.innerText = "SIMULATION";
             simData = null;
             frameQueue = [];
+            _oscBuffer = [];
+            _oscEvents = [];
             // Hide log panel
             if (simLogOpen) toggleSimLog();
             // Trigger a refresh of the real data
@@ -161,6 +168,24 @@ function applyFrame(frame) {
     if (frame.events && frame.events.length > 0) {
         for (let e of frame.events) {
             addSimLogEntry(e.sim_time, e.type, e);
+            // Keep events for oscillography markers
+            if (['FAULT','RELAY_PICKUP','SWITCH_OP','AR_RECLOSE','AR_LOCKOUT'].includes(e.type)) {
+                _oscEvents.push(e);
+                if (_oscEvents.length > 300) _oscEvents.shift();
+            }
+        }
+    }
+
+    // Populate oscillography buffer
+    const snap = { sim_time_ms: frame.sim_time, data: {} };
+    for (const did in frame.changes) {
+        const cur = frame.changes[did].current;
+        if (cur) snap.data[did] = { ia: cur.a.mag, ib: cur.b.mag, ic: cur.c.mag };
+    }
+    if (Object.keys(snap.data).length > 0) {
+        _oscBuffer.push(snap);
+        while (_oscBuffer.length > 0 && _oscBuffer[0].sim_time_ms < frame.sim_time - OSC_WINDOW_MS) {
+            _oscBuffer.shift();
         }
     }
 
@@ -494,4 +519,235 @@ function toggleSimLog() {
 function clearSimLog() {
     const entries = document.getElementById("sim-log-entries");
     if (entries) entries.innerHTML = "";
+}
+
+/**
+ * Oscillography — rolling waveform record of phase current magnitudes
+ */
+
+const OSC_EVENT_COLORS = {
+    FAULT:        "#ff4444",
+    RELAY_PICKUP: "#ffff44",
+    SWITCH_OP:    "#ff8833",
+    AR_RECLOSE:   "#44ff88",
+    AR_LOCKOUT:   "#ff6600",
+};
+
+function showOscillography(deviceId, windowMs) {
+    if (!simActive || _oscBuffer.length === 0) {
+        alert("Oscillography is only available during an active simulation.");
+        return;
+    }
+    windowMs = windowMs || 30000;
+
+    let modal = document.getElementById("osc-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "osc-modal";
+        modal.className = "config-modal";
+        modal.style.cssText = "width:720px; max-height:90vh;";
+        document.body.appendChild(modal);
+    }
+    modal.style.display = "flex";
+    modal.innerHTML =
+        '<div class="config-modal-header">' +
+            '<span>OSCILLOGRAPHY: ' + deviceId + '</span>' +
+            '<span class="modal-close" onclick="this.closest(\'.config-modal\').style.display=\'none\'">[X]</span>' +
+        '</div>' +
+        '<div class="config-modal-body" style="padding:10px; flex-direction:column; gap:8px;">' +
+            '<div style="display:flex; gap:8px; align-items:center; font-size:10px; color:#888;">' +
+                '<span>WINDOW:</span>' +
+                [5000,10000,30000,60000].map(w =>
+                    '<button onclick="showOscillography(\'' + deviceId + '\',' + w + ')" ' +
+                    'style="padding:2px 8px; background:' + (w===windowMs?'#333':'#111') + '; ' +
+                    'color:' + (w===windowMs?'#fff':'#555') + '; border:1px solid #333; cursor:pointer; font-size:10px;">' +
+                    (w/1000) + 's</button>'
+                ).join('') +
+            '</div>' +
+            '<canvas id="osc-canvas" width="680" height="320" style="background:#0a0a0a; border:1px solid #333; display:block;"></canvas>' +
+            '<div id="osc-legend" style="display:flex; gap:12px; font-size:10px; flex-wrap:wrap;"></div>' +
+        '</div>' +
+        '<div class="config-modal-footer">' +
+            '<button onclick="showOscillography(\'' + deviceId + '\',' + windowMs + ')" style="flex:1; border-color:#555; color:#aaa;">REFRESH</button>' +
+            '<button onclick="document.getElementById(\'osc-modal\').style.display=\'none\'" class="wiz-secondary">CLOSE</button>' +
+        '</div>';
+
+    requestAnimationFrame(() => _renderOsc(deviceId, windowMs));
+}
+
+function _renderOsc(deviceId, windowMs) {
+    const canvas = document.getElementById("osc-canvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    const PAD = { top: 28, right: 20, bottom: 44, left: 62 };
+    const PW = W - PAD.left - PAD.right;
+    const PH = H - PAD.top  - PAD.bottom;
+
+    // Filter buffer to window
+    const tEnd   = _oscBuffer.length > 0 ? _oscBuffer[_oscBuffer.length - 1].sim_time_ms : 0;
+    const tStart = tEnd - windowMs;
+    const samples = _oscBuffer.filter(s => s.sim_time_ms >= tStart && s.data[deviceId]);
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0a0a0a";
+    ctx.fillRect(0, 0, W, H);
+
+    if (samples.length === 0) {
+        ctx.fillStyle = "#555";
+        ctx.font = "12px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("No current data for " + deviceId + " in this window.", W / 2, H / 2);
+        return;
+    }
+
+    // Y range: 0 to max across all phases, with 10% headroom
+    let yMax = 0;
+    samples.forEach(s => {
+        const d = s.data[deviceId];
+        yMax = Math.max(yMax, d.ia, d.ib, d.ic);
+    });
+    yMax = yMax > 0 ? yMax * 1.12 : 10;
+
+    const px = t  => PAD.left + (t - tStart) / windowMs * PW;
+    const py = v  => PAD.top  + PH * (1 - v / yMax);
+
+    // Grid — time
+    const timeStepMs = _niceStep(windowMs / 6);
+    const tGridStart = Math.ceil(tStart / timeStepMs) * timeStepMs;
+    for (let t = tGridStart; t <= tEnd + 1; t += timeStepMs) {
+        const x = px(t);
+        ctx.strokeStyle = "#1e1e1e";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, PAD.top); ctx.lineTo(x, PAD.top + PH); ctx.stroke();
+    }
+    // Grid — current
+    const currStep = _niceStep(yMax / 4);
+    for (let v = 0; v <= yMax + currStep; v += currStep) {
+        const y = py(v);
+        if (y < PAD.top || y > PAD.top + PH + 1) continue;
+        ctx.strokeStyle = "#1e1e1e";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + PW, y); ctx.stroke();
+    }
+
+    // Border
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(PAD.left, PAD.top, PW, PH);
+
+    // Clip
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD.left, PAD.top, PW, PH);
+    ctx.clip();
+
+    // Event markers
+    const relevantEvents = _oscEvents.filter(e => e.sim_time >= tStart && e.sim_time <= tEnd);
+    relevantEvents.forEach(e => {
+        const x = px(e.sim_time);
+        const col = OSC_EVENT_COLORS[e.type] || "#888";
+        ctx.strokeStyle = col;
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(x, PAD.top); ctx.lineTo(x, PAD.top + PH); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label at top
+        ctx.fillStyle = col;
+        ctx.font = "8px monospace";
+        ctx.textAlign = "left";
+        ctx.globalAlpha = 0.9;
+        const shortType = { FAULT:"FLT", RELAY_PICKUP:"PKP", SWITCH_OP:"CB", AR_RECLOSE:"RCL", AR_LOCKOUT:"LKT" }[e.type] || e.type;
+        ctx.fillText(shortType, x + 2, PAD.top + 10);
+    });
+    ctx.globalAlpha = 1;
+
+    // Phase current traces
+    const PHASE_COLORS = { ia: "#ff5555", ib: "#55ff88", ic: "#5599ff" };
+    ["ia", "ib", "ic"].forEach(ph => {
+        ctx.strokeStyle = PHASE_COLORS[ph];
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        let started = false;
+        samples.forEach(s => {
+            const x = px(s.sim_time_ms);
+            const y = py(s.data[deviceId][ph]);
+            if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    });
+
+    ctx.restore();
+
+    // X axis labels (time relative to window end)
+    ctx.fillStyle = "#777";
+    ctx.font = "10px monospace";
+    ctx.textAlign = "center";
+    for (let t = tGridStart; t <= tEnd + 1; t += timeStepMs) {
+        const x = px(t);
+        const relS = ((t - tEnd) / 1000).toFixed(1);
+        ctx.fillText(relS + "s", x, PAD.top + PH + 16);
+    }
+    ctx.fillStyle = "#666";
+    ctx.font = "11px monospace";
+    ctx.fillText("Time (s, relative to now)", PAD.left + PW / 2, H - 6);
+
+    // Y axis labels
+    ctx.textAlign = "right";
+    ctx.font = "10px monospace";
+    ctx.fillStyle = "#777";
+    for (let v = 0; v <= yMax + currStep * 0.5; v += currStep) {
+        const y = py(v);
+        if (y < PAD.top - 2 || y > PAD.top + PH + 2) continue;
+        ctx.fillText(v.toFixed(v < 10 ? 1 : 0) + "A", PAD.left - 6, y + 4);
+    }
+    ctx.save();
+    ctx.translate(13, PAD.top + PH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#666";
+    ctx.font = "11px monospace";
+    ctx.fillText("Current RMS (A)", 0, 0);
+    ctx.restore();
+
+    // Title
+    ctx.fillStyle = "#999";
+    ctx.font = "bold 11px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("OSCILLOGRAPHY — " + deviceId, PAD.left + PW / 2, 18);
+
+    // Legend
+    const legend = document.getElementById("osc-legend");
+    if (legend) {
+        const phaseLabels = [
+            ['#ff5555', 'Phase A (Ia)'],
+            ['#55ff88', 'Phase B (Ib)'],
+            ['#5599ff', 'Phase C (Ic)'],
+        ];
+        legend.innerHTML =
+            phaseLabels.map(([c, l]) =>
+                '<span style="display:flex;align-items:center;gap:4px;">' +
+                '<span style="display:inline-block;width:16px;height:2px;background:' + c + ';"></span>' +
+                '<span style="color:' + c + '">' + l + '</span></span>'
+            ).join('') +
+            '<span style="color:#444; margin-left:8px;">|</span>' +
+            Object.entries(OSC_EVENT_COLORS).map(([type, c]) =>
+                '<span style="display:flex;align-items:center;gap:3px;">' +
+                '<span style="color:' + c + '">▎</span>' +
+                '<span style="color:' + c + '">' + type.replace('_',' ') + '</span></span>'
+            ).join('');
+    }
+}
+
+function _niceStep(raw) {
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    let nice;
+    if (norm < 1.5)      nice = 1;
+    else if (norm < 3.5) nice = 2;
+    else if (norm < 7.5) nice = 5;
+    else                 nice = 10;
+    return nice * mag;
 }
