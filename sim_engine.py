@@ -14,9 +14,15 @@ Each frame is a dict: {id, sim_time_ms, nodes: [{id, summary, status}], events: 
 
 Event queue
 -----------
-Events are (priority_time_ms, seq, event_type, data).  The seq counter
-breaks ties so that equal-time events are processed in submission order.
+Events are (trigger_time_ms, seq, event_type, data).  The seq counter
+breaks ties so that equal-time events are processed in submission order,
+avoiding a TypeError when Python tries to compare the dict payloads.
 Types: FAULT, CLEAR_FAULT, TRIP, CLOSE.
+
+Locking
+-------
+self.lock is an RLock so that schedule_event() can be called safely from
+within the sim thread (e.g. from _update_physics) without deadlocking.
 
 Speed multiplier
 ----------------
@@ -34,18 +40,19 @@ from model_loader import load_substation_model
 
 class SimEngine:
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()  # reentrant: schedule_event safe from sim thread
         self.running = False
         self.paused = False
         self.sim_time_ms = 0.0
         self.speed_multiplier = 1.0
         self.last_update_real_time = 0.0
-        
+
         self.topology_data = None
         self.devices = {}
         self.sources = []
-        
-        self.event_queue = queue.PriorityQueue() # (time_ms, event_type, data)
+
+        self.event_queue = queue.PriorityQueue() # (trigger_time_ms, seq, event_type, data)
+        self._event_seq = 0  # monotonic counter breaks ties so dict payloads are never compared
         self.frame_buffer = []
         self.next_frame_id = 0
         self.max_buffer_size = 10000
@@ -69,6 +76,7 @@ class SimEngine:
             self.next_frame_id = 0
             self._frame_events = []
             self.event_queue = queue.PriorityQueue()
+            self._event_seq = 0
             
             # Initial frame
             self._emit_frame(is_snapshot=True)
@@ -96,7 +104,8 @@ class SimEngine:
     def schedule_event(self, delay_ms, event_type, data):
         with self.lock:
             trigger_time = self.sim_time_ms + delay_ms
-            self.event_queue.put((trigger_time, event_type, data))
+            self.event_queue.put((trigger_time, self._event_seq, event_type, data))
+            self._event_seq += 1
 
     def get_frames(self, since_id):
         with self.lock:
@@ -141,7 +150,7 @@ class SimEngine:
 
     def _process_events(self):
         while not self.event_queue.empty():
-            trigger_time, event_type, data = self.event_queue.queue[0]
+            trigger_time, _seq, event_type, data = self.event_queue.queue[0]
             if trigger_time <= self.sim_time_ms:
                 self.event_queue.get()
                 self._handle_event(event_type, data)
