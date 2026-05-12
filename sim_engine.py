@@ -194,7 +194,7 @@ class SimEngine:
                 if hasattr(dev, "handle_close_signal"):
                     dev.handle_close_signal(phase, self.sim_time_ms)
 
-    _NOTIFICATION_EVENT_TYPES = {"RELAY_PICKUP", "RELAY_DROPOUT", "SWITCH_OP", "CLEAR_FAULT", "AR_RECLOSE", "AR_LOCKOUT"}
+    _NOTIFICATION_EVENT_TYPES = {"RELAY_PICKUP", "RELAY_DROPOUT", "SWITCH_OP", "CLEAR_FAULT", "AR_RECLOSE", "AR_LOCKOUT", "BF_TRIP"}
 
     def _update_physics(self):
         # Force recalculation by clearing all caches
@@ -290,7 +290,8 @@ class SimEngine:
                                 new_dev.elements[bit_name].copy_state_from(old_elem)
                         if hasattr(old_dev, "_elem_prev_time"):
                             new_dev._elem_prev_time = old_dev._elem_prev_time
-                    for attr in ("_ar_state", "_ar_shot_count", "_ar_timer", "_ar_locked_out"):
+                    for attr in ("_ar_state", "_ar_shot_count", "_ar_timer", "_ar_locked_out",
+                                 "_bf_timer", "_bf_operated"):
                         if hasattr(old_dev, attr):
                             setattr(new_dev, attr, getattr(old_dev, attr))
             

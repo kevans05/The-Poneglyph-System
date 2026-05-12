@@ -169,7 +169,7 @@ function applyFrame(frame) {
         for (let e of frame.events) {
             addSimLogEntry(e.sim_time, e.type, e);
             // Keep events for oscillography markers
-            if (['FAULT','RELAY_PICKUP','SWITCH_OP','AR_RECLOSE','AR_LOCKOUT'].includes(e.type)) {
+            if (['FAULT','RELAY_PICKUP','SWITCH_OP','AR_RECLOSE','AR_LOCKOUT','BF_TRIP'].includes(e.type)) {
                 _oscEvents.push(e);
                 if (_oscEvents.length > 300) _oscEvents.shift();
             }
@@ -432,6 +432,7 @@ const SIM_LOG_EVENT_STYLES = {
     SETTINGS_CHANGE: { color: "#88aaff", label: "SETTINGS" },
     AR_RECLOSE:      { color: "#44ff88", label: "RECLOSE" },
     AR_LOCKOUT:      { color: "#ff6600", label: "AR LOCKOUT" },
+    BF_TRIP:         { color: "#ff2200", label: "BF TRIP" },
     SWITCH_OP:       null, // handled inline based on state
 };
 
@@ -483,6 +484,10 @@ function addSimLogEntry(sim_time_ms, type, data) {
         color = style.color;
         label = style.label;
         detail = data.device_id || "";
+    } else if (type === "BF_TRIP") {
+        color = style.color;
+        label = style.label;
+        detail = `${data.device_id} — backup trip initiated`;
     } else {
         color = "#aaaaaa";
         label = type;
@@ -531,6 +536,7 @@ const OSC_EVENT_COLORS = {
     SWITCH_OP:    "#ff8833",
     AR_RECLOSE:   "#44ff88",
     AR_LOCKOUT:   "#ff6600",
+    BF_TRIP:      "#ff2200",
 };
 
 function showOscillography(deviceId, windowMs) {

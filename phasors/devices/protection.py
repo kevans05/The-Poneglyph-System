@@ -275,6 +275,7 @@ class Relay(ProtectionDevice):
                         events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
 
         self._process_ar(sim_time_ms, events)
+        self._process_bf(sim_time_ms, i_sys, events)
         return events
 
     def _process_ar(self, sim_time_ms: float, events: list):
@@ -353,6 +354,49 @@ class Relay(ProtectionDevice):
         elif self._ar_state == "LOCKOUT":
             self._ar_locked_out = True
 
+    def _process_bf(self, sim_time_ms: float, i_sys, events: list):
+        """Breaker-failure (50BF) backup trip logic.
+
+        Settings
+        --------
+        BF_DELAY_MS          : float — BF initiate timer in ms (0 = disabled, typical 150-250)
+        BF_CURRENT_THRESHOLD : float — min secondary current confirming CB has not opened (A, default 0.1)
+
+        When TRIP is asserted and current remains above threshold after BF_DELAY_MS,
+        the BF output asserts.  Any switch/CB connected to this relay's BF dc_output_conn
+        receives an imperative TRIP command via the event queue.
+        """
+        bf_delay = float(self.settings.get("BF_DELAY_MS", 0))
+        if bf_delay <= 0:
+            return
+
+        trip_active = self._sim_active_outputs.get("TRIP", False)
+        I = 0.0
+        if i_sys and i_sys.is_energized():
+            I = max(i_sys.a.magnitude, i_sys.b.magnitude, i_sys.c.magnitude)
+        threshold = float(self.settings.get("BF_CURRENT_THRESHOLD", 0.1))
+
+        if not hasattr(self, "_bf_timer"):
+            self._bf_timer    = None
+            self._bf_operated = False
+
+        if trip_active and I >= threshold:
+            if self._bf_timer is None:
+                self._bf_timer = sim_time_ms
+            if not self._bf_operated and (sim_time_ms - self._bf_timer) >= bf_delay:
+                self._bf_operated = True
+                self._sim_active_outputs["BF"] = True
+                # Trip every switch/CB wired to this relay's BF output
+                for conn in self.dc_output_conns:
+                    if conn["from"] == "BF" and hasattr(conn["device"], "handle_trip_signal"):
+                        events.append({"type": "TRIP", "delay": 0,
+                                       "data": {"device_id": conn["device"].name, "phase": "abc"}})
+                events.append({"type": "BF_TRIP", "delay": 0, "data": {"device_id": self.name}})
+        else:
+            self._bf_timer    = None
+            self._bf_operated = False
+            self._sim_active_outputs["BF"] = False
+
     @property
     def dc_output_state(self) -> bool: return self.get_terminal_state("TRIP")
 
@@ -392,9 +436,21 @@ class Relay(ProtectionDevice):
         for label in self.digital_inputs:
             stats[label] = "ASSERTED" if bits.get(label) else "0"
         stats["--- OUTPUTS ---"] = "HEADER"
-        for out in self.digital_outputs + ([o for o in ["TRIP", "CLOSE"] if o not in self.digital_outputs]):
+        extra_outs = ["TRIP", "CLOSE"]
+        if float(self.settings.get("BF_DELAY_MS", 0)) > 0:
+            extra_outs.append("BF")
+        for out in self.digital_outputs + [o for o in extra_outs if o not in self.digital_outputs]:
             res, man = self.get_terminal_state(out), " (MANUAL)" if self.output_manual_overrides.get(out) else ""
             stats[f"{out}{man}"] = "HIGH" if res else "0"
+        if getattr(self, "is_sim", False) and float(self.settings.get("BF_DELAY_MS", 0)) > 0:
+            bf_ms = float(self.settings.get("BF_DELAY_MS", 0))
+            if getattr(self, "_bf_timer", None) and not getattr(self, "_bf_operated", False):
+                elapsed = 0  # sim_time not available here; show configured delay
+                stats["BF Timer"] = f"RUNNING ({bf_ms:.0f}ms delay)"
+            elif getattr(self, "_bf_operated", False):
+                stats["BF Timer"] = "OPERATED — backup trip sent"
+            else:
+                stats["BF Timer"] = f"Armed ({bf_ms:.0f}ms)"
         if self.category == "Electromechanical": stats["Target / Flag"] = "DROPPED" if self.target_dropped else "SET"
         return stats
 
