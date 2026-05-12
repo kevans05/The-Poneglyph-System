@@ -253,6 +253,11 @@ function showFaultConfig(deviceId) {
                 <input type="number" id="fault-duration" value="100" step="1" style="width:100%;">
             </div>
             
+            <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:10px; color:#888;">SYSTEM X/R RATIO (typ: 10–40 transmission, 5–15 distribution)</label>
+                <input type="number" id="fault-xr" value="15" step="1" min="1" max="100" style="width:100%;">
+            </div>
+
             <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
                 <input type="checkbox" id="fault-arcing">
                 <label for="fault-arcing" style="font-size:11px; color:#ccc; cursor:pointer;">Arcing Fault (Variable Z)</label>
@@ -275,6 +280,7 @@ function commitFault(deviceId) {
         device_id: deviceId,
         fault_type: document.getElementById("fault-type").value,
         impedance: parseFloat(document.getElementById("fault-impedance").value),
+        x_r_ratio: parseFloat(document.getElementById("fault-xr").value) || 15,
         persistence: document.getElementById("fault-persistence").value,
         duration: parseFloat(document.getElementById("fault-duration").value),
         arcing: document.getElementById("fault-arcing").checked,

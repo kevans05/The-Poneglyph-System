@@ -12,12 +12,13 @@ complex power (P + jQ), then derive I = conj(S / V) at each phase.
 ELECTRICAL MATH NOTES
 ---------------------
 • Current magnitude:  |I| = |S| / |V|   (from S = V × I*)
-• Fault power (3PH):  P_fault = |V|² / Z  per phase (treats Z as pure resistance)
-• Fault power (SLG):  P_fault = |V_phase|² / Z on the faulted phase only
-• Fault power (LLG):  same formula applied to each affected phase independently
-• Fault power (LL):   P_fault = |V_A - V_B|² / Z split equally between phases
-  → These are deliberate simplifications; the goal is credible predicted values
-    for comparison against measured relay inputs, not textbook Thévenin analysis.
+• Fault impedance:    Z = R + jX  where X/R ratio comes from fault state (default 15)
+                      R = |Z| / √(1 + (X/R)²),  X = |Z|·(X/R) / √(1 + (X/R)²)
+• Fault current:      I = V / Z  →  S = V·I* = |V|² / Z*
+                      Current lags voltage by arctan(X/R): ~86° for X/R=15
+• 3PH / SLG / LLG:   S_ph = |V_ph|² / Z*   on each faulted phase independently
+• LL fault:           I_loop = (V_A − V_B) / Z  (loop current through fault)
+                      S_A = V_A · I_loop*,  S_B = V_B · (−I_loop)*
 
 Cache: every property stores its result in self._cache so the recursive tree
 traversal only runs once per topology refresh.  Clear _cache to force recomputation
@@ -182,30 +183,41 @@ class Bus:
 
             for f_dev, mask in faults:
                 fs = f_dev.fault_state
-                z = float(fs.get("current_impedance", fs.get("impedance", 0.01)))
+                z_mag = float(fs.get("current_impedance", fs.get("impedance", 0.01)))
+                xr = float(fs.get("x_r_ratio", 15.0))
                 ftype = fs.get("fault_type", "3PH")
                 v_local = f_dev.voltage
                 if not v_local or not v_local.is_energized(): continue
                 va, vb, vc = v_local.a.to_complex(), v_local.b.to_complex(), v_local.c.to_complex()
+
+                # Complex fault impedance Z = R + jX (X/R = xr)
+                # S = |V|²/Z*  →  I = (S/V)* = V/Z  (current lags voltage by arctan(X/R))
+                scale = math.sqrt(1.0 + xr * xr)
+                z_fwd  = complex(z_mag / scale,  z_mag * xr / scale)  # Z = R + jX
+                z_conj = complex(z_mag / scale, -z_mag * xr / scale)  # Z* = R − jX
+
                 if ftype == "3PH" or ftype == "Symmetric":
                     for ph, v_comp in zip("abc", [va, vb, vc]):
-                        if mask[ph]: phase_s[ph] += (abs(v_comp) ** 2) / z
+                        if mask[ph]: phase_s[ph] += (abs(v_comp) ** 2) / z_conj
                 elif ftype.startswith("SLG"):
                     ph = ftype.split("-")[-1].lower()
                     if mask[ph]:
                         v_comp = {"a": va, "b": vb, "c": vc}[ph]
-                        phase_s[ph] += (abs(v_comp) ** 2) / z
+                        phase_s[ph] += (abs(v_comp) ** 2) / z_conj
                 elif ftype.startswith("LLG"):
                     for ph in ftype.split("-")[-1].lower():
                         if mask[ph]:
                             v_comp = {"a": va, "b": vb, "c": vc}[ph]
-                            phase_s[ph] += (abs(v_comp) ** 2) / z
+                            phase_s[ph] += (abs(v_comp) ** 2) / z_conj
                 elif ftype.startswith("LL"):
                     pair = ftype.split("-")[-1].lower()
                     if mask[pair[0]] and mask[pair[1]]:
-                        v1, v2 = {"a": va, "b": vb, "c": vc}[pair[0]], {"a": va, "b": vb, "c": vc}[pair[1]]
-                        p_ll = (abs(v1 - v2) ** 2) / z
-                        phase_s[pair[0]] += p_ll / 2; phase_s[pair[1]] += p_ll / 2
+                        v_ph0 = {"a": va, "b": vb, "c": vc}[pair[0]]
+                        v_ph1 = {"a": va, "b": vb, "c": vc}[pair[1]]
+                        # Loop current flows from ph0 through fault to ph1
+                        i_loop = (v_ph0 - v_ph1) / z_fwd
+                        phase_s[pair[0]] += v_ph0 * i_loop.conjugate()
+                        phase_s[pair[1]] += v_ph1 * (-i_loop).conjugate()
 
             def make_i(ph, v_phasor):
                 s = phase_s[ph]
