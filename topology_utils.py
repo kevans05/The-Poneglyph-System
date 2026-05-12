@@ -66,6 +66,10 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
                 d["secondary_connections"] = [
                     c for c in d["secondary_connections"] if c != target_id
                 ]
+            if "secondary2_connections" in d:
+                d["secondary2_connections"] = [
+                    c for c in d["secondary2_connections"] if c != target_id
+                ]
             if "dc_connections" in d:
                 d["dc_connections"] = [
                     c for c in d["dc_connections"] if (c if isinstance(c, str) else c["id"]) != target_id
@@ -104,7 +108,7 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
             for d in data["devices"]:
                 if d["id"] == old_id:
                     d["id"] = new_id
-                for list_key in ["connections", "secondary_connections", "dc_connections", "trip_connections", "close_connections"]:
+                for list_key in ["connections", "secondary_connections", "secondary2_connections", "dc_connections", "trip_connections", "close_connections"]:
                     if list_key in d:
                         d[list_key] = [
                             (new_id if c == old_id else c)
@@ -150,6 +154,16 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
                 if target_id not in d["secondary_connections"]:
                     d["secondary_connections"].append(target_id)
                 break
+    elif action == "add_secondary2_connection":
+        source_id = req.get("id")
+        target_id = req.get("target_id")
+        for d in data["devices"]:
+            if d["id"] == source_id:
+                if "secondary2_connections" not in d:
+                    d["secondary2_connections"] = []
+                if target_id not in d["secondary2_connections"]:
+                    d["secondary2_connections"].append(target_id)
+                break
     elif action == "add_dc_connection":
         source_id = req.get("id")
         target_id = req.get("target_id")
@@ -167,7 +181,7 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
         target_id = req.get("target_id")
         for d in data["devices"]:
             if d["id"] == source_id:
-                for list_key in ["connections", "secondary_connections", "dc_connections", "trip_connections", "close_connections"]:
+                for list_key in ["connections", "secondary_connections", "secondary2_connections", "dc_connections", "trip_connections", "close_connections"]:
                     if list_key in d:
                         d[list_key] = [
                             c for c in d[list_key] 

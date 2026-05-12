@@ -130,6 +130,7 @@ _PARAM_KEYS = [
     "phase_pf",
     "mode",
     "secondary_wiring",
+    "secondary2_wiring",
     "function",
     "tap_ratios",
     "selected_tap",
@@ -147,6 +148,16 @@ _PARAM_KEYS = [
     "carrier_frequency_hz",
     "input_polarities",
     "serial_number",   # physical asset serial; stored in topology JSON and tracked in device_serials table
+    # VoltageRegulator
+    "nominal_kv",
+    "tap_pos",
+    "step_percent",
+    "max_steps",
+    "avr_enabled",
+    "avr_deadband_pct",
+    "avr_delay_ms",
+    # VoltageTransformer primary winding
+    "primary_winding",
 ]
 
 
@@ -326,6 +337,11 @@ def _build_topology_response(sources, devices, raw_devices, reference):
                 edges.append(
                     {"source": dev.name, "target": s.name, "type": "protection"}
                 )
+        if hasattr(dev, "secondary2_connections"):
+            for s in dev.secondary2_connections:
+                edges.append(
+                    {"source": dev.name, "target": s.name, "type": "protection2"}
+                )
         if hasattr(dev, "dc_output_conns"):
             for conn in dev.dc_output_conns:
                 edges.append({
@@ -453,6 +469,13 @@ class SCADAServer(BaseHTTPRequestHandler):
             if self.path == "/api/sim/clear_fault":
                 _sim.sim_engine.schedule_event(0, "CLEAR_FAULT", req)
                 return _json_response(self, {"ok": True})
+
+            if self.path == "/api/sim/relay_settings":
+                ok = _sim.sim_engine.update_relay_settings(
+                    req.get("device_id", ""),
+                    req.get("settings", {})
+                )
+                return _json_response(self, {"ok": ok})
 
 
             # ── PMM endpoints ──────────────────────────────────────────────────

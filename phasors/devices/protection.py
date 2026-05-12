@@ -26,6 +26,7 @@ contacts) via dc_input_conns and drive DC outputs via dc_output_conns.
 """
 
 from .bus import Bus
+from .protection_elements import build_elements_from_settings
 from ..wye_system import wye_currents, wye_voltages
 from ..current_phasor import CurrentPhasor
 from ..voltage_phasor import VoltagePhasor
@@ -39,6 +40,7 @@ class ProtectionDevice(Bus):
         super().__init__(name)
         self.inputs = [] # Analog Inputs (CT/VT)
         self.input_polarities = {}
+        self._input_windings = {}  # source_name → winding number (1 or 2, for DualWindingVT)
         self.secondary_connections = [] # Analog Outputs
         
         self.dc_input_conns = [] 
@@ -48,9 +50,10 @@ class ProtectionDevice(Bus):
         self._evaluating_prot_voltage = False
         self._evaluating_dc = False
 
-    def add_input(self, source_device):
+    def add_input(self, source_device, winding=1):
         if source_device not in self.inputs:
             self.inputs.append(source_device)
+        self._input_windings[source_device.name] = winding
         return self
 
     def connect_secondary(self, downstream_device):
@@ -133,7 +136,11 @@ class ProtectionDevice(Bus):
             total_a, total_b, total_c = complex(0), complex(0), complex(0)
             found, count = False, 0
             for src in self.inputs:
-                v_sys = getattr(src, "secondary_voltage", None) or getattr(src, "secondary2_voltage", None)
+                winding = self._input_windings.get(src.name, 1)
+                if winding == 2:
+                    v_sys = getattr(src, "secondary2_voltage", None)
+                else:
+                    v_sys = getattr(src, "secondary_voltage", None)
                 if v_sys and v_sys.is_energized():
                     sign = self.input_polarities.get(src.name, 1)
                     total_a += sign * v_sys.a.to_complex()
@@ -187,20 +194,19 @@ class Relay(ProtectionDevice):
         self.output_manual_overrides = {}
         self._sim_pickup_timers = {}   # label → sim_time_ms when pickup condition first asserted
         self._sim_dropout_timers = {}  # label → sim_time_ms when pickup condition first cleared
-        # 51-series IDMT state (integrating accumulator per element)
-        self._51_accumulators = {}  # elem_name → float 0.0–1.0 (1.0 = operated)
-        self._51_operated = {}      # elem_name → bool
-        self._51_prev_time = None   # sim_time_ms of last _update_51_timers call
+        self._elem_prev_time = None
+        self.elements = {e.bit_name: e for e in build_elements_from_settings(self.settings)}
 
     def get_logic_bits(self):
         if "logic_bits" in self._cache: return self._cache["logic_bits"]
         bits = {}
         i, v = self.current, self.voltage
-        bits["50P1"] = max(i.a.magnitude, i.b.magnitude, i.c.magnitude) >= float(self.settings.get("50P1P", 5.0)) if i else False
-        bits["59P1"] = max(v.a.magnitude, v.b.magnitude, v.c.magnitude) >= float(self.settings.get("59P1P", 120.0)) if v else False
-        # 51-series: bit is True only once the IDMT accumulator has reached 1.0 (element operated)
-        for elem_name in self._get_51_element_names():
-            bits[elem_name] = self._51_operated.get(elem_name, False)
+        if not getattr(self, "is_sim", False):
+            # Non-sim: step elements with dt=0 for live instantaneous values (50/59)
+            for elem in self.elements.values():
+                elem.step(i, v, 0.0)
+        for elem in self.elements.values():
+            bits[elem.bit_name] = elem.get_bit()
         for label in self.digital_inputs:
             bits[label] = False
             for conn in self.dc_input_conns:
@@ -226,24 +232,30 @@ class Relay(ProtectionDevice):
         fault_events = self._sim_step_fault(sim_time_ms)
         if not getattr(self, "is_sim", False): return []
         if not hasattr(self, "_sim_active_outputs"): self._sim_active_outputs = {}
-        # Update 51-series IDMT integrators before evaluating logic so operated bits are current
-        idmt_events = self._update_51_timers(sim_time_ms)
-        events, logic_bits = fault_events + idmt_events, self.get_logic_bits()
+
+        dt_ms = 0.0 if self._elem_prev_time is None else min(sim_time_ms - self._elem_prev_time, 200.0)
+        self._elem_prev_time = sim_time_ms
+
+        i_sys, v_sys = self.current, self.voltage
+        events = list(fault_events)
+        for elem in self.elements.values():
+            for e in elem.step(i_sys, v_sys, dt_ms):
+                e["data"]["device_id"] = self.name
+                events.append(e)
+
+        logic_bits = self.get_logic_bits()
         for label, eq in self.logic.items():
             raw_state = self._evaluate_equation(eq, logic_bits)
             pickup_delay = float(self.settings.get(f"{label}_DELAY", 0.0))
             reset_delay  = float(self.settings.get(f"{label}_RESET_DELAY", 0.0))
 
             if pickup_delay <= 0 and reset_delay <= 0:
-                # No timing on either edge — instant in both directions (no event needed)
                 self._sim_active_outputs[label] = raw_state
                 continue
 
             if raw_state:
-                # Condition asserting: cancel any pending dropout
                 if label in self._sim_dropout_timers:
                     del self._sim_dropout_timers[label]
-
                 if pickup_delay > 0:
                     if label not in self._sim_pickup_timers:
                         self._sim_pickup_timers[label] = sim_time_ms
@@ -251,29 +263,145 @@ class Relay(ProtectionDevice):
                         self._sim_active_outputs[label] = True
                         events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
                 elif not self._sim_active_outputs.get(label):
-                    # Has reset delay but no pickup delay — assert immediately
                     self._sim_active_outputs[label] = True
                     events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
             else:
-                # Condition cleared: cancel any pending pickup
                 if label in self._sim_pickup_timers:
                     del self._sim_pickup_timers[label]
-
                 if self._sim_active_outputs.get(label):
                     if reset_delay > 0:
-                        # Start dropout timer if not already running
                         if label not in self._sim_dropout_timers:
                             self._sim_dropout_timers[label] = sim_time_ms
                         if sim_time_ms - self._sim_dropout_timers[label] >= reset_delay:
                             del self._sim_dropout_timers[label]
                             self._sim_active_outputs[label] = False
                             events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
-                        # else: output stays asserted while reset delay runs
                     else:
-                        # No reset delay — instant dropout
                         self._sim_active_outputs[label] = False
                         events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
+
+        self._process_ar(sim_time_ms, events)
+        self._process_bf(sim_time_ms, i_sys, events)
         return events
+
+    def _process_ar(self, sim_time_ms: float, events: list):
+        """Auto-reclose state machine.
+
+        Settings
+        --------
+        AR_SHOTS      : int   — number of reclose attempts (0 = disabled, default 0)
+        AR_DELAY1_MS  : float — delay before shot 1 (ms, default 500)
+        AR_DELAY2_MS  : float — delay before shot 2 (ms, default 5000)
+        AR_DELAY{N}_MS: float — delay before shot N
+        AR_HOLD_MS    : float — hold time to confirm successful reclose (ms, default 3000)
+
+        States: IDLE → ARMED → RECLOSING → HOLDING → (IDLE | ARMED | LOCKOUT)
+        """
+        ar_shots = int(float(self.settings.get("AR_SHOTS", 0)))
+        if ar_shots <= 0:
+            return
+
+        if not hasattr(self, "_ar_state"):
+            self._ar_state     = "IDLE"
+            self._ar_shot_count = 0
+            self._ar_timer     = None
+            self._ar_locked_out = False
+
+        if self._ar_locked_out:
+            return
+
+        trip_active = self._sim_active_outputs.get("TRIP", False)
+
+        if self._ar_state == "IDLE":
+            if trip_active:
+                self._ar_state = "ARMED"
+
+        elif self._ar_state == "ARMED":
+            if not trip_active:
+                # TRIP dropped — CB has opened and fault current collapsed
+                delay_key = f"AR_DELAY{self._ar_shot_count + 1}_MS"
+                delay_ms  = float(self.settings.get(delay_key, self.settings.get("AR_DELAY1_MS", 500.0)))
+                self._ar_timer = sim_time_ms + delay_ms
+                self._ar_state = "RECLOSING"
+
+        elif self._ar_state == "RECLOSING":
+            if sim_time_ms >= self._ar_timer:
+                self._ar_shot_count += 1
+                hold_ms = float(self.settings.get("AR_HOLD_MS", 3000.0))
+                self._ar_timer = sim_time_ms + hold_ms
+                self._ar_state = "HOLDING"
+                # Send CLOSE command to all connected switches / CBs
+                for conn in self.dc_output_conns:
+                    dev = conn["device"]
+                    if hasattr(dev, "handle_close_signal"):
+                        events.append({"type": "CLOSE", "delay": 0, "data": {"device_id": dev.name, "phase": "abc"}})
+                events.append({"type": "AR_RECLOSE", "delay": 0, "data": {
+                    "device_id": self.name,
+                    "shot": self._ar_shot_count,
+                    "of":   ar_shots,
+                }})
+
+        elif self._ar_state == "HOLDING":
+            if trip_active:
+                # Reclose failed — fault is persistent
+                if self._ar_shot_count >= ar_shots:
+                    self._ar_locked_out = True
+                    self._ar_state = "LOCKOUT"
+                    events.append({"type": "AR_LOCKOUT", "delay": 0, "data": {"device_id": self.name}})
+                else:
+                    # More shots available — wait for TRIP to drop again
+                    self._ar_state = "ARMED"
+            elif sim_time_ms >= self._ar_timer:
+                # CB stayed closed through the hold window — successful reclose
+                self._ar_state      = "IDLE"
+                self._ar_shot_count = 0
+                self._ar_timer      = None
+
+        elif self._ar_state == "LOCKOUT":
+            self._ar_locked_out = True
+
+    def _process_bf(self, sim_time_ms: float, i_sys, events: list):
+        """Breaker-failure (50BF) backup trip logic.
+
+        Settings
+        --------
+        BF_DELAY_MS          : float — BF initiate timer in ms (0 = disabled, typical 150-250)
+        BF_CURRENT_THRESHOLD : float — min secondary current confirming CB has not opened (A, default 0.1)
+
+        When TRIP is asserted and current remains above threshold after BF_DELAY_MS,
+        the BF output asserts.  Any switch/CB connected to this relay's BF dc_output_conn
+        receives an imperative TRIP command via the event queue.
+        """
+        bf_delay = float(self.settings.get("BF_DELAY_MS", 0))
+        if bf_delay <= 0:
+            return
+
+        trip_active = self._sim_active_outputs.get("TRIP", False)
+        I = 0.0
+        if i_sys and i_sys.is_energized():
+            I = max(i_sys.a.magnitude, i_sys.b.magnitude, i_sys.c.magnitude)
+        threshold = float(self.settings.get("BF_CURRENT_THRESHOLD", 0.1))
+
+        if not hasattr(self, "_bf_timer"):
+            self._bf_timer    = None
+            self._bf_operated = False
+
+        if trip_active and I >= threshold:
+            if self._bf_timer is None:
+                self._bf_timer = sim_time_ms
+            if not self._bf_operated and (sim_time_ms - self._bf_timer) >= bf_delay:
+                self._bf_operated = True
+                self._sim_active_outputs["BF"] = True
+                # Trip every switch/CB wired to this relay's BF output
+                for conn in self.dc_output_conns:
+                    if conn["from"] == "BF" and hasattr(conn["device"], "handle_trip_signal"):
+                        events.append({"type": "TRIP", "delay": 0,
+                                       "data": {"device_id": conn["device"].name, "phase": "abc"}})
+                events.append({"type": "BF_TRIP", "delay": 0, "data": {"device_id": self.name}})
+        else:
+            self._bf_timer    = None
+            self._bf_operated = False
+            self._sim_active_outputs["BF"] = False
 
     @property
     def dc_output_state(self) -> bool: return self.get_terminal_state("TRIP")
@@ -304,108 +432,31 @@ class Relay(ProtectionDevice):
             return bool(eval(safe_eq, {"__builtins__": None}, mangled_bits))
         except: return False
 
-    def _get_51_element_names(self):
-        """Return list of configured 51-series element names (e.g. '51P1' from setting '51P1P')."""
-        names = []
-        for key in self.settings:
-            if re.match(r'^51[A-Z]\d+P$', key):
-                names.append(key[:-1])  # strip trailing 'P' pickup suffix
-        return names
-
-    @staticmethod
-    def _idmt_time(curve: str, multiple: float, tms: float) -> float:
-        """Return operating time in seconds for a given curve, current multiple (I/Ip > 1), and TMS."""
-        if multiple <= 1.0:
-            return float('inf')
-        m = multiple
-        # IEC 60255-151
-        if curve == 'IEC_SI':    return tms * 0.14     / (m ** 0.02 - 1)
-        if curve == 'IEC_VI':    return tms * 13.5     / (m - 1)
-        if curve == 'IEC_EI':    return tms * 80.0     / (m ** 2 - 1)
-        if curve == 'IEC_LTI':   return tms * 120.0    / (m - 1)
-        # IEEE C37.112
-        if curve == 'IEEE_MI':   return tms * (0.0515  / (m ** 0.02 - 1) + 0.114)
-        if curve == 'IEEE_VI':   return tms * (19.61   / (m ** 2  - 1)   + 0.491)
-        if curve == 'IEEE_EI':   return tms * (28.2    / (m ** 2  - 1)   + 0.1217)
-        return tms  # definite-time fallback: tms treated as operating time in seconds
-
-    def _update_51_timers(self, sim_time_ms: float) -> list:
-        """Advance IDMT integrating accumulators for all configured 51-series elements.
-        Returns notification events (RELAY_PICKUP / RELAY_DROPOUT) for operated/reset elements."""
-        if self._51_prev_time is None:
-            self._51_prev_time = sim_time_ms
-            return []
-        dt_ms = min(sim_time_ms - self._51_prev_time, 200.0)  # cap to prevent large jumps on resume
-        self._51_prev_time = sim_time_ms
-        if dt_ms <= 0:
-            return []
-
-        events = []
-        i_sys = self.current
-
-        for elem_name in self._get_51_element_names():
-            pickup  = float(self.settings.get(f'{elem_name}P', 0.0))
-            tms     = float(self.settings.get(f'{elem_name}TMS', self.settings.get(f'{elem_name}TDS', 1.0)))
-            curve   = self.settings.get(f'{elem_name}CURVE', 'IEC_SI')
-
-            # Determine measured current for this element type
-            etype = elem_name[2] if len(elem_name) > 2 else 'P'  # 'P', 'N', 'G', 'Q', etc.
-            if etype in ('N', 'G') and i_sys and i_sys.is_energized():
-                # Residual current: |Ia + Ib + Ic|
-                I = abs(i_sys.a.to_complex() + i_sys.b.to_complex() + i_sys.c.to_complex())
-            elif i_sys and i_sys.is_energized():
-                I = max(i_sys.a.magnitude, i_sys.b.magnitude, i_sys.c.magnitude)
-            else:
-                I = 0.0
-
-            multiple = (I / pickup) if pickup > 0 else 0.0
-            acc      = self._51_accumulators.get(elem_name, 0.0)
-            operated = self._51_operated.get(elem_name, False)
-
-            if multiple > 1.0:
-                t_op_s = self._idmt_time(curve, multiple, tms)
-                if t_op_s != float('inf') and t_op_s > 0:
-                    acc = min(1.0, acc + dt_ms / (t_op_s * 1000.0))
-                if acc >= 1.0 and not operated:
-                    self._51_operated[elem_name] = True
-                    events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {
-                        "device_id": self.name, "label": elem_name,
-                        "multiple": round(multiple, 2),
-                        "curve": curve,
-                        "t_op_s": round(t_op_s, 3) if t_op_s != float('inf') else None,
-                    }})
-            elif multiple <= 0.9:
-                # Below reset threshold — instantaneous reset
-                acc = 0.0
-                if operated:
-                    self._51_operated[elem_name] = False
-                    events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {
-                        "device_id": self.name, "label": elem_name
-                    }})
-
-            self._51_accumulators[elem_name] = acc
-
-        return events
-
     def get_summary_dict(self):
         stats = super().get_summary_dict()
         stats["Category"] = self.category
-        bits = self.get_logic_bits()
         stats["--- LOGIC ELEMENTS ---"] = "HEADER"
-        for b, val in bits.items(): stats[b] = "ASSERTED" if val else "0"
-        # Show 51-series accumulator progress
-        for elem_name in self._get_51_element_names():
-            acc = self._51_accumulators.get(elem_name, 0.0)
-            operated = self._51_operated.get(elem_name, False)
-            pickup   = self.settings.get(f'{elem_name}P', '?')
-            tms      = self.settings.get(f'{elem_name}TMS', self.settings.get(f'{elem_name}TDS', '?'))
-            curve    = self.settings.get(f'{elem_name}CURVE', 'IEC_SI')
-            status   = "OPERATED" if operated else f"{acc * 100:.0f}% charged"
-            stats[f"51 {elem_name}"] = f"{status} | P={pickup}A TMS={tms} {curve}"
+        for elem in self.elements.values():
+            stats.update(elem.get_state())
+        bits = self.get_logic_bits()
+        for label in self.digital_inputs:
+            stats[label] = "ASSERTED" if bits.get(label) else "0"
         stats["--- OUTPUTS ---"] = "HEADER"
-        for out in self.digital_outputs + ([o for o in ["TRIP", "CLOSE"] if o not in self.digital_outputs]):
+        extra_outs = ["TRIP", "CLOSE"]
+        if float(self.settings.get("BF_DELAY_MS", 0)) > 0:
+            extra_outs.append("BF")
+        for out in self.digital_outputs + [o for o in extra_outs if o not in self.digital_outputs]:
             res, man = self.get_terminal_state(out), " (MANUAL)" if self.output_manual_overrides.get(out) else ""
             stats[f"{out}{man}"] = "HIGH" if res else "0"
+        if getattr(self, "is_sim", False) and float(self.settings.get("BF_DELAY_MS", 0)) > 0:
+            bf_ms = float(self.settings.get("BF_DELAY_MS", 0))
+            if getattr(self, "_bf_timer", None) and not getattr(self, "_bf_operated", False):
+                elapsed = 0  # sim_time not available here; show configured delay
+                stats["BF Timer"] = f"RUNNING ({bf_ms:.0f}ms delay)"
+            elif getattr(self, "_bf_operated", False):
+                stats["BF Timer"] = "OPERATED — backup trip sent"
+            else:
+                stats["BF Timer"] = f"Armed ({bf_ms:.0f}ms)"
         if self.category == "Electromechanical": stats["Target / Flag"] = "DROPPED" if self.target_dropped else "SET"
         return stats
 
@@ -430,8 +481,17 @@ class Meter(ProtectionDevice):
         stats = super().get_summary_dict()
         v, i = self.voltage, self.current
         if v and i and v.is_energized() and i.is_energized():
-            p = sum((getattr(v,ph).to_complex() * getattr(i,ph).to_complex().conjugate()).real for ph in 'abc')
-            stats["Total Active Power"] = f"{p/1e6:.2f} MW"
+            p = q = 0.0
+            for ph in 'abc':
+                s_ph = getattr(v, ph).to_complex() * getattr(i, ph).to_complex().conjugate()
+                p += s_ph.real
+                q += s_ph.imag
+            s = math.sqrt(p * p + q * q)
+            pf = abs(p / s) if s > 1e-9 else 0.0
+            stats["Active Power (P)"]   = f"{p/1e6:.3f} MW"
+            stats["Reactive Power (Q)"] = f"{q/1e6:.3f} MVAr"
+            stats["Apparent Power (S)"] = f"{s/1e6:.3f} MVA"
+            stats["Power Factor"]       = f"{pf:.3f} ({'lag' if q > 0 else 'lead'})"
         return stats
 
 class Indicator(ProtectionDevice):

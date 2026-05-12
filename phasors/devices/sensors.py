@@ -218,17 +218,37 @@ class CurrentTransformer(InstrumentTransformer):
         return append_3phase_details(stats, None, sec_i) # ONLY CURRENT
 
 
+VT_PRIMARY_WIRINGS = {
+    "Y":  "Y — Wye (measures L-N)",
+    "YG": "YG — Wye Grounded (measures L-N)",
+    "D":  "Δ — Delta (measures L-L)",
+}
+
+
 class VoltageTransformer(InstrumentTransformer):
-    def __init__(self, name, location, tap_ratios, selected_tap, bushing="X", polarity_normal=True, phase_shift_deg=0.0, secondary_wiring="Y"):
+    def __init__(self, name, location, tap_ratios, selected_tap, bushing="X", polarity_normal=True,
+                 phase_shift_deg=0.0, secondary_wiring="Y", primary_winding="Y"):
         super().__init__(name, location, tap_ratios, selected_tap, polarity_normal, phase_shift_deg)
         self.bushing = bushing.upper()
         sw = secondary_wiring.upper().strip()
         self.secondary_wiring = sw if sw in VT_SECONDARY_WIRINGS else "Y"
+        pw = primary_winding.upper().strip()
+        self.primary_winding = pw if pw in VT_PRIMARY_WIRINGS else "Y"
+
+    def _apply_primary_transform(self, v_sys):
+        """Convert L-N phasors to L-L for delta-primary VTs before applying ratio."""
+        def _sub(p1, p2):
+            c = p1.to_complex() - p2.to_complex()
+            mag, ang = cmath.polar(c)
+            return VoltagePhasor(mag, math.degrees(ang))
+        return wye_voltages(_sub(v_sys.a, v_sys.b), _sub(v_sys.b, v_sys.c), _sub(v_sys.c, v_sys.a))
 
     @property
     def secondary_voltage(self):
         source_v = self.voltage
         if source_v and source_v.is_energized():
+            if self.primary_winding == "D":
+                source_v = self._apply_primary_transform(source_v)
             base = self._apply_logic(source_v, to_secondary=True)
             def _sub(p1, p2):
                 c = p1.to_complex() - p2.to_complex(); mag, ang = cmath.polar(c)
@@ -248,16 +268,29 @@ class VoltageTransformer(InstrumentTransformer):
 
 
 class DualWindingVT(VoltageTransformer):
-    def __init__(self, name, location, tap_ratios, selected_tap, sec2_ratio, bushing="X", polarity_normal=True, phase_shift_deg=0.0, secondary_wiring="Y", secondary2_wiring="Y"):
-        super().__init__(name, location, tap_ratios, selected_tap, bushing, polarity_normal, phase_shift_deg, secondary_wiring)
+    def __init__(self, name, location, tap_ratios, selected_tap, sec2_ratio, bushing="X", polarity_normal=True,
+                 phase_shift_deg=0.0, secondary_wiring="Y", secondary2_wiring="Y", primary_winding="Y"):
+        super().__init__(name, location, tap_ratios, selected_tap, bushing, polarity_normal, phase_shift_deg,
+                         secondary_wiring, primary_winding)
         self.sec2_ratio = sec2_ratio
         sw2 = secondary2_wiring.upper().strip()
         self.secondary2_wiring = sw2 if sw2 in VT_SECONDARY_WIRINGS else "Y"
+        self.secondary2_connections = []  # Devices fed from winding 2
+
+    def connect_secondary2(self, downstream_device):
+        """Route a downstream device to receive winding-2 voltage."""
+        if downstream_device not in self.secondary2_connections:
+            self.secondary2_connections.append(downstream_device)
+        if hasattr(downstream_device, "add_input"):
+            downstream_device.add_input(self, winding=2)
+        return downstream_device
 
     @property
     def secondary2_voltage(self):
         source_v = self.voltage
         if source_v and source_v.is_energized():
+            if self.primary_winding == "D":
+                source_v = self._apply_primary_transform(source_v)
             base = self._apply_logic(source_v, to_secondary=True, ratio_override=self.sec2_ratio)
             def _sub(p1, p2):
                 c = p1.to_complex() - p2.to_complex(); mag, ang = cmath.polar(c)

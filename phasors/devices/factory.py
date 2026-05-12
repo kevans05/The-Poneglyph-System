@@ -121,6 +121,7 @@ class DeviceFactory:
                 polarity_normal=data.get("polarity_normal", True),
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
                 secondary_wiring=data.get("secondary_wiring", "Y"),
+                primary_winding=data.get("primary_winding", "Y"),
             )
 
         elif dtype == "DualWindingVT":
@@ -147,6 +148,7 @@ class DeviceFactory:
                 phase_shift_deg=data.get("phase_shift_deg", 0.0),
                 secondary_wiring=data.get("secondary_wiring", "Y"),
                 secondary2_wiring=data.get("secondary2_wiring", "Y"),
+                primary_winding=data.get("primary_winding", "Y"),
             )
 
         elif dtype == "PowerTransformer":
@@ -167,7 +169,10 @@ class DeviceFactory:
                 nominal_kv=data.get("nominal_kv", 13.8),
                 tap_pos=data.get("tap_pos", 0),
                 step_percent=data.get("step_percent", 0.625),
-                max_steps=data.get("max_steps", 16)
+                max_steps=data.get("max_steps", 16),
+                avr_enabled=data.get("avr_enabled", False),
+                avr_deadband_pct=data.get("avr_deadband_pct", 2.5),
+                avr_delay_ms=data.get("avr_delay_ms", 30000.0),
             )
 
         elif dtype == "Load":

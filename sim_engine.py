@@ -185,16 +185,16 @@ class SimEngine:
             if device_id in self.devices:
                 dev = self.devices[device_id]
                 if hasattr(dev, "handle_trip_signal"):
-                    dev.handle_trip_signal(phase)
+                    dev.handle_trip_signal(phase, self.sim_time_ms)
         elif event_type == "CLOSE":
             device_id = data.get("device_id")
             phase = data.get("phase", "abc")
             if device_id in self.devices:
                 dev = self.devices[device_id]
                 if hasattr(dev, "handle_close_signal"):
-                    dev.handle_close_signal(phase)
+                    dev.handle_close_signal(phase, self.sim_time_ms)
 
-    _NOTIFICATION_EVENT_TYPES = {"RELAY_PICKUP", "RELAY_DROPOUT", "SWITCH_OP", "CLEAR_FAULT"}
+    _NOTIFICATION_EVENT_TYPES = {"RELAY_PICKUP", "RELAY_DROPOUT", "SWITCH_OP", "CLEAR_FAULT", "AR_RECLOSE", "AR_LOCKOUT", "BF_TRIP"}
 
     def _update_physics(self):
         # Force recalculation by clearing all caches
@@ -284,14 +284,55 @@ class SimEngine:
                         new_dev._sim_pickup_timers = copy.deepcopy(old_dev._sim_pickup_timers)
                     if hasattr(old_dev, "_sim_dropout_timers") and hasattr(new_dev, "_sim_dropout_timers"):
                         new_dev._sim_dropout_timers = copy.deepcopy(old_dev._sim_dropout_timers)
-                    if hasattr(old_dev, "_51_accumulators") and hasattr(new_dev, "_51_accumulators"):
-                        new_dev._51_accumulators = copy.deepcopy(old_dev._51_accumulators)
-                        new_dev._51_operated = copy.deepcopy(old_dev._51_operated)
-                        new_dev._51_prev_time = old_dev._51_prev_time
+                    if hasattr(old_dev, "elements") and hasattr(new_dev, "elements"):
+                        for bit_name, old_elem in old_dev.elements.items():
+                            if bit_name in new_dev.elements:
+                                new_dev.elements[bit_name].copy_state_from(old_elem)
+                        if hasattr(old_dev, "_elem_prev_time"):
+                            new_dev._elem_prev_time = old_dev._elem_prev_time
+                    for attr in ("_ar_state", "_ar_shot_count", "_ar_timer", "_ar_locked_out",
+                                 "_bf_timer", "_bf_operated",
+                                 "tap_pos", "_avr_hold_ms", "_avr_prev_time"):
+                        if hasattr(old_dev, attr):
+                            setattr(new_dev, attr, getattr(old_dev, attr))
             
             self.sources = new_sources
             self.devices = new_devices
             self._emit_frame(is_snapshot=True)
+
+    def update_relay_settings(self, device_id: str, new_settings: dict):
+        """Merge new_settings into a running relay's settings dict.
+
+        Because ProtectionElement holds a shared reference to relay.settings,
+        numeric/curve changes take effect on the very next sim_step with no
+        rebuild needed.  If the new settings introduce element types that don't
+        yet exist (e.g. a freshly added 51N1P key), elements are rebuilt and
+        existing accumulator state is transferred.
+        """
+        with self.lock:
+            dev = self.devices.get(device_id)
+            if dev is None or not hasattr(dev, "elements"):
+                return False
+
+            # Merge in-place so element shared-references stay valid
+            dev.settings.update(new_settings)
+
+            # Rebuild elements — preserves state for unchanged elements
+            from phasors.devices.protection_elements import build_elements_from_settings
+            new_elements = {e.bit_name: e for e in build_elements_from_settings(dev.settings)}
+            for bit_name, old_elem in dev.elements.items():
+                if bit_name in new_elements:
+                    new_elements[bit_name].copy_state_from(old_elem)
+            dev.elements = new_elements
+
+            dev._cache.clear()
+            # Log the change as a sim event so the log panel shows it
+            self._frame_events.append({
+                "type": "SETTINGS_CHANGE",
+                "sim_time": self.sim_time_ms,
+                "device_id": device_id,
+            })
+            return True
 
     def _cache_clear_all(self):
         for dev in self.devices.values():
