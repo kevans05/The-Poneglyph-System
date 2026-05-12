@@ -40,6 +40,7 @@ class ProtectionDevice(Bus):
         super().__init__(name)
         self.inputs = [] # Analog Inputs (CT/VT)
         self.input_polarities = {}
+        self._input_windings = {}  # source_name → winding number (1 or 2, for DualWindingVT)
         self.secondary_connections = [] # Analog Outputs
         
         self.dc_input_conns = [] 
@@ -49,9 +50,10 @@ class ProtectionDevice(Bus):
         self._evaluating_prot_voltage = False
         self._evaluating_dc = False
 
-    def add_input(self, source_device):
+    def add_input(self, source_device, winding=1):
         if source_device not in self.inputs:
             self.inputs.append(source_device)
+        self._input_windings[source_device.name] = winding
         return self
 
     def connect_secondary(self, downstream_device):
@@ -134,7 +136,11 @@ class ProtectionDevice(Bus):
             total_a, total_b, total_c = complex(0), complex(0), complex(0)
             found, count = False, 0
             for src in self.inputs:
-                v_sys = getattr(src, "secondary_voltage", None) or getattr(src, "secondary2_voltage", None)
+                winding = self._input_windings.get(src.name, 1)
+                if winding == 2:
+                    v_sys = getattr(src, "secondary2_voltage", None)
+                else:
+                    v_sys = getattr(src, "secondary_voltage", None)
                 if v_sys and v_sys.is_energized():
                     sign = self.input_polarities.get(src.name, 1)
                     total_a += sign * v_sys.a.to_complex()
@@ -475,8 +481,17 @@ class Meter(ProtectionDevice):
         stats = super().get_summary_dict()
         v, i = self.voltage, self.current
         if v and i and v.is_energized() and i.is_energized():
-            p = sum((getattr(v,ph).to_complex() * getattr(i,ph).to_complex().conjugate()).real for ph in 'abc')
-            stats["Total Active Power"] = f"{p/1e6:.2f} MW"
+            p = q = 0.0
+            for ph in 'abc':
+                s_ph = getattr(v, ph).to_complex() * getattr(i, ph).to_complex().conjugate()
+                p += s_ph.real
+                q += s_ph.imag
+            s = math.sqrt(p * p + q * q)
+            pf = abs(p / s) if s > 1e-9 else 0.0
+            stats["Active Power (P)"]   = f"{p/1e6:.3f} MW"
+            stats["Reactive Power (Q)"] = f"{q/1e6:.3f} MVAr"
+            stats["Apparent Power (S)"] = f"{s/1e6:.3f} MVA"
+            stats["Power Factor"]       = f"{pf:.3f} ({'lag' if q > 0 else 'lead'})"
         return stats
 
 class Indicator(ProtectionDevice):

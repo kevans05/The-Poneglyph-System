@@ -253,6 +253,15 @@ class DualWindingVT(VoltageTransformer):
         self.sec2_ratio = sec2_ratio
         sw2 = secondary2_wiring.upper().strip()
         self.secondary2_wiring = sw2 if sw2 in VT_SECONDARY_WIRINGS else "Y"
+        self.secondary2_connections = []  # Devices fed from winding 2
+
+    def connect_secondary2(self, downstream_device):
+        """Route a downstream device to receive winding-2 voltage."""
+        if downstream_device not in self.secondary2_connections:
+            self.secondary2_connections.append(downstream_device)
+        if hasattr(downstream_device, "add_input"):
+            downstream_device.add_input(self, winding=2)
+        return downstream_device
 
     @property
     def secondary2_voltage(self):

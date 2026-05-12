@@ -389,6 +389,15 @@ svg {
     filter: drop-shadow(0 0 2px #ff333355);
 }
 
+.vt2-wire {
+    stroke: #ff9933;
+    stroke-width: 1.5px;
+    stroke-dasharray: 3, 3;
+    stroke-linecap: round;
+    fill: none;
+    filter: drop-shadow(0 0 2px #ff993355);
+}
+
 /* ── Measurement Wizard ───────────────────────────────────────────── */
 
 .measure-wizard {

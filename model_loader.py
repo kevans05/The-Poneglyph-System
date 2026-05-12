@@ -43,6 +43,12 @@ def load_substation_model(topology: dict):
                     devices[did].connect_secondary(devices[c])
                 else:
                     devices[did].connect(devices[c])
+
+        # Winding-2 secondary connections (DualWindingVT only)
+        for c in d.get("secondary2_connections", []):
+            if c in devices:
+                if hasattr(devices[did], "connect_secondary2"):
+                    devices[did].connect_secondary2(devices[c])
                     
         # DC connections
         for c in d.get("dc_connections", []):

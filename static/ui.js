@@ -285,6 +285,19 @@ function startSecondaryConnectionMode(sourceId) {
     );
 }
 
+function startSecondary2ConnectionMode(sourceId) {
+  connectionSource = { id: sourceId, isSecondary2: true };
+  d3.select("#status-bar")
+    .style("display", "block")
+    .style("background", "#ff9933")
+    .style("color", "#000")
+    .html(
+      "DVT W2 CONNECTION MODE: Select target Relay/Meter to receive WINDING 2 voltage from " +
+        sourceId +
+        ' ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>',
+    );
+}
+
 function cancelConnectionMode() {
   connectionSource = null;
   d3.select("#status-bar")
@@ -295,8 +308,8 @@ function cancelConnectionMode() {
 
 function completeConnection(targetId, toLabel = null) {
   if (!connectionSource) return;
-  const { id, bushing, isSecondary, isDC, isTrip, isClose, from } = connectionSource;
-  
+  const { id, bushing, isSecondary, isSecondary2, isDC, isTrip, isClose, from } = connectionSource;
+
   if (isDC && !toLabel) {
     const targetNode = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === targetId) : null;
     if (targetNode) {
@@ -318,7 +331,7 @@ function completeConnection(targetId, toLabel = null) {
     alert("Cannot connect a device to itself.");
     return;
   }
-  const action = isTrip ? "add_trip_connection" : isClose ? "add_close_connection" : isDC ? "add_dc_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
+  const action = isTrip ? "add_trip_connection" : isClose ? "add_close_connection" : isDC ? "add_dc_connection" : isSecondary2 ? "add_secondary2_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
   reconfigureAPI(id, action, { target_id: targetId, bushing: bushing, from: from, to: toLabel }).then(
     () => {
       cancelConnectionMode();
@@ -820,7 +833,8 @@ function updateWindow(id, node) {
       "')\">+RELAY</button>" +
       '<button class="eng-btn" style="flex:1" onclick="startSecondaryConnectionMode(\'' +
       node.id +
-      "')\">CONN <span>&rarr;</span></button>" +
+      "')\">W1 CONN <span>&rarr;</span></button>" +
+      (node.type === 'DualWindingVT' ? '<button class="eng-btn" style="flex:1; background:#321; color:#ff9933;" onclick="startSecondary2ConnectionMode(\'' + node.id + '\')">W2 CONN <span>&rarr;</span></button>' : '') +
       '<button class="eng-btn" style="flex:1; background:#320; color:#fa0;" onclick="startDCConnectionMode(\'' +
       node.id +
       "\')\">DC <span>&rarr;</span></button>" +
@@ -1100,6 +1114,7 @@ function showContextMenu(e, d) {
       "')\">CONFIGURE DEVICE</div>" +
 
       (d.type === 'Relay' ? '<div class="menu-item" style="color:#4ff;" onclick="showTCCPlot(\'' + d.id + '\')">VIEW TCC COORDINATION PLOT</div>' : '') +
+      (d.type === 'DualWindingVT' ? '<div class="menu-item" style="color:#ff9933;" onclick="d3.select(\'#context-menu\').style(\'display\',\'none\'); startSecondary2ConnectionMode(\'' + d.id + '\')">CONNECT WINDING 2 OUTPUT...</div>' : '') +
       (typeof simActive !== 'undefined' && simActive ?
         '<div style="padding:4px 10px; font-size:9px; color:#555; background:#0a0a0a; border-top:1px solid #222;">SIMULATION</div>' +
         '<div class="menu-item" style="color:#f55;" onclick="showFaultConfig(\'' + d.id + '\')">CONFIGURE & INJECT FAULT...</div>' +

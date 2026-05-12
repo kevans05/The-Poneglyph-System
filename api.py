@@ -130,6 +130,7 @@ _PARAM_KEYS = [
     "phase_pf",
     "mode",
     "secondary_wiring",
+    "secondary2_wiring",
     "function",
     "tap_ratios",
     "selected_tap",
@@ -325,6 +326,11 @@ def _build_topology_response(sources, devices, raw_devices, reference):
             for s in dev.secondary_connections:
                 edges.append(
                     {"source": dev.name, "target": s.name, "type": "protection"}
+                )
+        if hasattr(dev, "secondary2_connections"):
+            for s in dev.secondary2_connections:
+                edges.append(
+                    {"source": dev.name, "target": s.name, "type": "protection2"}
                 )
         if hasattr(dev, "dc_output_conns"):
             for conn in dev.dc_output_conns:

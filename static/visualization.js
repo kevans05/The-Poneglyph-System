@@ -141,11 +141,12 @@ function render3LD(data) { if (!data || !data.nodes) return;
 
     const frac = _bendFrac[src.id + "→" + tgt.id] ?? 0.5;
 
-    if (edge.type === "protection" || edge.type === "dc" || edge.type === "trip" || edge.type === "close") {
+    if (edge.type === "protection" || edge.type === "protection2" || edge.type === "dc" || edge.type === "trip" || edge.type === "close") {
       let wireClass = "secondary-wire";
       if (edge.type === "dc") wireClass = "dc-wire";
       else if (edge.type === "trip") wireClass = "trip-wire";
       else if (edge.type === "close") wireClass = "close-wire";
+      else if (edge.type === "protection2") wireClass = "vt2-wire";
       else if (["CurrentTransformer", "CTTB"].includes(src.type))
         wireClass = "ct-wire";
       else if (
