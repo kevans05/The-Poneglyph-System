@@ -226,3 +226,26 @@ function fetchDeviceConfigHistory(deviceId) {
     return fetch("/api/db/device-config-history/" + encodeURIComponent(deviceId))
         .then(r => r.json());
 }
+
+/**
+ * Serial Number Tracking API
+ */
+function fetchDeviceSerials(deviceId) {
+    return fetch("/api/db/serials/" + encodeURIComponent(deviceId)).then(r => r.json());
+}
+
+function recordDeviceSerial(deviceId, serial, notes, technician) {
+    return fetch("/api/db/serials/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: deviceId, serial, notes: notes || "", technician: technician || "" }),
+    }).then(r => r.json());
+}
+
+/**
+ * Device Analog History (time-series measurements for one key)
+ */
+function fetchAnalogHistory(deviceId, key) {
+    return fetch(`/api/db/history/${encodeURIComponent(deviceId)}/${encodeURIComponent(key)}`)
+        .then(r => r.json());
+}

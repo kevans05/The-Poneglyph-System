@@ -1,6 +1,65 @@
 let _bpSISelectedPhase = "A";
 let _bpInSIMode = false;
 let compareData = null;
+
+// ── Protection View Filter ─────────────────────────────────────────────────────
+// When active, hides "infrastructure" node types (wires, raw CT/VT sensors) so
+// only the protection chain and primary switching equipment remains visible.
+// This makes it easier to trace CTTB → Relay → Breaker paths without clutter.
+
+let _protViewActive = false;
+
+// Types that are HIDDEN in protection view — physical wiring / low-level sensors
+const PROT_VIEW_HIDDEN_TYPES = new Set([
+  "Wire",
+  "CurrentTransformer",
+  "VoltageTransformer",
+  "DualWindingVT",
+  "PowerLine",
+  "Line",
+]);
+
+function toggleProtectionView() {
+  _protViewActive = !_protViewActive;
+  const btn = document.getElementById("prot-view-btn");
+  if (btn) {
+    btn.style.color       = _protViewActive ? "#0f0" : "";
+    btn.style.borderColor = _protViewActive ? "#0f0" : "";
+    btn.style.background  = _protViewActive ? "#001a00" : "";
+  }
+  applyProtectionViewFilter();
+}
+
+/**
+ * Show/hide SVG node groups and wire paths based on the protection view filter.
+ * Edges are individual <path> elements with data-src / data-tgt attributes so
+ * we select by attribute rather than by bound datum.
+ */
+function applyProtectionViewFilter() {
+  if (!_protViewActive) {
+    d3.select("#zoom-group").selectAll(".node").style("display", null);
+    d3.select("#zoom-group").selectAll("[data-src]").style("display", null);
+    return;
+  }
+
+  // Hide nodes whose type is in the hidden set
+  d3.select("#zoom-group").selectAll(".node").each(function(d) {
+    d3.select(this).style("display", (d && PROT_VIEW_HIDDEN_TYPES.has(d.type)) ? "none" : null);
+  });
+
+  // Build set of hidden IDs for edge path filtering
+  const hiddenIds = new Set();
+  if (currentData && currentData.nodes) {
+    currentData.nodes.forEach(n => { if (PROT_VIEW_HIDDEN_TYPES.has(n.type)) hiddenIds.add(n.id); });
+  }
+
+  // Hide wire paths that connect to or from a hidden device
+  d3.select("#zoom-group").selectAll("[data-src]").each(function() {
+    const el = d3.select(this);
+    const hidden = hiddenIds.has(el.attr("data-src")) || hiddenIds.has(el.attr("data-tgt"));
+    el.style("display", hidden ? "none" : null);
+  });
+}
 /**
  * SCADA Pro Console - UI & Window Management
  * Handles draggable windows, context menus, and modals.
@@ -75,7 +134,7 @@ function showSelectionDialog(event, nodes) {
 }
 
 function openWindowById(id) {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (node) openWindow(node);
   d3.select("#context-menu").style("display", "none");
 }
@@ -174,7 +233,7 @@ function startCloseConnectionMode(sourceId) {
 function startDCConnectionMode(sourceId, fromLabel, isReverse) {
   if (fromLabel === undefined) fromLabel = null;
   if (isReverse === undefined) isReverse = false;
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === sourceId);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === sourceId);
   if (!fromLabel && node) {
     let outputs;
     if (isReverse) {
@@ -213,29 +272,6 @@ function startDCConnectionMode(sourceId, fromLabel, isReverse) {
     );
 }
 
-function dummy_startDCConnectionMode(sourceId, fromLabel = null) {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === sourceId);
-  if (!fromLabel && node) {
-    const outputs = (node.params && (node.params && node.params.digital_outputs)) || (node.type === 'Relay' ? ["TRIP", "OUT101", "OUT102"] : ["DC_OUT"]);
-    if (outputs.length > 1) {
-        showTerminalPicker("SELECT SOURCE TERMINAL", outputs, (label) => startDCConnectionMode(sourceId, label));
-        return;
-    }
-    fromLabel = outputs[0];
-  }
-
-  connectionSource = { id: sourceId, isDC: true, from: fromLabel };
-  d3.select("#status-bar")
-    .style("display", "block")
-    .style("background", "#ff8800")
-    .style("color", "#000")
-    .html(
-      "DC CONNECTION MODE: Select target Indicator/Relay to connect " +
-        sourceId +
-        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
-    );
-}
-
 function startSecondaryConnectionMode(sourceId) {
   connectionSource = { id: sourceId, isSecondary: true };
   d3.select("#status-bar")
@@ -262,7 +298,7 @@ function completeConnection(targetId, toLabel = null) {
   const { id, bushing, isSecondary, isDC, isTrip, isClose, from } = connectionSource;
   
   if (isDC && !toLabel) {
-    const targetNode = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === targetId) : null;
+    const targetNode = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === targetId) : null;
     if (targetNode) {
         let inputs = (targetNode.params && targetNode.params.digital_inputs);
         if (!inputs) {
@@ -557,7 +593,7 @@ function updateWindow(id, node) {
     // Protection devices: show per-input breakdown first
     const isProtection = ["Relay", "CTTB", "FTBlock"].includes(node.type);
     const inputNodes = isProtection && node.inputs?.length > 0
-      ? node.inputs.map((id) => (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id)).filter(Boolean)
+      ? node.inputs.map((id) => (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id)).filter(Boolean)
       : [];
 
     if (inputNodes.length > 0) {
@@ -839,8 +875,162 @@ function updateWindow(id, node) {
     "')\">DELETE <span>🗑</span></button>" +
     "</div>";
 
+  // Serial number tracking — shows current serial and lets user record swaps
+  const curSerial = (node.params && node.params.serial_number) || null;
+  html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ASSET SERIAL NUMBER</div>';
+  html += '<div style="display:flex; gap:4px; margin-top:2px; align-items:center;">';
+  html += `<span style="flex:1; font-size:10px; color:${curSerial ? '#0f0' : '#555'}; overflow:hidden; text-overflow:ellipsis;">${curSerial ? curSerial : '— not recorded —'}</span>`;
+  html += `<button class="eng-btn" style="font-size:9px;" onclick="showSerialDialog('${node.id}')">RECORD S/N</button>`;
+  html += `<button class="eng-btn" style="font-size:9px;" onclick="showSerialHistory('${node.id}')">S/N LOG</button>`;
+  html += '</div>';
+
+  // Analog history — lets technician review all recorded measurements for this device
+  html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ANALOG HISTORY</div>';
+  html += `<button class="eng-btn" style="width:100%; margin-top:2px;" onclick="showAnalogHistoryModal('${node.id}', ${JSON.stringify(Object.keys(node.summary || {}))})">VIEW RECORDED MEASUREMENTS</button>`;
+
   content.innerHTML = html;
   drawPhasors(id, node.summary, node.type);
+}
+
+// ── Serial Number Dialog ──────────────────────────────────────────────────────
+
+/**
+ * Prompts the user to record a serial number (or replacement) for a device.
+ * Creates a small overlay with S/N, notes, and technician fields.
+ */
+function showSerialDialog(deviceId) {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10600;display:flex;align-items:center;justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#0c0c0c;border:1px solid #0f0;padding:20px;min-width:360px;font-family:'Consolas','Courier New',monospace;display:flex;flex-direction:column;gap:10px;";
+  box.innerHTML = `
+    <div style="font-size:11px;color:#0f0;letter-spacing:1px;border-bottom:1px solid #1a1a1a;padding-bottom:8px;">RECORD SERIAL NUMBER — ${deviceId}</div>
+    <div style="font-size:9px;color:#888;">SERIAL NUMBER *</div>
+    <input id="_sn-serial" type="text" style="background:#111;border:1px solid #333;color:#eee;padding:6px 8px;font-family:inherit;font-size:11px;width:100%;box-sizing:border-box;" placeholder="e.g. SEL-421-SN12345" />
+    <div style="font-size:9px;color:#888;">NOTES (reason for change, installation date, etc.)</div>
+    <input id="_sn-notes" type="text" style="background:#111;border:1px solid #333;color:#888;padding:6px 8px;font-family:inherit;font-size:10px;width:100%;box-sizing:border-box;" placeholder="e.g. Replaced after thermal trip — 2025-05-12" />
+    <div style="font-size:9px;color:#888;">TECHNICIAN</div>
+    <input id="_sn-tech" type="text" style="background:#111;border:1px solid #333;color:#888;padding:6px 8px;font-family:inherit;font-size:10px;width:100%;box-sizing:border-box;" value="${_technicianName || ''}" placeholder="Name" />
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
+      <button id="_sn-cancel" style="background:#0a0a0a;border:1px solid #333;color:#555;font-family:inherit;font-size:10px;padding:6px 14px;cursor:pointer;">CANCEL</button>
+      <button id="_sn-save" style="background:#001a00;border:1px solid #0f0;color:#0f0;font-family:inherit;font-size:10px;padding:6px 14px;cursor:pointer;">SAVE S/N</button>
+    </div>`;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  document.getElementById("_sn-serial").focus();
+
+  document.getElementById("_sn-cancel").onclick = () => document.body.removeChild(overlay);
+  document.getElementById("_sn-save").onclick = () => {
+    const serial = document.getElementById("_sn-serial").value.trim();
+    if (!serial) { alert("Serial number is required."); return; }
+    recordDeviceSerial(deviceId, serial, document.getElementById("_sn-notes").value, document.getElementById("_sn-tech").value)
+      .then(() => {
+        document.body.removeChild(overlay);
+        // Update the in-memory node params so the window refreshes immediately
+        const node = currentData && currentData.nodes && currentData.nodes.find(n => n.id === deviceId);
+        if (node) { if (!node.params) node.params = {}; node.params.serial_number = serial; }
+        refreshData();
+      });
+  };
+}
+
+/**
+ * Shows the full serial-number swap history for a device in a modal overlay.
+ */
+function showSerialHistory(deviceId) {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10600;display:flex;align-items:center;justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#0c0c0c;border:1px solid #0af;padding:20px;min-width:420px;max-width:560px;max-height:70vh;overflow-y:auto;font-family:'Consolas','Courier New',monospace;display:flex;flex-direction:column;gap:8px;";
+  box.innerHTML = `<div style="font-size:11px;color:#0af;letter-spacing:1px;border-bottom:1px solid #1a1a1a;padding-bottom:8px;">SERIAL NUMBER LOG — ${deviceId}</div><div id="_sh-body" style="font-size:10px;color:#888;">Loading...</div><div style="display:flex;justify-content:flex-end;margin-top:4px;"><button id="_sh-close" style="background:#0a0a0a;border:1px solid #333;color:#555;font-family:inherit;font-size:10px;padding:6px 14px;cursor:pointer;">CLOSE</button></div>`;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  document.getElementById("_sh-close").onclick = () => document.body.removeChild(overlay);
+
+  fetchDeviceSerials(deviceId).then(data => {
+    const rows = data.serials || [];
+    if (!rows.length) { document.getElementById("_sh-body").textContent = "No serial numbers recorded yet."; return; }
+    let html = '<table style="width:100%;border-collapse:collapse;">';
+    html += '<tr style="color:#555;font-size:9px;border-bottom:1px solid #222;"><th style="text-align:left;padding:3px 6px;">DATE</th><th style="text-align:left;padding:3px 6px;">SERIAL</th><th style="text-align:left;padding:3px 6px;">TECH</th><th style="text-align:left;padding:3px 6px;">NOTES</th></tr>';
+    rows.forEach((r, i) => {
+      const d = new Date(r.epoch * 1000);
+      const dateStr = d.toISOString().slice(0, 10);
+      const bg = i === 0 ? "#001a00" : "transparent";
+      const col = i === 0 ? "#0f0" : "#888";
+      html += `<tr style="background:${bg};border-bottom:1px solid #1a1a1a;">`;
+      html += `<td style="padding:4px 6px;color:${col};font-size:9px;">${dateStr}</td>`;
+      html += `<td style="padding:4px 6px;color:${col};font-size:10px;font-weight:bold;">${r.serial}</td>`;
+      html += `<td style="padding:4px 6px;color:#666;font-size:9px;">${r.technician || '—'}</td>`;
+      html += `<td style="padding:4px 6px;color:#555;font-size:9px;">${r.notes || '—'}</td>`;
+      html += '</tr>';
+    });
+    html += '</table>';
+    document.getElementById("_sh-body").innerHTML = html;
+  });
+}
+
+// ── Analog History Modal ──────────────────────────────────────────────────────
+
+/**
+ * Opens a modal letting the user pick an analog key and view all historical
+ * recorded values for that device (across all sessions).
+ */
+function showAnalogHistoryModal(deviceId, summaryKeys) {
+  // Filter to keys that are likely numeric measurements (skip HEADERs, status strings)
+  const node = currentData && currentData.nodes && currentData.nodes.find(n => n.id === deviceId);
+  const summary = (node && node.summary) || {};
+  const measKeys = summaryKeys.filter(k => typeof summary[k] === "number" && summary[k] !== "HEADER");
+
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10600;display:flex;align-items:center;justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#0c0c0c;border:1px solid #fa0;padding:20px;min-width:480px;max-width:620px;max-height:80vh;overflow-y:auto;font-family:'Consolas','Courier New',monospace;display:flex;flex-direction:column;gap:8px;";
+
+  const keyOpts = measKeys.map(k => `<option value="${k}">${k}</option>`).join("");
+  box.innerHTML = `
+    <div style="font-size:11px;color:#fa0;letter-spacing:1px;border-bottom:1px solid #1a1a1a;padding-bottom:8px;">ANALOG HISTORY — ${deviceId}</div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <select id="_ah-key" style="flex:1;background:#111;border:1px solid #333;color:#eee;padding:5px 8px;font-family:inherit;font-size:10px;">
+        ${keyOpts.length ? keyOpts : '<option value="">— no numeric keys —</option>'}
+      </select>
+      <button id="_ah-load" style="background:#001a00;border:1px solid #fa0;color:#fa0;font-family:inherit;font-size:10px;padding:5px 14px;cursor:pointer;">LOAD</button>
+    </div>
+    <div id="_ah-body" style="font-size:10px;color:#888;min-height:60px;">Select a measurement key above, then click LOAD.</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:4px;">
+      <button id="_ah-close" style="background:#0a0a0a;border:1px solid #333;color:#555;font-family:inherit;font-size:10px;padding:6px 14px;cursor:pointer;">CLOSE</button>
+    </div>`;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  document.getElementById("_ah-close").onclick = () => document.body.removeChild(overlay);
+
+  document.getElementById("_ah-load").onclick = () => {
+    const key = document.getElementById("_ah-key").value;
+    if (!key) return;
+    document.getElementById("_ah-body").textContent = "Loading...";
+    fetchAnalogHistory(deviceId, key).then(data => {
+      const rows = data.history || [];
+      if (!rows.length) { document.getElementById("_ah-body").textContent = "No recorded measurements for this key."; return; }
+      const unit = (typeof unitsMap !== "undefined" && unitsMap[key]) || "";
+      let html = `<div style="font-size:9px;color:#555;margin-bottom:4px;">${rows.length} reading(s) found — newest first</div>`;
+      html += '<table style="width:100%;border-collapse:collapse;">';
+      html += '<tr style="color:#555;font-size:9px;border-bottom:1px solid #222;"><th style="text-align:left;padding:3px 6px;">DATE / TIME</th><th style="text-align:right;padding:3px 6px;">VALUE</th><th style="text-align:left;padding:3px 6px;">SESSION</th><th style="text-align:left;padding:3px 6px;">INSTRUMENT</th></tr>';
+      rows.forEach(r => {
+        const d = new Date(r.epoch * 1000);
+        const dateStr = d.toLocaleString();
+        const valStr = (typeof formatSI !== "undefined") ? formatSI(r.value, unit) : r.value.toFixed(3) + " " + unit;
+        html += `<tr style="border-bottom:1px solid #1a1a1a;">`;
+        html += `<td style="padding:4px 6px;color:#aaa;font-size:9px;">${dateStr}</td>`;
+        html += `<td style="padding:4px 6px;color:#0f0;font-size:10px;font-weight:bold;text-align:right;">${valStr}</td>`;
+        html += `<td style="padding:4px 6px;color:#666;font-size:9px;">${r.label || '—'}</td>`;
+        html += `<td style="padding:4px 6px;color:#555;font-size:9px;">${r.instrument || '—'}</td>`;
+        html += '</tr>';
+      });
+      html += '</table>';
+      document.getElementById("_ah-body").innerHTML = html;
+    });
+  };
+  // Auto-load the first key if available
+  if (measKeys.length) document.getElementById("_ah-load").click();
 }
 
 function quickAddSensor(hostId, type, bushing) {
@@ -1105,7 +1295,7 @@ function _toggleAngleConv() {
     btn.style.borderColor = _use360Lag ? "#3af" : "#555";
   });
   Object.keys(openWindows).forEach(id => {
-    const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === id);
+    const node = (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === id);
     if (node) updateWindow(id, node);
   });
 }
@@ -1138,7 +1328,7 @@ let _activeTestId   = null;
 let _activeTestName = null;
 
 function showConfigModal(id) {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (!node) return;
   const fieldDefs = {
     VoltageSource: [
@@ -1325,8 +1515,11 @@ function showConfigModal(id) {
       { label: "Carrier Frequency (Hz)", key: "carrier_frequency_hz" },
     ],
   };
-  const fields = fieldDefs[node.type] || [],
-    params = {...(node.params || {})};
+  // Always append serial_number as a universal editable field
+  const typeFields = fieldDefs[node.type] || [];
+  const serialField = { label: "Serial Number", key: "serial_number", type: "text" };
+  const fields = [...typeFields, serialField];
+  const params = {...(node.params || {})};
   if (node.type === "CurrentTransformer" && params.phase_ratios) {
     params.ratio_a = params.phase_ratios.a;
     params.ratio_b = params.phase_ratios.b;
@@ -1645,7 +1838,7 @@ function _updateAutoShiftHint() {
 }
 
 function showLoadConfigModal(id) {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (!node) return;
   _resetConfigModalPos();
   d3.select("#config-modal").style("display", "flex");
@@ -3017,8 +3210,8 @@ function _bpRenderPMMStep5() {
   }
 
   const node =
-    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
-    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
+    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
+    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
   _bpTargetDeviceId = node.id;
   const isNeutralPhase = _bpTargetPhase === "N";
   const effectiveChan2 = isNeutralPhase
@@ -3457,10 +3650,10 @@ function _bpRenderStep5() {
   }
 
   const node =
-    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
-    (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
+    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
+    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
   _bpTargetDeviceId = node.id;
-  const refVT = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpRefVTId);
+  const refVT = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpRefVTId);
 
   const expectedType = _bpDeviceExpectedType(node.type);
 
@@ -3864,7 +4057,7 @@ function _bpRenderStep5() {
 }
 
 function _bpLogCurrentPoint() {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   if (!node) return;
   const expectedType = _bpDeviceExpectedType(node.type);
   const qty = expectedType === "current" ? "Current" : "Voltage";
@@ -3918,7 +4111,7 @@ function _bpMoveToNextPhase() {
 
   const phases = ["A", "B", "C"];
   const idx = phases.indexOf(_bpTargetPhase);
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   const showsI = node && _deviceShowsCurrent(node.type);
   const showsV = node && _deviceShowsVoltage(node.type);
   const isMultiAnalog = showsV && showsI;
@@ -4582,7 +4775,7 @@ function _bpSIModeStep2() {
 }
 
 function _bpSIModeStep3() {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   const hasVoltage = !["CurrentTransformer", "CTTB"].includes(node.type);
 
   const others = ["A", "B", "C"].filter((p) => p !== _bpSISelectedPhase);
@@ -4816,7 +5009,7 @@ function clearFindResults() {
 // ── Relay input polarity toggle ────────────────────────────────────────────
 
 function toggleInputPolarity(deviceId, inputId, currentPol) {
-  const dev = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === deviceId);
+  const dev = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === deviceId);
   if (!dev) return;
   const polarities = Object.assign({}, dev.params?.input_polarities || {});
   polarities[inputId] = currentPol === 1 ? -1 : 1;
@@ -4837,7 +5030,7 @@ function toggleRelayTarget(id, state) {
 }
 
 function showLogicDesigner(id) {
-  const node = (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === id);
+  const node = (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === id);
   if (!node) return;
   const params = node.params || {};
   const settings = params.settings || { "50P1P": 5.0, "59P1P": 120.0 };
@@ -4918,7 +5111,7 @@ function showTerminalPicker(title, options, callback) {
 }
 
 function toggleTerminalOverride(deviceId, terminal, state) {
-  const dev = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === deviceId) : null;
+  const dev = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === deviceId) : null;
   if (!dev) return;
   const params = dev.params || {};
   const overrides = Object.assign({}, params.output_manual_overrides || {});

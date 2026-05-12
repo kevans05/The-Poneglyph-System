@@ -1,3 +1,29 @@
+"""
+bus.py — Base electrical bus / node model.
+
+Bus is the foundation for every device that sits on the primary network
+(breakers, transformers, loads, etc.).  It propagates voltage downstream
+and aggregates current demand upstream via power conservation.
+
+Voltage propagation: upstream_device.downstream_voltage → this bus → downstream devices.
+Current calculation: crawl downstream to find all Loads and active faults, sum their
+complex power (P + jQ), then derive I = conj(S / V) at each phase.
+
+ELECTRICAL MATH NOTES
+---------------------
+• Current magnitude:  |I| = |S| / |V|   (from S = V × I*)
+• Fault power (3PH):  P_fault = |V|² / Z  per phase (treats Z as pure resistance)
+• Fault power (SLG):  P_fault = |V_phase|² / Z on the faulted phase only
+• Fault power (LLG):  same formula applied to each affected phase independently
+• Fault power (LL):   P_fault = |V_A - V_B|² / Z split equally between phases
+  → These are deliberate simplifications; the goal is credible predicted values
+    for comparison against measured relay inputs, not textbook Thévenin analysis.
+
+Cache: every property stores its result in self._cache so the recursive tree
+traversal only runs once per topology refresh.  Clear _cache to force recomputation
+(done automatically after fault injection or topology mutations).
+"""
+
 from ..current_phasor import CurrentPhasor
 import cmath
 import math

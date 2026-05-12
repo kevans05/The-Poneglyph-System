@@ -154,6 +154,9 @@ function applySelectionHighlight() {
 function onTopologyRefreshed() {
   if (_selPanelOpen) _renderPickList();
   applySelectionHighlight();
+  // Re-apply the protection view filter if it is active so hidden types stay
+  // hidden even after D3 re-renders all nodes from scratch.
+  if (typeof applyProtectionViewFilter === "function") applyProtectionViewFilter();
 }
 
 // ── Auto-Layout ──────────────────────────────────────────────────────────────

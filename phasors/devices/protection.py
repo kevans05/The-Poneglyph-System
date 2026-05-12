@@ -1,3 +1,30 @@
+"""
+protection.py — Protection device models.
+
+Hierarchy: ProtectionDevice → CTTB / FTBlock / IsoBlock / Relay / Meter / Indicator
+
+All protection devices share the same analog-signal aggregation logic:
+  • current  → vector sum of secondary_current from each analog input
+  • voltage  → vector average of secondary_voltage from each analog input
+  • input_polarities dict maps input device ID → +1 or -1 (sign applied before summing)
+
+CTTB (CT Terminal Block)
+  Sums or differentials N CT secondaries into a single current bus.
+  mode = "SUM" (default) or "DIFFERENTIAL".
+
+FTBlock / IsoBlock
+  Pass voltage signals through; used for isolation / filtering in the VT analog chain.
+
+Relay
+  Has logic bits (50P1, 59P1, digital inputs), evaluates equations defined in
+  self.logic dict, and drives digital output terminals.
+  Logic expressions are evaluated with a restricted eval() — only AND/OR/NOT and
+  the named bits are available (no builtins).
+
+DC chain: protection devices can receive DC input signals (trip coils, status
+contacts) via dc_input_conns and drive DC outputs via dc_output_conns.
+"""
+
 from .bus import Bus
 from ..wye_system import wye_currents, wye_voltages
 from ..current_phasor import CurrentPhasor

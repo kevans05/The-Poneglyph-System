@@ -1,3 +1,29 @@
+"""
+sim_engine.py — Real-time physics simulation engine.
+
+Runs in a dedicated background thread.  The main HTTP thread submits
+mutations via SimEngine.mutate() and scheduled events via schedule_event().
+The sim thread processes events and emits animation frames at ~100 ms
+intervals (configurable via heartbeat_interval_ms).
+
+Frame format
+------------
+Each frame is a dict: {id, sim_time_ms, nodes: [{id, summary, status}], events: [...]}
+  - nodes: subset of devices whose state changed since the last frame
+  - events: RELAY_PICKUP, RELAY_DROPOUT, FAULT, CLEAR_FAULT etc.
+
+Event queue
+-----------
+Events are (priority_time_ms, seq, event_type, data).  The seq counter
+breaks ties so that equal-time events are processed in submission order.
+Types: FAULT, CLEAR_FAULT, TRIP, CLOSE.
+
+Speed multiplier
+----------------
+Wall-clock time is scaled by speed_multiplier before advancing sim_time_ms.
+1.0 = real time, 0.1 = slow motion, 10.0 = fast-forward.
+"""
+
 import topology_utils
 import threading
 import time
