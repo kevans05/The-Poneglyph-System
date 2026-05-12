@@ -725,7 +725,9 @@ class SCADAServer(BaseHTTPRequestHandler):
                 return _json_response(self, {"ok": True, "info": info})
 
             # Record a serial number or swap for a device.
-            # Body: {device_id, serial, notes, technician}
+            # Body: {device_id, serial, notes, technician, manufacturer,
+            #        model_number, asset_tag, manufacture_date,
+            #        installation_date, in_service_date, firmware_version, status}
             if self.path == "/api/db/serials/record":
                 if not _require_site(self):
                     return
@@ -737,8 +739,16 @@ class SCADAServer(BaseHTTPRequestHandler):
                     _active_site,
                     device_id=device_id,
                     serial=serial,
-                    notes=req.get("notes", "").strip(),
-                    technician=req.get("technician", "").strip(),
+                    notes=req.get("notes", ""),
+                    technician=req.get("technician", ""),
+                    manufacturer=req.get("manufacturer", ""),
+                    model_number=req.get("model_number", ""),
+                    asset_tag=req.get("asset_tag", ""),
+                    manufacture_date=req.get("manufacture_date", ""),
+                    installation_date=req.get("installation_date", ""),
+                    in_service_date=req.get("in_service_date", ""),
+                    firmware_version=req.get("firmware_version", ""),
+                    status=req.get("status", "active"),
                 )
                 # Also store the serial_number on the in-memory topology device so
                 # it appears in the params panel and persists on the next snapshot.
@@ -749,6 +759,65 @@ class SCADAServer(BaseHTTPRequestHandler):
                             break
                     _autosave(_current_topology, label=f"serial:{device_id}")
                 return _json_response(self, {"ok": True, "id": row_id})
+
+            # Update inventory fields on an existing serial row (does not create a new row).
+            # Body: {id, ...fields}
+            if self.path == "/api/db/serials/update":
+                if not _require_site(self):
+                    return
+                row_id = req.get("id", "").strip()
+                if not row_id:
+                    return _json_response(self, {"error": "id required"}, 400)
+                updated = _sdb.update_device_serial(_active_site, row_id, req)
+                return _json_response(self, {"ok": updated})
+
+            # Append a maintenance log entry for a device.
+            # Body: {device_id, work_performed, serial, technician, notes}
+            if self.path == "/api/db/maintenance/record":
+                if not _require_site(self):
+                    return
+                device_id      = req.get("device_id", "").strip()
+                work_performed = req.get("work_performed", "").strip()
+                if not device_id or not work_performed:
+                    return _json_response(
+                        self, {"error": "device_id and work_performed required"}, 400
+                    )
+                row_id = _sdb.add_maintenance_log(
+                    _active_site,
+                    device_id=device_id,
+                    work_performed=work_performed,
+                    serial=req.get("serial", ""),
+                    technician=req.get("technician", ""),
+                    notes=req.get("notes", ""),
+                )
+                return _json_response(self, {"ok": True, "id": row_id})
+
+            # Attach a drawing reference to a device.
+            # Body: {device_id, title, url, revision, notes}
+            if self.path == "/api/db/device-drawings/add":
+                if not _require_site(self):
+                    return
+                device_id = req.get("device_id", "").strip()
+                title     = req.get("title", "").strip()
+                if not device_id or not title:
+                    return _json_response(self, {"error": "device_id and title required"}, 400)
+                row_id = _sdb.add_device_drawing(
+                    _active_site,
+                    device_id=device_id,
+                    title=title,
+                    url=req.get("url", ""),
+                    revision=req.get("revision", ""),
+                    notes=req.get("notes", ""),
+                )
+                return _json_response(self, {"ok": True, "id": row_id})
+
+            # Remove a device drawing.
+            # Body: {id}
+            if self.path == "/api/db/device-drawings/delete":
+                if not _require_site(self):
+                    return
+                _sdb.delete_device_drawing(_active_site, req.get("id", ""))
+                return _json_response(self, {"ok": True})
 
             else:
                 self.send_response(404)
@@ -944,7 +1013,8 @@ class SCADAServer(BaseHTTPRequestHandler):
                             pass
                 return _json_response(self, {"history": rows})
 
-            # Serial number history for a device
+            # Serial number + inventory history for a device
+            # GET /api/db/serials/<device_id>
             if self.path.startswith("/api/db/serials/"):
                 if not _require_site(self):
                     return
@@ -952,6 +1022,24 @@ class SCADAServer(BaseHTTPRequestHandler):
                 rows = _sdb.get_device_serials(_active_site, device_id)
                 latest = _sdb.get_latest_serial(_active_site, device_id)
                 return _json_response(self, {"serials": rows, "current": latest})
+
+            # Maintenance log for a device
+            # GET /api/db/maintenance/<device_id>
+            if self.path.startswith("/api/db/maintenance/"):
+                if not _require_site(self):
+                    return
+                device_id = self.path.split("/", 4)[-1]
+                rows = _sdb.get_maintenance_log(_active_site, device_id)
+                return _json_response(self, {"maintenance": rows})
+
+            # Drawings attached to a device
+            # GET /api/db/device-drawings/<device_id>
+            if self.path.startswith("/api/db/device-drawings/"):
+                if not _require_site(self):
+                    return
+                device_id = self.path.split("/", 4)[-1]
+                rows = _sdb.list_device_drawings(_active_site, device_id)
+                return _json_response(self, {"drawings": rows})
 
             if self.path == "/api/topology":
                 sources, devices, raw_devices, reference, project_info = (

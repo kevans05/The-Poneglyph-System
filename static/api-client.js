@@ -228,17 +228,79 @@ function fetchDeviceConfigHistory(deviceId) {
 }
 
 /**
- * Serial Number Tracking API
+ * Serial Number / Inventory Tracking API
  */
 function fetchDeviceSerials(deviceId) {
     return fetch("/api/db/serials/" + encodeURIComponent(deviceId)).then(r => r.json());
 }
 
-function recordDeviceSerial(deviceId, serial, notes, technician) {
+function recordDeviceSerial(deviceId, serial, notes, technician, inventoryFields) {
     return fetch("/api/db/serials/record", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device_id: deviceId, serial, notes: notes || "", technician: technician || "" }),
+        body: JSON.stringify({
+            device_id: deviceId, serial,
+            notes: notes || "", technician: technician || "",
+            ...(inventoryFields || {}),
+        }),
+    }).then(r => r.json());
+}
+
+function updateDeviceSerial(rowId, fields) {
+    return fetch("/api/db/serials/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: rowId, ...fields }),
+    }).then(r => r.json());
+}
+
+/**
+ * Maintenance Log API
+ */
+function recordMaintenanceLog(deviceId, workPerformed, serial, technician, notes) {
+    return fetch("/api/db/maintenance/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            device_id: deviceId,
+            work_performed: workPerformed,
+            serial: serial || "",
+            technician: technician || "",
+            notes: notes || "",
+        }),
+    }).then(r => r.json());
+}
+
+function fetchMaintenanceLog(deviceId) {
+    return fetch("/api/db/maintenance/" + encodeURIComponent(deviceId)).then(r => r.json());
+}
+
+/**
+ * Device Drawings API
+ */
+function fetchDeviceDrawings(deviceId) {
+    return fetch("/api/db/device-drawings/" + encodeURIComponent(deviceId)).then(r => r.json());
+}
+
+function addDeviceDrawing(deviceId, title, url, revision, notes) {
+    return fetch("/api/db/device-drawings/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            device_id: deviceId,
+            title: title || "",
+            url: url || "",
+            revision: revision || "",
+            notes: notes || "",
+        }),
+    }).then(r => r.json());
+}
+
+function deleteDeviceDrawing(id) {
+    return fetch("/api/db/device-drawings/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
     }).then(r => r.json());
 }
 
