@@ -284,10 +284,12 @@ class SimEngine:
                         new_dev._sim_pickup_timers = copy.deepcopy(old_dev._sim_pickup_timers)
                     if hasattr(old_dev, "_sim_dropout_timers") and hasattr(new_dev, "_sim_dropout_timers"):
                         new_dev._sim_dropout_timers = copy.deepcopy(old_dev._sim_dropout_timers)
-                    if hasattr(old_dev, "_51_accumulators") and hasattr(new_dev, "_51_accumulators"):
-                        new_dev._51_accumulators = copy.deepcopy(old_dev._51_accumulators)
-                        new_dev._51_operated = copy.deepcopy(old_dev._51_operated)
-                        new_dev._51_prev_time = old_dev._51_prev_time
+                    if hasattr(old_dev, "elements") and hasattr(new_dev, "elements"):
+                        for bit_name, old_elem in old_dev.elements.items():
+                            if bit_name in new_dev.elements:
+                                new_dev.elements[bit_name].copy_state_from(old_elem)
+                        if hasattr(old_dev, "_elem_prev_time"):
+                            new_dev._elem_prev_time = old_dev._elem_prev_time
             
             self.sources = new_sources
             self.devices = new_devices
