@@ -475,6 +475,10 @@ class AuxiliaryTransformer(ProtectionDevice):
     def current(self): return self._apply(super().current)
     @property
     def voltage(self): return self._apply(super().voltage)
+    @property
+    def secondary_current(self): return self.current
+    @property
+    def secondary_voltage(self): return self.voltage
 
 class Meter(ProtectionDevice):
     def get_summary_dict(self):
