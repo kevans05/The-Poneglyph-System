@@ -115,16 +115,38 @@ CREATE INDEX IF NOT EXISTS idx_dev_hist_epoch ON device_history(epoch DESC);
 -- Device serial number changelog.
 -- Each row records a serial number assignment or change for a physical device.
 -- This lets you track relay swaps, CT replacements, etc. over time.
+-- Inventory fields (manufacturer, model_number, etc.) describe the physical unit
+-- assigned at that point in time.
 CREATE TABLE IF NOT EXISTS device_serials (
-    id          TEXT    PRIMARY KEY,   -- UUID
-    device_id   TEXT    NOT NULL,      -- logical device ID in the topology
-    epoch       INTEGER NOT NULL,      -- when the serial was recorded
-    serial      TEXT    NOT NULL,      -- serial number string (free-form)
-    notes       TEXT    DEFAULT '',    -- reason for change (e.g. "replaced after failure")
-    technician  TEXT    DEFAULT ''     -- who made the change
+    id                TEXT    PRIMARY KEY,   -- UUID
+    device_id         TEXT    NOT NULL,      -- logical device ID in the topology
+    epoch             INTEGER NOT NULL,      -- when the serial was recorded
+    serial            TEXT    NOT NULL,      -- serial number string (free-form)
+    notes             TEXT    DEFAULT '',    -- reason for change (e.g. "replaced after failure")
+    technician        TEXT    DEFAULT '',    -- who made the change
+    manufacturer      TEXT    DEFAULT '',
+    model_number      TEXT    DEFAULT '',
+    asset_tag         TEXT    DEFAULT '',
+    manufacture_date  TEXT    DEFAULT '',    -- ISO date string (YYYY-MM-DD)
+    installation_date TEXT    DEFAULT '',
+    in_service_date   TEXT    DEFAULT '',
+    firmware_version  TEXT    DEFAULT '',
+    status            TEXT    DEFAULT 'active'  -- active | spare | out_of_service | retired
 );
 CREATE INDEX IF NOT EXISTS idx_serials_device ON device_serials(device_id);
 CREATE INDEX IF NOT EXISTS idx_serials_epoch  ON device_serials(epoch DESC);
+
+CREATE TABLE IF NOT EXISTS maintenance_log (
+    id             TEXT    PRIMARY KEY,   -- UUID
+    device_id      TEXT    NOT NULL,      -- logical device ID in the topology
+    serial         TEXT    DEFAULT '',    -- which physical unit (links to device_serials.serial)
+    epoch          INTEGER NOT NULL,
+    technician     TEXT    DEFAULT '',
+    work_performed TEXT    DEFAULT '',
+    notes          TEXT    DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_maint_device ON maintenance_log(device_id);
+CREATE INDEX IF NOT EXISTS idx_maint_epoch  ON maintenance_log(epoch DESC);
 """
 
 # Columns added after initial release — applied to existing DBs on open.
@@ -137,9 +159,17 @@ _MIGRATIONS = [
     ("site_info",  "gps_lon",     "REAL"),
     ("sessions",   "technician",  "TEXT    DEFAULT ''"),
     ("sessions",   "test_id",     "TEXT"),
-    ("tests",      "vref_label",     "TEXT    DEFAULT ''"),
-    ("tests",      "vref_magnitude", "REAL"),
-    ("tests",      "capture_points", "TEXT    DEFAULT \"[]\""),
+    ("tests",          "vref_label",        "TEXT    DEFAULT ''"),
+    ("tests",          "vref_magnitude",    "REAL"),
+    ("tests",          "capture_points",    "TEXT    DEFAULT \"[]\""),
+    ("device_serials", "manufacturer",      "TEXT    DEFAULT ''"),
+    ("device_serials", "model_number",      "TEXT    DEFAULT ''"),
+    ("device_serials", "asset_tag",         "TEXT    DEFAULT ''"),
+    ("device_serials", "manufacture_date",  "TEXT    DEFAULT ''"),
+    ("device_serials", "installation_date", "TEXT    DEFAULT ''"),
+    ("device_serials", "in_service_date",   "TEXT    DEFAULT ''"),
+    ("device_serials", "firmware_version",  "TEXT    DEFAULT ''"),
+    ("device_serials", "status",            "TEXT    DEFAULT 'active'"),
 ]
 
 
@@ -555,6 +585,14 @@ def record_device_serial(
     serial: str,
     notes: str = "",
     technician: str = "",
+    manufacturer: str = "",
+    model_number: str = "",
+    asset_tag: str = "",
+    manufacture_date: str = "",
+    installation_date: str = "",
+    in_service_date: str = "",
+    firmware_version: str = "",
+    status: str = "active",
 ) -> str:
     """Record a serial number assignment or swap for a device.
 
@@ -565,19 +603,57 @@ def record_device_serial(
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
-            """INSERT INTO device_serials (id, device_id, epoch, serial, notes, technician)
-               VALUES (?,?,?,?,?,?)""",
-            (row_id, device_id, int(time.time()), serial.strip(), notes.strip(), technician.strip()),
+            """INSERT INTO device_serials
+               (id, device_id, epoch, serial, notes, technician,
+                manufacturer, model_number, asset_tag,
+                manufacture_date, installation_date, in_service_date,
+                firmware_version, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row_id, device_id, int(time.time()), serial.strip(),
+                notes.strip(), technician.strip(),
+                manufacturer.strip(), model_number.strip(), asset_tag.strip(),
+                manufacture_date.strip(), installation_date.strip(),
+                in_service_date.strip(), firmware_version.strip(),
+                status.strip() or "active",
+            ),
         )
     _touch(db_path)
     return row_id
+
+
+def update_device_serial(db_path: str, row_id: str, fields: dict) -> bool:
+    """Update inventory fields on an existing device_serials row.
+
+    Only the fields present in `fields` are updated.  Returns True if a row
+    was matched.
+    """
+    allowed = {
+        "manufacturer", "model_number", "asset_tag",
+        "manufacture_date", "installation_date", "in_service_date",
+        "firmware_version", "status", "notes", "technician",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    with _conn(db_path) as c:
+        cur = c.execute(
+            f"UPDATE device_serials SET {set_clause} WHERE id = ?",
+            (*updates.values(), row_id),
+        )
+    _touch(db_path)
+    return cur.rowcount > 0
 
 
 def get_device_serials(db_path: str, device_id: str, limit: int = 50) -> list[dict]:
     """Return serial number history for a device, newest first."""
     with _conn(db_path) as c:
         rows = c.execute(
-            """SELECT id, epoch, serial, notes, technician
+            """SELECT id, epoch, serial, notes, technician,
+                      manufacturer, model_number, asset_tag,
+                      manufacture_date, installation_date, in_service_date,
+                      firmware_version, status
                FROM device_serials
                WHERE device_id = ?
                ORDER BY epoch DESC LIMIT ?""",
@@ -594,3 +670,43 @@ def get_latest_serial(db_path: str, device_id: str) -> str | None:
             (device_id,),
         ).fetchone()
     return row["serial"] if row else None
+
+
+# ── Maintenance log ───────────────────────────────────────────────────────────
+
+def add_maintenance_log(
+    db_path: str,
+    device_id: str,
+    work_performed: str,
+    serial: str = "",
+    technician: str = "",
+    notes: str = "",
+) -> str:
+    """Append a maintenance entry for a device. Returns the UUID of the new row."""
+    row_id = str(uuid.uuid4())
+    with _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO maintenance_log
+               (id, device_id, serial, epoch, technician, work_performed, notes)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                row_id, device_id, serial.strip(),
+                int(time.time()), technician.strip(),
+                work_performed.strip(), notes.strip(),
+            ),
+        )
+    _touch(db_path)
+    return row_id
+
+
+def get_maintenance_log(db_path: str, device_id: str, limit: int = 100) -> list[dict]:
+    """Return maintenance history for a device, newest first."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            """SELECT id, epoch, serial, technician, work_performed, notes
+               FROM maintenance_log
+               WHERE device_id = ?
+               ORDER BY epoch DESC LIMIT ?""",
+            (device_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
