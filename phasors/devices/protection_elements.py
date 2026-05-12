@@ -40,6 +40,7 @@ dict that contains a key matching ^21[A-Z]?\\d+P$ (e.g. '21P1P').
 
 import re
 import math
+import cmath
 
 # ---------------------------------------------------------------------------
 # Base class
@@ -205,6 +206,84 @@ class IDMT51Element(ProtectionElement):
         self.accumulator = 0.0
 
 
+class DIR67Element(ProtectionElement):
+    """Directional overcurrent supervisor (67-series).
+
+    Asserts when measured current ≥ pickup AND the current phasor is in the
+    forward direction relative to the polarizing voltage.  Designed to
+    supervise 50/51 elements in relay logic equations, e.g.:
+
+        "TRIP": "67P1 AND 51P1"   ← directional IDMT
+        "TRIP": "67P1 AND 50P1"   ← directional instantaneous
+
+    Directional criterion
+    ---------------------
+    For each phase the operating torque is:
+
+        T = Re( I_ph × (V_ph · e^(jMTA))* )
+
+    where MTA (Maximum Torque Angle) is the angle by which V is rotated
+    to align it with the expected fault current direction.  The element
+    asserts when T > 0 for any phase carrying current ≥ pickup.
+
+    MTA convention (IEC 60255-181)
+    --------------------------------
+    V_pol = V · e^(−j·MTA).  Maximum torque when I lags V by MTA degrees.
+    Forward zone: I angle within ±90° of (angle(V) − MTA).
+
+    Typical MTA values
+    ------------------
+    30–45°  transmission line (high X/R) forward-looking
+    45–60°  distribution feeder / general OC
+    0°      resistive fault / bus zone supervision
+
+    Settings
+    --------
+    {bit_name}P      : float — minimum current pickup (A, default 0.5)
+    {bit_name}MTA    : float — maximum torque angle (°, default 60)
+    {bit_name}VT_MIN : float — minimum polarizing voltage; below this the
+                               element blocks (V, default 5)
+    """
+
+    def step(self, i_sys, v_sys, dt_ms: float) -> list:
+        pickup  = float(self.settings.get(f"{self.bit_name}P",      0.5))
+        mta_deg = float(self.settings.get(f"{self.bit_name}MTA",    60.0))
+        vt_min  = float(self.settings.get(f"{self.bit_name}VT_MIN", 5.0))
+
+        if not (i_sys and i_sys.is_energized()) or not (v_sys and v_sys.is_energized()):
+            self.operated = False
+            return []
+
+        mta_phasor = cmath.exp(-1j * math.radians(mta_deg))
+        forward = False
+
+        for ph in ("a", "b", "c"):
+            i_ph = getattr(i_sys, ph).to_complex()
+            v_ph = getattr(v_sys, ph).to_complex()
+
+            if abs(i_ph) < pickup:
+                continue
+            if abs(v_ph) < vt_min:      # no polarizing voltage — block
+                continue
+
+            # T = Re( I × (V · e^(jMTA))* )
+            # Small tolerance guards against floating-point artefacts at the
+            # exact ±90° boundary (T should be 0 there, not ±epsilon).
+            torque = (i_ph * (v_ph * mta_phasor).conjugate()).real
+            if torque > 1e-9 * abs(i_ph) * abs(v_ph):
+                forward = True
+                break
+
+        self.operated = forward
+        return []
+
+    def get_state(self) -> dict:
+        pickup = self.settings.get(f"{self.bit_name}P",   "?")
+        mta    = self.settings.get(f"{self.bit_name}MTA", 60)
+        status = "FORWARD" if self.operated else "REVERSE/BLOCKED"
+        return {self.bit_name: f"{status} (P={pickup}A MTA={mta}°)"}
+
+
 # ---------------------------------------------------------------------------
 # Registry and factory
 # ---------------------------------------------------------------------------
@@ -249,3 +328,4 @@ def build_elements_from_settings(settings: dict) -> list:
 register_element("50", OC50Element)
 register_element("51", IDMT51Element)
 register_element("59", OV59Element)
+register_element("67", DIR67Element)
