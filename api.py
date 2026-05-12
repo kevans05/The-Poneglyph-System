@@ -789,6 +789,33 @@ class SCADAServer(BaseHTTPRequestHandler):
                 )
                 return _json_response(self, {"ok": True, "id": row_id})
 
+            # Attach a drawing reference to a device.
+            # Body: {device_id, title, url, revision, notes}
+            if self.path == "/api/db/device-drawings/add":
+                if not _require_site(self):
+                    return
+                device_id = req.get("device_id", "").strip()
+                title     = req.get("title", "").strip()
+                if not device_id or not title:
+                    return _json_response(self, {"error": "device_id and title required"}, 400)
+                row_id = _sdb.add_device_drawing(
+                    _active_site,
+                    device_id=device_id,
+                    title=title,
+                    url=req.get("url", ""),
+                    revision=req.get("revision", ""),
+                    notes=req.get("notes", ""),
+                )
+                return _json_response(self, {"ok": True, "id": row_id})
+
+            # Remove a device drawing.
+            # Body: {id}
+            if self.path == "/api/db/device-drawings/delete":
+                if not _require_site(self):
+                    return
+                _sdb.delete_device_drawing(_active_site, req.get("id", ""))
+                return _json_response(self, {"ok": True})
+
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1001,6 +1028,15 @@ class SCADAServer(BaseHTTPRequestHandler):
                 device_id = self.path.split("/", 4)[-1]
                 rows = _sdb.get_maintenance_log(_active_site, device_id)
                 return _json_response(self, {"maintenance": rows})
+
+            # Drawings attached to a device
+            # GET /api/db/device-drawings/<device_id>
+            if self.path.startswith("/api/db/device-drawings/"):
+                if not _require_site(self):
+                    return
+                device_id = self.path.split("/", 4)[-1]
+                rows = _sdb.list_device_drawings(_active_site, device_id)
+                return _json_response(self, {"drawings": rows})
 
             if self.path == "/api/topology":
                 sources, devices, raw_devices, reference, project_info = (

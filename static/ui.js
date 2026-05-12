@@ -3064,6 +3064,136 @@ function _bpCaptureVRef(chan1Val, refVTId, isMeter, onDone) {
     });
 }
 
+// Render a compact drawings reference strip into `parentSel` for the given device.
+// Appends a hidden div that fills in async; stays hidden if the device has no drawings.
+function _bpRenderDrawingsStrip(parentSel, deviceId) {
+  const strip = parentSel.append("div")
+    .style("display", "none")
+    .style("margin-bottom", "8px")
+    .style("background", "#0a0a14")
+    .style("border", "1px solid #1a1a2a")
+    .style("padding", "5px 10px")
+    .style("border-radius", "4px")
+    .style("align-items", "center")
+    .style("gap", "8px")
+    .style("flex-wrap", "wrap");
+
+  fetchDeviceDrawings(deviceId).then(resp => {
+    const drawings = resp.drawings || [];
+    if (drawings.length === 0) return;
+    strip.style("display", "flex");
+    strip.append("span").text("DRAWINGS:")
+      .style("font-size", "9px").style("color", "#555").style("letter-spacing", "1px");
+    drawings.forEach(d => {
+      const chip = strip.append("span")
+        .style("font-size", "9px").style("border", "1px solid #1a1a3a")
+        .style("padding", "2px 8px").style("border-radius", "3px");
+      const label = d.title + (d.revision ? ` (${d.revision})` : "");
+      if (d.url) {
+        chip.style("color", "#3af").style("cursor", "pointer")
+          .text(label).on("click", () => window.open(d.url, "_blank"));
+      } else {
+        chip.style("color", "#556").text(label);
+      }
+    });
+  }).catch(() => {});
+}
+
+// Device drawings manager — shown inline inside the brain-point panel.
+// onBack: function to call when the user returns (typically _bpRenderStep4).
+function _bpShowDeviceDrawings(deviceId, onBack) {
+  d3.select("#brain-point-module").style("width", "700px").style("height", "auto");
+  const body = d3.select("#brain-point-body").html("").style("padding", "16px").style("height", "auto");
+
+  body.append("div")
+    .text(`DRAWINGS — ${deviceId}`)
+    .style("font-size", "10px").style("color", "#3af").style("letter-spacing", "1px")
+    .style("border-bottom", "1px solid #1a1a2a").style("padding-bottom", "8px")
+    .style("margin-bottom", "12px");
+
+  const listDiv = body.append("div").attr("id", "ddraw-list");
+
+  const addFormDiv = body.append("div")
+    .style("margin-top", "14px").style("border-top", "1px solid #1a1a1a").style("padding-top", "12px");
+  addFormDiv.append("div").text("ADD DRAWING")
+    .style("font-size", "9px").style("color", "#888").style("letter-spacing", "1px").style("margin-bottom", "8px");
+
+  const fieldStyle = "background:#111; border:1px solid #333; color:#eee; padding:6px 8px; font-family:inherit; font-size:11px; width:100%; box-sizing:border-box;";
+  addFormDiv.append("input").attr("id", "ddraw-title").attr("type", "text")
+    .attr("placeholder", "Drawing title *")
+    .attr("style", fieldStyle + "margin-bottom:6px;");
+  const row2 = addFormDiv.append("div").style("display", "flex").style("gap", "6px").style("margin-bottom", "6px");
+  row2.append("input").attr("id", "ddraw-rev").attr("type", "text")
+    .attr("placeholder", "Revision").attr("style", "background:#111;border:1px solid #333;color:#eee;padding:6px 8px;font-family:inherit;font-size:11px;width:80px;box-sizing:border-box;");
+  row2.append("input").attr("id", "ddraw-url").attr("type", "text")
+    .attr("placeholder", "URL / reference").attr("style", "background:#111;border:1px solid #333;color:#eee;padding:6px 8px;font-family:inherit;font-size:11px;flex:1;box-sizing:border-box;");
+  addFormDiv.append("input").attr("id", "ddraw-notes").attr("type", "text")
+    .attr("placeholder", "Notes (sheet numbers, etc.)")
+    .attr("style", fieldStyle + "margin-bottom:8px;");
+
+  const addBtn = addFormDiv.append("button")
+    .text("+ ADD")
+    .style("background", "#001a00").style("border", "1px solid #0f0").style("color", "#0f0")
+    .style("font-family", "inherit").style("font-size", "10px").style("padding", "6px 16px")
+    .style("cursor", "pointer").style("letter-spacing", "1px");
+
+  const renderList = () => {
+    fetchDeviceDrawings(deviceId).then(resp => {
+      const drawings = resp.drawings || [];
+      const list = d3.select("#ddraw-list").html("");
+      if (drawings.length === 0) {
+        list.append("div").text("No drawings attached yet.")
+          .style("font-size", "9px").style("color", "#333").style("padding", "4px 0");
+        return;
+      }
+      drawings.forEach(d => {
+        const item = list.append("div")
+          .style("display", "flex").style("align-items", "center").style("gap", "8px")
+          .style("padding", "5px 0").style("border-bottom", "1px solid #111");
+        const label = item.append("div").style("flex", "1").style("font-size", "10px");
+        if (d.url) {
+          label.append("a").attr("href", d.url).attr("target", "_blank")
+            .text(d.title).style("color", "#3af").style("text-decoration", "none");
+        } else {
+          label.append("span").text(d.title).style("color", "#ccc");
+        }
+        if (d.revision) label.append("span").text(` (${d.revision})`).style("color", "#555").style("font-size", "9px");
+        if (d.notes) label.append("div").text(d.notes).style("color", "#444").style("font-size", "9px");
+        item.append("button").text("×")
+          .style("background", "none").style("border", "none").style("color", "#555")
+          .style("cursor", "pointer").style("font-size", "14px").style("padding", "0 4px")
+          .on("click", () => deleteDeviceDrawing(d.id).then(renderList).catch(() => {}));
+      });
+    }).catch(() => {});
+  };
+
+  renderList();
+
+  addBtn.on("click", () => {
+    const title = (document.getElementById("ddraw-title").value || "").trim();
+    if (!title) { document.getElementById("ddraw-title").style.borderColor = "#f00"; return; }
+    document.getElementById("ddraw-title").style.borderColor = "#333";
+    addBtn.text("SAVING...").property("disabled", true);
+    addDeviceDrawing(
+      deviceId, title,
+      (document.getElementById("ddraw-url").value || "").trim(),
+      (document.getElementById("ddraw-rev").value || "").trim(),
+      (document.getElementById("ddraw-notes").value || "").trim(),
+    ).then(() => {
+      document.getElementById("ddraw-title").value = "";
+      document.getElementById("ddraw-url").value = "";
+      document.getElementById("ddraw-rev").value = "";
+      document.getElementById("ddraw-notes").value = "";
+      addBtn.text("+ ADD").property("disabled", false);
+      renderList();
+    }).catch(() => { addBtn.text("+ ADD").property("disabled", false); });
+  });
+
+  const footer = d3.select("#brain-point-footer").html("");
+  footer.append("button").attr("class", "wiz-secondary").text("← BACK TO CAPTURE POINTS")
+    .on("click", onBack);
+}
+
 function _bpRenderStep4() {
   d3.select("#brain-point-module")
     .style("width", "900px")
@@ -3129,6 +3259,16 @@ function _bpRenderStep4() {
       row.append("td").text(id);
       row.append("td").text(node.type).style("color", "#555").style("font-size", "10px");
 
+      const drawTd = row.append("td").style("width", "70px");
+      drawTd.append("button")
+        .attr("id", "draw-badge-" + id.replace(/[^\w]/g, "_"))
+        .text("DRAW")
+        .style("font-size", "8px").style("padding", "1px 5px")
+        .style("background", "#111").style("color", "#444")
+        .style("border", "1px solid #222").style("cursor", "pointer")
+        .style("letter-spacing", "1px").style("font-family", "inherit")
+        .on("click", () => _bpShowDeviceDrawings(id, _bpRenderStep4));
+
       const ctrlTd = row
         .append("td")
         .style("text-align", "right")
@@ -3192,6 +3332,20 @@ function _bpRenderStep4() {
     ["RELAY — Protection Devices",                   relayNodes, () => _bpRelayDevices, arr => { _bpRelayDevices = arr; }],
     ["MULTI-ANALOG — Primary Equipment",             multiNodes, () => _bpMultiDevices, arr => { _bpMultiDevices = arr; }],
   ].forEach(([label, nodes, get, set]) => renderGroup(label, nodes, get, set));
+
+  // Async: update drawing badges with counts after table renders
+  allNodes.forEach(({ id }) => {
+    fetchDeviceDrawings(id).then(resp => {
+      const count = (resp.drawings || []).length;
+      const el = document.getElementById("draw-badge-" + id.replace(/[^\w]/g, "_"));
+      if (!el) return;
+      if (count > 0) {
+        el.textContent = `DRAW (${count})`;
+        el.style.color = "#3af";
+        el.style.borderColor = "#3af";
+      }
+    }).catch(() => {});
+  });
 
   const footer = d3.select("#brain-point-footer").html("");
   footer
@@ -3336,6 +3490,9 @@ function _bpRenderPMMStep5() {
         _bpRenderPMMStep5();
       });
   });
+
+  // Device drawings reference strip (populated async)
+  _bpRenderDrawingsStrip(body, _bpTargetDeviceId);
 
   // ── Main panel ────────────────────────────────────────────────────────────
   const main = body
@@ -3780,6 +3937,9 @@ function _bpRenderStep5() {
         _bpRenderStep5();
       });
   });
+
+  // Device drawings reference strip (populated async)
+  _bpRenderDrawingsStrip(body, _bpTargetDeviceId);
 
   const main = body
     .append("div")

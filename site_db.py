@@ -136,6 +136,16 @@ CREATE TABLE IF NOT EXISTS device_serials (
 CREATE INDEX IF NOT EXISTS idx_serials_device ON device_serials(device_id);
 CREATE INDEX IF NOT EXISTS idx_serials_epoch  ON device_serials(epoch DESC);
 
+CREATE TABLE IF NOT EXISTS device_drawings (
+    id        TEXT PRIMARY KEY,   -- UUID
+    device_id TEXT NOT NULL,      -- logical device ID in the topology
+    title     TEXT NOT NULL,
+    url       TEXT DEFAULT '',
+    revision  TEXT DEFAULT '',
+    notes     TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_dev_draw_device ON device_drawings(device_id);
+
 CREATE TABLE IF NOT EXISTS maintenance_log (
     id             TEXT    PRIMARY KEY,   -- UUID
     device_id      TEXT    NOT NULL,      -- logical device ID in the topology
@@ -710,3 +720,41 @@ def get_maintenance_log(db_path: str, device_id: str, limit: int = 100) -> list[
             (device_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Device Drawings ───────────────────────────────────────────────────────────
+
+def add_device_drawing(
+    db_path: str,
+    device_id: str,
+    title: str,
+    url: str = "",
+    revision: str = "",
+    notes: str = "",
+) -> str:
+    """Attach a drawing reference to a topology device. Returns the UUID."""
+    row_id = str(uuid.uuid4())
+    with _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO device_drawings (id, device_id, title, url, revision, notes)
+               VALUES (?,?,?,?,?,?)""",
+            (row_id, device_id, title.strip(), url.strip(), revision.strip(), notes.strip()),
+        )
+    _touch(db_path)
+    return row_id
+
+
+def list_device_drawings(db_path: str, device_id: str) -> list[dict]:
+    """Return all drawings attached to a device, in insertion order."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT id, title, url, revision, notes FROM device_drawings WHERE device_id = ? ORDER BY rowid ASC",
+            (device_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_device_drawing(db_path: str, drawing_id: str):
+    with _conn(db_path) as c:
+        c.execute("DELETE FROM device_drawings WHERE id = ?", (drawing_id,))
+    _touch(db_path)
