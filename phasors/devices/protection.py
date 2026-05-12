@@ -32,6 +32,7 @@ from ..voltage_phasor import VoltagePhasor
 from ..utilities.power_utilities import append_3phase_details
 import cmath
 import math
+import re
 
 class ProtectionDevice(Bus):
     def __init__(self, name: str):
@@ -184,7 +185,8 @@ class Relay(ProtectionDevice):
         self.settings = settings or {"50P1P": 5.0, "59P1P": 120.0}
         self.logic = logic or {"TRIP": "50P1 OR IN101", "CLOSE": "0", "OUT101": "50P1"}
         self.output_manual_overrides = {}
-        self._sim_pickup_timers = {}
+        self._sim_pickup_timers = {}   # label → sim_time_ms when pickup condition first asserted
+        self._sim_dropout_timers = {}  # label → sim_time_ms when pickup condition first cleared
 
     def get_logic_bits(self):
         if "logic_bits" in self._cache: return self._cache["logic_bits"]
@@ -220,18 +222,48 @@ class Relay(ProtectionDevice):
         events, logic_bits = fault_events, self.get_logic_bits()
         for label, eq in self.logic.items():
             raw_state = self._evaluate_equation(eq, logic_bits)
-            delay = float(self.settings.get(f"{label}_DELAY", 0.0))
-            if delay <= 0: self._sim_active_outputs[label] = raw_state; continue
+            pickup_delay = float(self.settings.get(f"{label}_DELAY", 0.0))
+            reset_delay  = float(self.settings.get(f"{label}_RESET_DELAY", 0.0))
+
+            if pickup_delay <= 0 and reset_delay <= 0:
+                # No timing on either edge — instant in both directions (no event needed)
+                self._sim_active_outputs[label] = raw_state
+                continue
+
             if raw_state:
-                if label not in self._sim_pickup_timers: self._sim_pickup_timers[label] = sim_time_ms
-                if sim_time_ms - self._sim_pickup_timers[label] >= delay and not self._sim_active_outputs.get(label):
+                # Condition asserting: cancel any pending dropout
+                if label in self._sim_dropout_timers:
+                    del self._sim_dropout_timers[label]
+
+                if pickup_delay > 0:
+                    if label not in self._sim_pickup_timers:
+                        self._sim_pickup_timers[label] = sim_time_ms
+                    if sim_time_ms - self._sim_pickup_timers[label] >= pickup_delay and not self._sim_active_outputs.get(label):
+                        self._sim_active_outputs[label] = True
+                        events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
+                elif not self._sim_active_outputs.get(label):
+                    # Has reset delay but no pickup delay — assert immediately
                     self._sim_active_outputs[label] = True
                     events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
             else:
-                if label in self._sim_pickup_timers: del self._sim_pickup_timers[label]
+                # Condition cleared: cancel any pending pickup
+                if label in self._sim_pickup_timers:
+                    del self._sim_pickup_timers[label]
+
                 if self._sim_active_outputs.get(label):
-                    self._sim_active_outputs[label] = False
-                    events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
+                    if reset_delay > 0:
+                        # Start dropout timer if not already running
+                        if label not in self._sim_dropout_timers:
+                            self._sim_dropout_timers[label] = sim_time_ms
+                        if sim_time_ms - self._sim_dropout_timers[label] >= reset_delay:
+                            del self._sim_dropout_timers[label]
+                            self._sim_active_outputs[label] = False
+                            events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
+                        # else: output stays asserted while reset delay runs
+                    else:
+                        # No reset delay — instant dropout
+                        self._sim_active_outputs[label] = False
+                        events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
         return events
 
     @property
@@ -244,8 +276,23 @@ class Relay(ProtectionDevice):
         if eq == "0": return False
         if eq == "1": return True
         try:
-            safe_eq = eq.replace("OR", " or ").replace("AND", " and ").replace("NOT", " not ")
-            return eval(safe_eq, {"__builtins__": None}, bits)
+            # Standard relay function names (50P1, 59P1, etc.) start with a digit and
+            # are not valid Python identifiers — eval raises SyntaxError on them.
+            # Mangle any digit-leading names by prefixing "_b_" in both the equation
+            # string and the namespace dict. Sort longest-first to avoid partial matches
+            # (e.g. 50P1G must be replaced before 50P1).
+            mangled_bits = {}
+            mangled_eq = eq
+            for key in sorted(bits, key=len, reverse=True):
+                if key and key[0].isdigit():
+                    mkey = f"_b_{key}"
+                    mangled_bits[mkey] = bits[key]
+                    # \b word-boundary ensures 50P1 inside _b_50P1G is not re-matched
+                    mangled_eq = re.sub(r'\b' + re.escape(key) + r'\b', mkey, mangled_eq)
+                else:
+                    mangled_bits[key] = bits[key]
+            safe_eq = mangled_eq.replace("OR", " or ").replace("AND", " and ").replace("NOT", " not ")
+            return bool(eval(safe_eq, {"__builtins__": None}, mangled_bits))
         except: return False
 
     def get_summary_dict(self):

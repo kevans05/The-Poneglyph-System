@@ -280,6 +280,10 @@ class SimEngine:
                         new_dev.fault_state = old_dev.fault_state
                     if hasattr(old_dev, "_sim_active_outputs") and hasattr(new_dev, "_sim_active_outputs"):
                         new_dev._sim_active_outputs = copy.deepcopy(old_dev._sim_active_outputs)
+                    if hasattr(old_dev, "_sim_pickup_timers") and hasattr(new_dev, "_sim_pickup_timers"):
+                        new_dev._sim_pickup_timers = copy.deepcopy(old_dev._sim_pickup_timers)
+                    if hasattr(old_dev, "_sim_dropout_timers") and hasattr(new_dev, "_sim_dropout_timers"):
+                        new_dev._sim_dropout_timers = copy.deepcopy(old_dev._sim_dropout_timers)
             
             self.sources = new_sources
             self.devices = new_devices
