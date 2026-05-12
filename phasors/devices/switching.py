@@ -242,6 +242,27 @@ class Switch(Bus):
         finally:
             self._evaluating_dc = False
 
+    def _ensure_sim_state(self):
+        if not hasattr(self, "_sim_pending_ops"):
+            self._sim_pending_ops = {}
+            self.operating_time_ms = 50.0 if self.__class__.__name__ == "CircuitBreaker" else 1000.0
+
+    def handle_trip_signal(self, phase="abc", sim_time_ms=0):
+        self._ensure_sim_state()
+        phases = list("abc") if phase == "abc" else [phase.lower()]
+        for ph in phases:
+            if self._manual_closed.get(ph, True):
+                if self._sim_pending_ops.get(ph, {}).get("target") != False:
+                    self._sim_pending_ops[ph] = {"target": False, "time": sim_time_ms + self.operating_time_ms}
+
+    def handle_close_signal(self, phase="abc", sim_time_ms=0):
+        self._ensure_sim_state()
+        phases = list("abc") if phase == "abc" else [phase.lower()]
+        for ph in phases:
+            if not self._manual_closed.get(ph, True):
+                if self._sim_pending_ops.get(ph, {}).get("target") != True:
+                    self._sim_pending_ops[ph] = {"target": True, "time": sim_time_ms + self.operating_time_ms}
+
     def add_dc_input_conn(self, source_device, from_label=None, to_label=None):
         conn = {"device": source_device, "from": from_label, "to": to_label}
         if conn not in self.dc_input_conns: self.dc_input_conns.append(conn)

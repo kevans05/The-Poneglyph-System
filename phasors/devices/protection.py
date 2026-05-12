@@ -273,7 +273,85 @@ class Relay(ProtectionDevice):
                     else:
                         self._sim_active_outputs[label] = False
                         events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
+
+        self._process_ar(sim_time_ms, events)
         return events
+
+    def _process_ar(self, sim_time_ms: float, events: list):
+        """Auto-reclose state machine.
+
+        Settings
+        --------
+        AR_SHOTS      : int   — number of reclose attempts (0 = disabled, default 0)
+        AR_DELAY1_MS  : float — delay before shot 1 (ms, default 500)
+        AR_DELAY2_MS  : float — delay before shot 2 (ms, default 5000)
+        AR_DELAY{N}_MS: float — delay before shot N
+        AR_HOLD_MS    : float — hold time to confirm successful reclose (ms, default 3000)
+
+        States: IDLE → ARMED → RECLOSING → HOLDING → (IDLE | ARMED | LOCKOUT)
+        """
+        ar_shots = int(float(self.settings.get("AR_SHOTS", 0)))
+        if ar_shots <= 0:
+            return
+
+        if not hasattr(self, "_ar_state"):
+            self._ar_state     = "IDLE"
+            self._ar_shot_count = 0
+            self._ar_timer     = None
+            self._ar_locked_out = False
+
+        if self._ar_locked_out:
+            return
+
+        trip_active = self._sim_active_outputs.get("TRIP", False)
+
+        if self._ar_state == "IDLE":
+            if trip_active:
+                self._ar_state = "ARMED"
+
+        elif self._ar_state == "ARMED":
+            if not trip_active:
+                # TRIP dropped — CB has opened and fault current collapsed
+                delay_key = f"AR_DELAY{self._ar_shot_count + 1}_MS"
+                delay_ms  = float(self.settings.get(delay_key, self.settings.get("AR_DELAY1_MS", 500.0)))
+                self._ar_timer = sim_time_ms + delay_ms
+                self._ar_state = "RECLOSING"
+
+        elif self._ar_state == "RECLOSING":
+            if sim_time_ms >= self._ar_timer:
+                self._ar_shot_count += 1
+                hold_ms = float(self.settings.get("AR_HOLD_MS", 3000.0))
+                self._ar_timer = sim_time_ms + hold_ms
+                self._ar_state = "HOLDING"
+                # Send CLOSE command to all connected switches / CBs
+                for conn in self.dc_output_conns:
+                    dev = conn["device"]
+                    if hasattr(dev, "handle_close_signal"):
+                        events.append({"type": "CLOSE", "delay": 0, "data": {"device_id": dev.name, "phase": "abc"}})
+                events.append({"type": "AR_RECLOSE", "delay": 0, "data": {
+                    "device_id": self.name,
+                    "shot": self._ar_shot_count,
+                    "of":   ar_shots,
+                }})
+
+        elif self._ar_state == "HOLDING":
+            if trip_active:
+                # Reclose failed — fault is persistent
+                if self._ar_shot_count >= ar_shots:
+                    self._ar_locked_out = True
+                    self._ar_state = "LOCKOUT"
+                    events.append({"type": "AR_LOCKOUT", "delay": 0, "data": {"device_id": self.name}})
+                else:
+                    # More shots available — wait for TRIP to drop again
+                    self._ar_state = "ARMED"
+            elif sim_time_ms >= self._ar_timer:
+                # CB stayed closed through the hold window — successful reclose
+                self._ar_state      = "IDLE"
+                self._ar_shot_count = 0
+                self._ar_timer      = None
+
+        elif self._ar_state == "LOCKOUT":
+            self._ar_locked_out = True
 
     @property
     def dc_output_state(self) -> bool: return self.get_terminal_state("TRIP")

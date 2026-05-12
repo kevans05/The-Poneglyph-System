@@ -405,6 +405,8 @@ const SIM_LOG_EVENT_STYLES = {
     RELAY_PICKUP:    { color: "#ffff44", label: "PICKUP" },
     RELAY_DROPOUT:   { color: "#777777", label: "DROPOUT" },
     SETTINGS_CHANGE: { color: "#88aaff", label: "SETTINGS" },
+    AR_RECLOSE:      { color: "#44ff88", label: "RECLOSE" },
+    AR_LOCKOUT:      { color: "#ff6600", label: "AR LOCKOUT" },
     SWITCH_OP:       null, // handled inline based on state
 };
 
@@ -445,6 +447,14 @@ function addSimLogEntry(sim_time_ms, type, data) {
         label = style.label;
         detail = "topology snapshot";
     } else if (type === "SETTINGS_CHANGE") {
+        color = style.color;
+        label = style.label;
+        detail = data.device_id || "";
+    } else if (type === "AR_RECLOSE") {
+        color = style.color;
+        label = style.label;
+        detail = `${data.device_id} shot ${data.shot}/${data.of}`;
+    } else if (type === "AR_LOCKOUT") {
         color = style.color;
         label = style.label;
         detail = data.device_id || "";
