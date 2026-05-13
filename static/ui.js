@@ -656,7 +656,6 @@ function _splitSummaryAt(entries, markerSubstr) {
 
 function updateWindow(id, node) {
   if (!node) return;
-  if (!node) return;
   const safeId = id.replace(/\s+/g, "-");
   const content = document.getElementById("win-" + safeId);
   if (!content) return;
@@ -665,6 +664,11 @@ function updateWindow(id, node) {
   if (compareData) compNode = compareData.nodes.find((n) => n.id === node.id);
 
   let html = "";
+
+  // DRAWINGS — always at the top so it's immediately visible
+  html += '<div class="section-title">DRAWINGS</div>';
+  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
+  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id.replace(/'/g, "\\'")}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
 
   // 1. PHASOR DIAGRAMS + TELEMETRY — per-winding layout for multi-winding devices
   if (node.type === "DualWindingVT") {
@@ -961,11 +965,6 @@ function updateWindow(id, node) {
     });
     html += "</div>";
   }
-
-  // 4.5 DRAWINGS — async-populated strip + manage button
-  html += '<div class="section-title">DRAWINGS</div>';
-  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
-  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
 
   // 5. DEVICE MANAGEMENT
   html += '<div class="section-title">DEVICE CONFIGURATION</div>';
