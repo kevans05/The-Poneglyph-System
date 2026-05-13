@@ -784,13 +784,15 @@ function renderPhasorBox(div, summary, mode, deviceId) {
   _phasorRenderCtx[scaleKey] = { div, summary, mode, deviceId };
 
   const w = 376,
-    h = 260,
-    r = 90,
+    h = 210,
+    r = 92,
     center = { x: w / 2, y: h / 2 };
   const g = div
     .append("svg")
-    .attr("width", w)
+    .attr("viewBox", `0 0 ${w} ${h}`)
+    .attr("width", "100%")
     .attr("height", h)
+    .style("display", "block")
     .append("g")
     .attr("transform", "translate(" + center.x + "," + center.y + ")");
   g.append("circle").attr("r", r).attr("fill", "none").attr("stroke", "#222");
