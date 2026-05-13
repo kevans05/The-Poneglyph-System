@@ -300,6 +300,52 @@ svg {
 .psc-auto-active { color: #3af !important; border-color: #1a3a5a !important; }
 .psc-sep { width: 10px; }
 
+/* ── Device drawings strip (inside device info windows) ─────────────────────── */
+.device-drawing-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 5px 0;
+    min-height: 22px;
+    align-items: center;
+}
+
+.drawing-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px 3px 7px;
+    background: #0a0a18;
+    border: 1px solid #1a1a3a;
+    border-radius: 3px;
+    font-size: 9px;
+    color: #88a;
+    transition: background 0.12s, border-color 0.12s;
+    max-width: 200px;
+    overflow: hidden;
+}
+.drawing-chip:hover {
+    background: #10102a;
+    border-color: #3a3a6a;
+    color: #aaf;
+}
+.drawing-chip-icon { font-size: 10px; flex-shrink: 0; }
+.drawing-chip-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.drawing-chip-rev {
+    flex-shrink: 0;
+    color: #446;
+    font-size: 8px;
+    background: #0d0d20;
+    border: 1px solid #1a1a2a;
+    padding: 0 4px;
+    border-radius: 2px;
+}
+
 /*
    Context Menu (Right-click menu)
    Hidden by default (display: none)

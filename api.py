@@ -1139,12 +1139,15 @@ class SCADAServer(BaseHTTPRequestHandler):
                 if os.path.exists(local_path) and os.path.isfile(local_path):
                     content_type, _ = mimetypes.guess_type(local_path)
                     with open(local_path, "rb") as f:
+                        data = f.read()
                         self.send_response(200)
-                        self.send_header(
-                            "Content-type", content_type or "application/octet-stream"
-                        )
+                        self.send_header("Content-type", content_type or "application/octet-stream")
+                        # Never let JS/CSS sit in the browser cache — always serve fresh
+                        if local_path.endswith((".js", ".css")):
+                            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                            self.send_header("Pragma", "no-cache")
                         self.end_headers()
-                        self.wfile.write(f.read())
+                        self.wfile.write(data)
                 else:
                     self.send_response(404)
                     self.end_headers()

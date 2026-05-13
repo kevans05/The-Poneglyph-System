@@ -656,7 +656,6 @@ function _splitSummaryAt(entries, markerSubstr) {
 
 function updateWindow(id, node) {
   if (!node) return;
-  if (!node) return;
   const safeId = id.replace(/\s+/g, "-");
   const content = document.getElementById("win-" + safeId);
   if (!content) return;
@@ -665,6 +664,11 @@ function updateWindow(id, node) {
   if (compareData) compNode = compareData.nodes.find((n) => n.id === node.id);
 
   let html = "";
+
+  // DRAWINGS — always at the top so it's immediately visible
+  html += '<div class="section-title">DRAWINGS</div>';
+  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
+  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id.replace(/'/g, "\\'")}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
 
   // 1. PHASOR DIAGRAMS + TELEMETRY — per-winding layout for multi-winding devices
   if (node.type === "DualWindingVT") {
@@ -1005,6 +1009,40 @@ function updateWindow(id, node) {
 
   content.innerHTML = html;
   drawPhasors(id, node.summary, node.type);
+  _renderWindowDrawingStrip(safeId, node.id);
+}
+
+function _renderWindowDrawingStrip(safeId, deviceId) {
+  fetchDeviceDrawings(deviceId).then(resp => {
+    const el = document.getElementById("dstrip-" + safeId);
+    if (!el) return;
+    const drawings = resp.drawings || [];
+    if (drawings.length === 0) {
+      el.innerHTML = '<span style="color:#2a2a2a;font-size:9px;">No drawings attached.</span>';
+      return;
+    }
+    el.innerHTML = "";
+    drawings.forEach(d => {
+      const chip = document.createElement("div");
+      chip.className = "drawing-chip";
+      const hasUrl = !!d.url;
+      chip.innerHTML =
+        `<span class="drawing-chip-icon">${hasUrl ? "📄" : "📋"}</span>` +
+        `<span class="drawing-chip-title">${d.title}</span>` +
+        (d.revision ? `<span class="drawing-chip-rev">${d.revision}</span>` : "");
+      if (hasUrl) {
+        chip.title = "Open drawing";
+        chip.style.cursor = "pointer";
+        chip.addEventListener("click", () => window.open(d.url, "_blank"));
+      } else {
+        chip.title = d.notes || d.title;
+      }
+      el.appendChild(chip);
+    });
+  }).catch(() => {
+    const el = document.getElementById("dstrip-" + safeId);
+    if (el) el.innerHTML = '<span style="color:#333;font-size:9px;">—</span>';
+  });
 }
 
 // ── Serial Number Dialog ──────────────────────────────────────────────────────
@@ -3393,6 +3431,363 @@ function _bpShowDeviceDrawings(deviceId, onBack) {
     .on("click", onBack);
 }
 
+// ── Standalone Device Drawings Manager ───────────────────────────────────────
+// A full-screen overlay modal for viewing and managing drawings attached to a
+// device.  Called from device info windows and drawing chips.
+
+function _openDrawingsManager(deviceId) {
+  const existing = document.getElementById("_ddm-overlay");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "_ddm-overlay";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:11000;" +
+    "display:flex;align-items:center;justify-content:center;";
+
+  const box = document.createElement("div");
+  box.style.cssText =
+    "background:#0c0c0c;border:1px solid #2a2a4a;min-width:560px;max-width:780px;" +
+    "width:90vw;max-height:85vh;display:flex;flex-direction:column;" +
+    "font-family:'Consolas','Courier New',monospace;box-shadow:0 20px 60px rgba(0,0,0,0.95);";
+
+  // Header
+  const hdr = document.createElement("div");
+  hdr.style.cssText =
+    "display:flex;justify-content:space-between;align-items:center;" +
+    "padding:12px 16px;background:#111;border-bottom:1px solid #1e1e3a;flex-shrink:0;";
+  hdr.innerHTML =
+    `<span style="color:#aaf;font-size:11px;letter-spacing:1px;">📎 DRAWINGS — <span style="color:#fff;">${deviceId}</span></span>` +
+    `<span id="_ddm-close" style="cursor:pointer;color:#555;font-size:16px;padding:0 4px;" title="Close">✕</span>`;
+
+  // Scrollable list area
+  const listWrap = document.createElement("div");
+  listWrap.style.cssText = "flex:1;overflow-y:auto;padding:12px 16px;";
+  listWrap.id = "_ddm-list";
+
+  // Add form section
+  const addSec = document.createElement("div");
+  addSec.style.cssText =
+    "flex-shrink:0;padding:12px 16px;border-top:1px solid #1a1a2a;background:#080810;";
+  addSec.innerHTML = `
+    <div style="font-size:9px;color:#666;letter-spacing:1px;margin-bottom:8px;">ADD / ATTACH A DRAWING</div>
+    <input id="_ddm-title" type="text" placeholder="Drawing title *"
+      style="width:100%;box-sizing:border-box;background:#111;border:1px solid #333;color:#eee;
+             padding:6px 8px;font-family:inherit;font-size:11px;margin-bottom:6px;" />
+    <div style="display:flex;gap:6px;margin-bottom:6px;">
+      <input id="_ddm-rev" type="text" placeholder="Revision (e.g. R3)"
+        style="width:90px;background:#111;border:1px solid #333;color:#eee;
+               padding:6px 8px;font-family:inherit;font-size:11px;box-sizing:border-box;" />
+      <input id="_ddm-url" type="text" placeholder="URL or document reference (optional)"
+        style="flex:1;background:#111;border:1px solid #333;color:#eee;
+               padding:6px 8px;font-family:inherit;font-size:11px;box-sizing:border-box;" />
+    </div>
+    <input id="_ddm-notes" type="text" placeholder="Notes — sheet numbers, scope, etc."
+      style="width:100%;box-sizing:border-box;background:#111;border:1px solid #333;color:#888;
+             padding:6px 8px;font-family:inherit;font-size:10px;margin-bottom:8px;" />
+    <button id="_ddm-add-btn"
+      style="background:#001a20;border:1px solid #aaf;color:#aaf;font-family:inherit;
+             font-size:10px;padding:6px 20px;cursor:pointer;letter-spacing:1px;">
+      + ATTACH DRAWING
+    </button>`;
+
+  box.appendChild(hdr);
+  box.appendChild(listWrap);
+  box.appendChild(addSec);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  // Close handlers
+  document.getElementById("_ddm-close").onclick = () => overlay.remove();
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+
+  const renderList = () => {
+    const listEl = document.getElementById("_ddm-list");
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="font-size:9px;color:#333;padding:4px 0;">Loading…</div>';
+    fetchDeviceDrawings(deviceId).then(resp => {
+      const drawings = resp.drawings || [];
+      if (drawings.length === 0) {
+        listEl.innerHTML = '<div style="font-size:10px;color:#333;padding:8px 0;">No drawings attached to this device yet.</div>';
+        return;
+      }
+      listEl.innerHTML = "";
+      drawings.forEach(d => {
+        const row = document.createElement("div");
+        row.style.cssText = "border-bottom:1px solid #111;padding:8px 0;";
+
+        // Main info row
+        const main = document.createElement("div");
+        main.style.cssText = "display:flex;align-items:center;gap:10px;";
+
+        // Title + revision + notes
+        const info = document.createElement("div");
+        info.style.cssText = "flex:1;min-width:0;";
+        if (d.url) {
+          info.innerHTML = `<a href="${d.url}" target="_blank"
+            style="color:#aaf;text-decoration:none;font-size:11px;font-weight:bold;">${d.title}</a>`;
+        } else {
+          info.innerHTML = `<span style="color:#ccc;font-size:11px;font-weight:bold;">${d.title}</span>`;
+        }
+        if (d.revision) {
+          info.innerHTML += ` <span style="color:#556;font-size:9px;background:#0a0a14;
+            border:1px solid #1a1a2a;padding:1px 6px;border-radius:3px;">${d.revision}</span>`;
+        }
+        if (d.url) {
+          info.innerHTML += ` <button onclick="window.open('${d.url.replace(/'/g,"\\'")}','_blank')"
+            style="background:#0a0a1a;border:1px solid #2a2a4a;color:#88a;font-size:9px;
+                   padding:1px 7px;cursor:pointer;font-family:inherit;margin-left:4px;">
+            OPEN ↗</button>`;
+        }
+        if (d.notes) {
+          info.innerHTML += `<div style="color:#444;font-size:9px;margin-top:2px;">${d.notes}</div>`;
+        }
+
+        // Action buttons
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;gap:4px;flex-shrink:0;";
+        const btnCss = "background:none;border:1px solid #222;color:#555;cursor:pointer;" +
+                       "font-size:9px;padding:2px 7px;font-family:inherit;letter-spacing:1px;";
+
+        const updBtn = document.createElement("button");
+        updBtn.style.cssText = btnCss;
+        updBtn.textContent = "UPDATE REV";
+        const histBtn = document.createElement("button");
+        histBtn.style.cssText = btnCss;
+        histBtn.textContent = "HISTORY";
+        const delBtn = document.createElement("button");
+        delBtn.style.cssText = btnCss + "color:#622;border-color:#2a1010;";
+        delBtn.textContent = "✕";
+        delBtn.title = "Remove drawing";
+        delBtn.onclick = () => {
+          if (!confirm(`Remove "${d.title}" from ${deviceId}?`)) return;
+          deleteDeviceDrawing(d.id).then(renderList);
+        };
+
+        actions.appendChild(updBtn);
+        actions.appendChild(histBtn);
+        actions.appendChild(delBtn);
+        main.appendChild(info);
+        main.appendChild(actions);
+        row.appendChild(main);
+
+        // Inline UPDATE REV form (hidden)
+        const updForm = document.createElement("div");
+        updForm.style.cssText =
+          "display:none;margin-top:8px;padding:10px;background:#0a0a14;" +
+          "border:1px solid #1a1a2a;border-radius:3px;";
+        updForm.innerHTML = `
+          <div style="font-size:9px;color:#555;letter-spacing:1px;margin-bottom:6px;">NEW REVISION</div>
+          <div style="display:flex;gap:6px;margin-bottom:6px;">
+            <input class="_upd-rev" type="text" placeholder="e.g. R4"
+              style="width:80px;background:#111;border:1px solid #333;color:#eee;
+                     padding:5px 8px;font-family:inherit;font-size:11px;box-sizing:border-box;" />
+            <input class="_upd-url" type="text" placeholder="New URL (blank = keep current)"
+              style="flex:1;background:#111;border:1px solid #333;color:#eee;
+                     padding:5px 8px;font-family:inherit;font-size:11px;box-sizing:border-box;" />
+            <input class="_upd-by" type="text" placeholder="Updated by"
+              style="width:110px;background:#111;border:1px solid #333;color:#eee;
+                     padding:5px 8px;font-family:inherit;font-size:11px;box-sizing:border-box;" />
+          </div>
+          <button class="_upd-save" style="background:#001a1a;border:1px solid #3af;color:#3af;
+            font-family:inherit;font-size:9px;padding:4px 14px;cursor:pointer;letter-spacing:1px;">
+            SAVE REVISION</button>`;
+        const revInp = updForm.querySelector("._upd-rev");
+        const urlInp = updForm.querySelector("._upd-url");
+        const byInp  = updForm.querySelector("._upd-by");
+        const saveBtn = updForm.querySelector("._upd-save");
+        saveBtn.onclick = () => {
+          const rev = revInp.value.trim();
+          if (!rev) { revInp.style.borderColor = "#f00"; return; }
+          revInp.style.borderColor = "#333";
+          saveBtn.textContent = "SAVING…"; saveBtn.disabled = true;
+          updateDeviceDrawing(d.id, rev, urlInp.value.trim() || null, byInp.value.trim(), "")
+            .then(renderList);
+        };
+        updBtn.onclick = () => {
+          const showing = updForm.style.display !== "none";
+          updForm.style.display = showing ? "none" : "block";
+          histArea.style.display = "none";
+        };
+
+        // Revision history area (hidden)
+        const histArea = document.createElement("div");
+        histArea.style.display = "none";
+        histArea.style.marginTop = "8px";
+        histBtn.onclick = () => {
+          if (histArea.style.display !== "none") { histArea.style.display = "none"; return; }
+          updForm.style.display = "none";
+          histArea.style.display = "block";
+          histArea.innerHTML = "<div style='font-size:9px;color:#333;padding:4px 0;'>Loading…</div>";
+          fetchDrawingHistory(d.id).then(hresp => {
+            const entries = hresp.history || [];
+            if (!entries.length) {
+              histArea.innerHTML = "<div style='font-size:9px;color:#333;padding:4px 0;'>No revision history yet.</div>";
+              return;
+            }
+            histArea.innerHTML = entries.map(h =>
+              `<div style="font-size:9px;padding:3px 0 3px 8px;border-left:2px solid #1a1a2a;
+                           margin-bottom:3px;display:flex;gap:10px;">
+                <span style="color:#444;min-width:70px;">${new Date(h.epoch*1000).toLocaleDateString()}</span>
+                <span style="color:#3af;">${h.old_revision || "—"} → ${h.new_revision}</span>
+                ${h.updated_by ? `<span style="color:#556;">${h.updated_by}</span>` : ""}
+               </div>`
+            ).join("");
+          });
+        };
+
+        row.appendChild(updForm);
+        row.appendChild(histArea);
+        listEl.appendChild(row);
+      });
+    }).catch(() => {
+      const listEl = document.getElementById("_ddm-list");
+      if (listEl) listEl.innerHTML = '<div style="color:#555;font-size:9px;">Error loading drawings.</div>';
+    });
+  };
+
+  renderList();
+
+  document.getElementById("_ddm-add-btn").onclick = () => {
+    const title = (document.getElementById("_ddm-title").value || "").trim();
+    if (!title) { document.getElementById("_ddm-title").style.borderColor = "#f00"; return; }
+    document.getElementById("_ddm-title").style.borderColor = "#333";
+    const btn = document.getElementById("_ddm-add-btn");
+    btn.textContent = "ATTACHING…"; btn.disabled = true;
+    addDeviceDrawing(
+      deviceId, title,
+      (document.getElementById("_ddm-url").value || "").trim(),
+      (document.getElementById("_ddm-rev").value || "").trim(),
+      (document.getElementById("_ddm-notes").value || "").trim()
+    ).then(() => {
+      ["_ddm-title","_ddm-rev","_ddm-url","_ddm-notes"].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = "";
+      });
+      btn.textContent = "+ ATTACH DRAWING"; btn.disabled = false;
+      renderList();
+      // Refresh drawing strip in any open device window
+      const node = currentData && currentData.nodes && currentData.nodes.find(n => n.id === deviceId);
+      if (node) {
+        const safeId = deviceId.replace(/\s+/g, "-");
+        _renderWindowDrawingStrip(safeId, deviceId);
+      }
+    }).catch(() => { btn.textContent = "+ ATTACH DRAWING"; btn.disabled = false; });
+  };
+}
+
+// ── Load Test Drawing Suggestion ──────────────────────────────────────────────
+// After devices are selected for a test, check if any have drawings not yet
+// in the test and offer to add them.
+
+function _suggestTestDrawings(testId, deviceIds, onDone) {
+  // Fetch all device drawings and existing test drawings in parallel
+  Promise.all([
+    fetchTestDetail(testId).catch(() => ({ drawings: [] })),
+    ...deviceIds.map(id => fetchDeviceDrawings(id).then(r => ({ id, drawings: r.drawings || [] })).catch(() => ({ id, drawings: [] }))),
+  ]).then(([testDetail, ...deviceResults]) => {
+    const testDrawingTitles = new Set(
+      (testDetail.drawings || []).map(d => d.title.toLowerCase().trim())
+    );
+
+    // Collect unique drawings not already in the test
+    const suggestions = [];
+    const seen = new Set();
+    deviceResults.forEach(({ id: devId, drawings }) => {
+      drawings.forEach(d => {
+        const key = d.title.toLowerCase().trim();
+        if (!testDrawingTitles.has(key) && !seen.has(key)) {
+          seen.add(key);
+          suggestions.push({ ...d, sourceDevice: devId });
+        }
+      });
+    });
+
+    if (suggestions.length === 0) { onDone(); return; }
+
+    // Show suggestion modal
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:12000;" +
+      "display:flex;align-items:center;justify-content:center;";
+
+    const box = document.createElement("div");
+    box.style.cssText =
+      "background:#0c0c0c;border:1px solid #2a4a2a;min-width:480px;max-width:680px;" +
+      "width:88vw;font-family:'Consolas','Courier New',monospace;box-shadow:0 20px 60px rgba(0,0,0,0.95);";
+
+    const checkedIds = new Set(suggestions.map((_, i) => i));
+
+    const render = () => {
+      box.innerHTML = `
+        <div style="padding:12px 16px;background:#0d160d;border-bottom:1px solid #1a2a1a;
+                    display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:#8f8;font-size:11px;letter-spacing:1px;">
+            📋 ADD DEVICE DRAWINGS TO TEST?
+          </span>
+          <span style="color:#555;font-size:9px;">${suggestions.length} drawing${suggestions.length !== 1 ? "s" : ""} found on selected devices</span>
+        </div>
+        <div style="padding:12px 16px;max-height:360px;overflow-y:auto;">
+          ${suggestions.map((d, i) => `
+            <label style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;
+                          border-bottom:1px solid #111;cursor:pointer;">
+              <input type="checkbox" data-idx="${i}" ${checkedIds.has(i) ? "checked" : ""}
+                style="margin-top:2px;flex-shrink:0;accent-color:#8f8;" />
+              <div>
+                <div style="font-size:11px;color:${d.url ? "#aaf" : "#ccc"};">
+                  ${d.url ? `<a href="${d.url}" target="_blank"
+                    style="color:#aaf;text-decoration:none;">${d.title}</a>` : d.title}
+                  ${d.revision ? `<span style="color:#556;font-size:9px;background:#0a0a14;
+                    border:1px solid #1a1a2a;padding:1px 5px;border-radius:3px;margin-left:5px;">${d.revision}</span>` : ""}
+                </div>
+                <div style="font-size:9px;color:#444;margin-top:2px;">
+                  from device: <span style="color:#556;">${d.sourceDevice}</span>
+                  ${d.notes ? ` · ${d.notes}` : ""}
+                </div>
+              </div>
+            </label>`).join("")}
+        </div>
+        <div style="padding:10px 16px;display:flex;gap:8px;justify-content:flex-end;
+                    border-top:1px solid #111;background:#080808;">
+          <button id="_sug-skip"
+            style="background:none;border:1px solid #333;color:#555;font-family:inherit;
+                   font-size:10px;padding:6px 16px;cursor:pointer;letter-spacing:1px;">
+            SKIP</button>
+          <button id="_sug-add"
+            style="background:#001a00;border:1px solid #8f8;color:#8f8;font-family:inherit;
+                   font-size:10px;padding:6px 20px;cursor:pointer;letter-spacing:1px;">
+            ADD SELECTED TO TEST</button>
+        </div>`;
+
+      // Wire checkboxes
+      box.querySelectorAll("input[type=checkbox]").forEach(cb => {
+        cb.onchange = () => {
+          const idx = parseInt(cb.dataset.idx);
+          if (cb.checked) checkedIds.add(idx); else checkedIds.delete(idx);
+          box.querySelector("#_sug-add").textContent =
+            `ADD ${checkedIds.size} TO TEST`;
+        };
+      });
+      box.querySelector("#_sug-add").textContent =
+        `ADD ${checkedIds.size} TO TEST`;
+
+      box.querySelector("#_sug-skip").onclick = () => { overlay.remove(); onDone(); };
+      box.querySelector("#_sug-add").onclick = () => {
+        const toAdd = suggestions.filter((_, i) => checkedIds.has(i));
+        if (!toAdd.length) { overlay.remove(); onDone(); return; }
+        box.querySelector("#_sug-add").textContent = "ADDING…";
+        box.querySelector("#_sug-add").disabled = true;
+        Promise.all(toAdd.map(d =>
+          addDrawing(testId, d.title, d.url || "", d.revision || "", d.notes || "")
+        )).then(() => { overlay.remove(); onDone(); });
+      };
+    };
+
+    render();
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
+}
+
 function _bpRenderStep4() {
   d3.select("#brain-point-module")
     .style("width", "900px")
@@ -3568,9 +3963,12 @@ function _bpRenderStep4() {
       if (_bpSelectedDevices.length === 0) return;
 
       if (_activeTestId) {
-          updateTestCapturePoints(_activeTestId, _bpSelectedDevices);
+        updateTestCapturePoints(_activeTestId, _bpSelectedDevices);
+        // Offer to add device drawings to the test before proceeding
+        _suggestTestDrawings(_activeTestId, _bpSelectedDevices, _bpRenderStep0);
+      } else {
+        _bpRenderStep0();
       }
-      _bpRenderStep0();
     });
 }
 
