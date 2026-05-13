@@ -131,34 +131,53 @@ svg {
 */
 .window {
     position: absolute;
-    width: 400px;
-    min-width: 260px;
-    max-width: min(580px, 94vw);
-    background-color: #111;
-    border: 1px solid #444;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.9);
+    width: 430px;
+    min-width: 280px;
+    max-width: min(600px, 96vw);
+    background-color: #0e0e0e;
+    border: 1px solid #3a3a3a;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.95);
     z-index: 5000;
     display: flex;
     flex-direction: column;
-    border-radius: 4px;
+    border-radius: 5px;
     overflow: hidden;
     resize: both;
 }
 
 /* The drag bar at the top of windows */
 .window-header {
-    background-color: #222;
-    padding: 6px 12px;
-    cursor: move; /* Indicates the window can be dragged */
+    background: linear-gradient(180deg, #2a2a2a 0%, #1e1e1e 100%);
+    padding: 7px 10px 7px 14px;
+    cursor: move;
     display: flex;
     justify-content: space-between;
+    align-items: center;
     font-size: 11px;
     font-weight: bold;
     border-bottom: 1px solid #333;
+    user-select: none;
+    gap: 8px;
+}
+
+/* Small coloured type badge in the window header */
+.dev-type-badge {
+    font-size: 8px;
+    font-weight: bold;
+    letter-spacing: 0.8px;
+    padding: 1px 5px;
+    border: 1px solid;
+    border-radius: 2px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .window-title {
-    color: #ffff00; /* Yellow title for high visibility */
+    color: #ffff00;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
 }
 
 .ang-conv-btn {
@@ -167,15 +186,35 @@ svg {
     color: #888;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 9px;
-    padding: 1px 6px;
+    padding: 2px 6px;
     cursor: pointer;
     letter-spacing: 0.5px;
+    white-space: nowrap;
+    border-radius: 2px;
 }
 .ang-conv-btn:hover { border-color: #3af; color: #3af; }
 
+/* REF picker button — distinct teal accent */
+.ref-pick-btn { color: #3af; border-color: #1a4060; }
+.ref-pick-btn:hover { background: #0a1a28; border-color: #3af; }
+
+/* Reference picker popup items */
+.ref-pick-item {
+    padding: 7px 14px;
+    cursor: pointer;
+    color: #ccc;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #1a1a1a;
+}
+.ref-pick-item:hover { background: #1a2a3a; color: #fff; }
+.ref-pick-selected { color: #3af; background: #0a1a2a; }
+.ref-pick-clear { color: #f66; }
+.ref-pick-clear:hover { background: #1a0a0a; }
+
 .window-content {
-    padding: 12px;
-    max-height: 58vh;
+    padding: 12px 14px;
+    max-height: 62vh;
     overflow-y: auto;
     background: #080808;
     flex: 1;
@@ -183,12 +222,13 @@ svg {
 
 /* Section labels like "TELEMETRY DATA" */
 .section-title {
-    color: #fff;
-    font-size: 10px;
+    color: #ccc;
+    font-size: 9px;
     text-transform: uppercase;
-    border-bottom: 1px solid #444;
-    margin: 15px 0 5px 0;
-    padding-bottom: 2px;
+    letter-spacing: 1px;
+    border-bottom: 1px solid #333;
+    margin: 14px 0 5px 0;
+    padding-bottom: 3px;
 }
 
 /* A single row of data (label on left, value on right) */
@@ -196,27 +236,69 @@ svg {
     display: flex;
     justify-content: space-between;
     font-size: 11px;
-    margin-bottom: 3px;
-    border-bottom: 1px solid #111;
+    margin-bottom: 2px;
+    border-bottom: 1px solid #0f0f0f;
+    padding: 2px 0;
+    transition: background 0.1s;
 }
+.stat-row:hover { background: #111; }
 
 .stat-label {
-    color: #888;
+    color: #777;
 }
 
 .stat-value {
-    color: #0f0; /* Green for data values, classic terminal style */
+    color: #0f0;
     font-family: monospace;
 }
 
 /* The black box where the phasor diagram is drawn */
 .phasor-box {
     width: 100%;
-    height: 260px;
     background: #000;
     margin-top: 5px;
-    border: 1px solid #222;
+    border: 1px solid #1e1e1e;
+    border-radius: 2px;
 }
+
+/* ── Phasor scale controls ─────────────────────────────────────────────────── */
+.phasor-scale-ctrl {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 4px 8px;
+    background: #0a0a0a;
+    border-top: 1px solid #1a1a1a;
+    flex-wrap: wrap;
+}
+.psc-label {
+    font-size: 9px;
+    color: #666;
+    letter-spacing: 0.5px;
+    margin-right: 1px;
+}
+.psc-btn {
+    background: #111;
+    border: 1px solid #2a2a2a;
+    color: #888;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    padding: 1px 6px;
+    cursor: pointer;
+    border-radius: 2px;
+    line-height: 1.4;
+}
+.psc-btn:hover { border-color: #555; color: #ccc; }
+.psc-val {
+    font-size: 10px;
+    color: #aaa;
+    min-width: 44px;
+    text-align: center;
+    font-family: "Consolas", "Courier New", monospace;
+}
+.psc-auto { font-size: 9px; letter-spacing: 0.5px; }
+.psc-auto-active { color: #3af !important; border-color: #1a3a5a !important; }
+.psc-sep { width: 10px; }
 
 /*
    Context Menu (Right-click menu)

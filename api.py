@@ -148,6 +148,7 @@ _PARAM_KEYS = [
     "carrier_frequency_hz",
     "input_polarities",
     "serial_number",   # physical asset serial; stored in topology JSON and tracked in device_serials table
+    "notes",           # free-form user notes attached to a device
     # VoltageRegulator
     "nominal_kv",
     "tap_pos",
