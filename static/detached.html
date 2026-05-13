@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Window</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        body {
+            overflow: auto;
+            height: auto;
+            min-height: 100vh;
+        }
+        #detached-window {
+            position: relative;
+            width: 100%;
+            min-width: 280px;
+            box-shadow: none;
+            border: none;
+            border-radius: 0;
+        }
+        #detached-window .window-header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            cursor: default;
+        }
+        #detached-window .window-content {
+            max-height: none;
+            overflow-y: visible;
+        }
+        #detached-badge-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+            flex: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="detached-window" class="window">
+        <div class="window-header" id="detached-header" style="border-left: 3px solid #888;">
+            <span id="detached-badge-row">
+                <span id="detached-type-badge" class="dev-type-badge">—</span>
+                <span id="detached-title" class="window-title">Loading…</span>
+            </span>
+            <span style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+                <button class="ang-conv-btn" id="detached-ang-btn"
+                    onclick="_toggleAngleConv()" title="Toggle angle convention">±180°</button>
+                <button class="ang-conv-btn ref-pick-btn" id="detached-ref-btn"
+                    onclick="_showRefPicker(window._detachedDeviceId)" title="Set 0° reference">⊙ REF</button>
+                <span style="cursor:pointer;color:#888;padding:2px 4px;"
+                    onclick="window.close()" title="Close">✕</span>
+            </span>
+        </div>
+        <div class="window-content" id="detached-content"></div>
+    </div>
+
+    <!-- Shared utilities -->
+    <script src="/static/utils.js"></script>
+    <!-- Phasor rendering (needs D3 + utils already loaded) -->
+    <script src="/static/visualization.js"></script>
+
+    <script>
+    // ── Globals expected by visualization.js ──────────────────────────────────
+    var openWindows   = {};
+    var currentData   = null;
+    var compareData   = null;
+    var _use360Lag    = true;
+
+    // Device ID this popup is displaying
+    window._detachedDeviceId = null;
+
+    // ── Angle helpers (mirrors ui.js) ─────────────────────────────────────────
+    function _lagAngle(deg) {
+        return _use360Lag ? ((deg % 360) + 360) % 360 : deg;
+    }
+    function _fmtAngle(deg) {
+        return _lagAngle(deg).toFixed(1) + "°";
+    }
+    function _toggleAngleConv() {
+        window.opener._toggleAngleConv();
+        // Parent will push updated content back; also sync flag immediately
+        _use360Lag = !_use360Lag;
+        const btn = document.getElementById("detached-ang-btn");
+        if (btn) {
+            btn.innerText = _use360Lag ? "360°" : "±180°";
+            btn.style.color       = _use360Lag ? "#3af" : "#888";
+            btn.style.borderColor = _use360Lag ? "#3af" : "#555";
+        }
+    }
+
+    // ── Initialize the window from URL params ─────────────────────────────────
+    window.addEventListener("load", function () {
+        const params = new URLSearchParams(window.location.search);
+        const id = params.get("id");
+        if (!id) return;
+
+        window._detachedDeviceId = id;
+        document.title = id + " — Device Window";
+        document.getElementById("detached-title").textContent = id;
+
+        // Rename the content div BEFORE notifying parent so the parent can find it
+        const safeId = id.replace(/\s+/g, "-");
+        const contentEl = document.getElementById("detached-content");
+        if (contentEl) contentEl.id = "win-" + safeId;
+
+        // Notify parent — it will call _showDevice then push content
+        if (window.opener && !window.opener.closed) {
+            window.opener._detachedWindowReady(id, window);
+        }
+    });
+
+    // Called by parent when this popup should show a device by its id
+    function _showDevice(id, typeShort, typeColor) {
+        window._detachedDeviceId = id;
+        document.title = id + " — Device Window";
+        document.getElementById("detached-title").textContent = id;
+        const badge = document.getElementById("detached-type-badge");
+        if (badge) {
+            badge.textContent = typeShort || "—";
+            badge.style.background = (typeColor || "#888") + "22";
+            badge.style.color      = typeColor || "#888";
+            badge.style.borderColor = (typeColor || "#888") + "44";
+        }
+        const hdr = document.getElementById("detached-header");
+        if (hdr) hdr.style.borderLeftColor = typeColor || "#888";
+    }
+
+    // ── Proxy functions — all interactive controls forward to parent ──────────
+    function toggleDevice(id)                         { window.opener.toggleDevice(id); }
+    function toggleInputPolarity(nId, iId, pol)       { window.opener.toggleInputPolarity(nId, iId, pol); }
+    function toggleTerminalOverride(id, out, forced)  { window.opener.toggleTerminalOverride(id, out, forced); }
+    function toggleRelayTarget(id, dropped)           { window.opener.toggleRelayTarget(id, dropped); }
+    function showLogicDesigner(id)                    { window.opener.showLogicDesigner(id); }
+    function showTCCPlot(id)                          { window.opener.showTCCPlot(id); }
+    function showRelaySettingsEditor(id)              { window.opener.showRelaySettingsEditor(id); }
+    function showOscillography(id, w)                 { window.opener.showOscillography(id, w); }
+    function startConnectionMode(id, b)               { window.opener.startConnectionMode(id, b); }
+    function showPlantMenu(x, y, gx, gy, id, b)       { window.opener.showPlantMenu(x, y, gx, gy, id, b); }
+    function quickAddSensor(id, t, b)                 { window.opener.quickAddSensor(id, t, b); }
+    function addCTTB(id)                              { window.opener.addCTTB(id); }
+    function addFTBlock(id)                           { window.opener.addFTBlock(id); }
+    function addRelay(id)                             { window.opener.addRelay(id); }
+    function startSecondaryConnectionMode(id)         { window.opener.startSecondaryConnectionMode(id); }
+    function startSecondary2ConnectionMode(id)        { window.opener.startSecondary2ConnectionMode(id); }
+    function startDCConnectionMode(id)                { window.opener.startDCConnectionMode(id); }
+    function startTripConnectionMode(id)              { window.opener.startTripConnectionMode(id); }
+    function startCloseConnectionMode(id)             { window.opener.startCloseConnectionMode(id); }
+    function setAsReference(id, phase)                { window.opener.setAsReference(id, phase); }
+    function showConfigModal(id)                      { window.opener.showConfigModal(id); }
+    function showLoadConfigModal(id)                  { window.opener.showLoadConfigModal(id); }
+    function rotateDevice(id, rot)                    { window.opener.rotateDevice(id, rot); }
+    function showRenameDialog(id)                     { window.opener.showRenameDialog(id); }
+    function deleteDevice(id)                         { window.opener.deleteDevice(id); }
+    function showSerialDialog(id)                     { window.opener.showSerialDialog(id); }
+    function showSerialHistory(id)                    { window.opener.showSerialHistory(id); }
+    function showAnalogHistoryModal(id, keys)         { window.opener.showAnalogHistoryModal(id, keys); }
+    function _openDrawingsManager(id)                 { window.opener._openDrawingsManager(id); }
+    function _showRefPicker(id)                       { window.opener._showRefPicker(id); }
+
+    // Notes: reads textarea from this popup's DOM, not parent's
+    function _saveDeviceNotes(deviceId, safeId) {
+        const ta = document.getElementById("_dnotes-" + safeId);
+        const notes = ta ? ta.value : "";
+        window.opener._saveDeviceNotesFromPopup(deviceId, notes);
+    }
+
+    // Notify parent on close so it can re-show the local window
+    window.addEventListener("beforeunload", function () {
+        if (window.opener && !window.opener.closed && window._detachedDeviceId) {
+            window.opener._detachedWindowClosed(window._detachedDeviceId);
+        }
+    });
+    </script>
+</body>
+</html>

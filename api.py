@@ -468,7 +468,8 @@ class SCADAServer(BaseHTTPRequestHandler):
                 _sim.sim_engine.set_speed(req.get("multiplier", 1.0))
                 return _json_response(self, {"ok": True})
             if self.path == "/api/sim/fault":
-                _sim.sim_engine.schedule_event(0, "FAULT", req)
+                delay_ms = float(req.get("delay_ms", 0))
+                _sim.sim_engine.schedule_event(delay_ms, "FAULT", req)
                 return _json_response(self, {"ok": True})
             if self.path == "/api/sim/clear_fault":
                 _sim.sim_engine.schedule_event(0, "CLEAR_FAULT", req)
