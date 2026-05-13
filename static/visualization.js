@@ -679,6 +679,40 @@ function updateLinksDuringDrag(nodeId, newX, newY, angle, data, linkGroup) {
   });
 }
 
+// ── Phasor Scale Controls ─────────────────────────────────────────────────────
+// Per-phasor scale overrides so users can manually zoom in/out the V and I axes.
+// Keys are "<deviceId>_<mode>".  null value means "use auto".
+var _phasorScaleOverrides = {};
+var _phasorAutoScales = {};
+var _phasorRenderCtx = {};  // stores args for re-rendering after scale change
+
+function _phasorScaleStep(scaleKey, axis, dir) {
+  const auto = _phasorAutoScales[scaleKey] || { maxV: 132790, maxI: 300 };
+  const ov = _phasorScaleOverrides[scaleKey] || {};
+  const field = axis === "V" ? "maxV" : "maxI";
+  const cur = ov[field] != null ? ov[field] : auto[field];
+  if (!_phasorScaleOverrides[scaleKey]) _phasorScaleOverrides[scaleKey] = {};
+  // Step up: ×2, Step down: ÷2, but clamp to a sensible minimum
+  const next = dir > 0 ? cur * 2 : cur / 2;
+  const min = axis === "V" ? 10 : 0.1;
+  _phasorScaleOverrides[scaleKey][field] = Math.max(min, next);
+  _phasorRerender(scaleKey);
+}
+
+function _phasorScaleReset(scaleKey, axis) {
+  if (_phasorScaleOverrides[scaleKey]) {
+    const field = axis === "V" ? "maxV" : "maxI";
+    _phasorScaleOverrides[scaleKey][field] = null;
+  }
+  _phasorRerender(scaleKey);
+}
+
+function _phasorRerender(scaleKey) {
+  const ctx = _phasorRenderCtx[scaleKey];
+  if (!ctx) return;
+  renderPhasorBox(ctx.div, ctx.summary, ctx.mode, ctx.deviceId);
+}
+
 function drawVector(g, pMap, summary, r, w, h, center, maxV, maxI) {
   pMap.forEach((p) => {
     if (p.vm && summary[p.vm]) {
@@ -725,27 +759,30 @@ function drawPhasors(id, summary, type) {
   if (type === "PowerTransformer") {
     const priDiv = d3.select("#phasor-pri-" + safeId),
       secDiv = d3.select("#phasor-sec-" + safeId);
-    if (!priDiv.empty()) renderPhasorBox(priDiv, summary, "primary");
-    if (!secDiv.empty()) renderPhasorBox(secDiv, summary, "secondary");
+    if (!priDiv.empty()) renderPhasorBox(priDiv, summary, "primary", id);
+    if (!secDiv.empty()) renderPhasorBox(secDiv, summary, "secondary", id);
   } else if (type === "DualWindingVT") {
     const secDiv = d3.select("#phasor-sec-" + safeId),
       sec2Div = d3.select("#phasor-sec2-" + safeId);
-    if (!secDiv.empty()) renderPhasorBox(secDiv, summary, "secondary");
-    if (!sec2Div.empty()) renderPhasorBox(sec2Div, summary, "sec2");
+    if (!secDiv.empty()) renderPhasorBox(secDiv, summary, "secondary", id);
+    if (!sec2Div.empty()) renderPhasorBox(sec2Div, summary, "sec2", id);
   } else if (type === "VoltageTransformer") {
     const phasorDiv = d3.select("#phasor-" + safeId);
-    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "secondary");
+    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "secondary", id);
   } else if (type === "CurrentTransformer") {
     const phasorDiv = d3.select("#phasor-" + safeId);
-    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "ct_secondary");
+    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "ct_secondary", id);
   } else {
     const phasorDiv = d3.select("#phasor-" + safeId);
-    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "all");
+    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "all", id);
   }
 }
 
-function renderPhasorBox(div, summary, mode) {
+function renderPhasorBox(div, summary, mode, deviceId) {
   div.selectAll("*").remove();
+  const scaleKey = (deviceId || "?") + "_" + mode;
+  _phasorRenderCtx[scaleKey] = { div, summary, mode, deviceId };
+
   const w = 376,
     h = 260,
     r = 90,
@@ -1017,27 +1054,51 @@ function renderPhasorBox(div, summary, mode) {
     );
   }
 
-  let maxV = 0,
-    maxI = 0;
+  let autoMaxV = 0, autoMaxI = 0;
   pMap.forEach((p) => {
-    if (p.vm && summary[p.vm]) maxV = Math.max(maxV, summary[p.vm]);
-    if (p.im && summary[p.im]) maxI = Math.max(maxI, summary[p.im]);
+    if (p.vm && summary[p.vm]) autoMaxV = Math.max(autoMaxV, summary[p.vm]);
+    if (p.im && summary[p.im]) autoMaxI = Math.max(autoMaxI, summary[p.im]);
   });
-  if (maxV === 0) maxV = 132790;
-  if (maxI === 0) maxI = 300;
-  g.append("text")
-    .attr("x", -w / 2 + 10)
-    .attr("y", h / 2 - 25)
-    .attr("fill", "#666")
-    .style("font-size", "10px")
-    .text("V-Scale: " + maxV.toFixed(0) + "V");
-  g.append("text")
-    .attr("x", -w / 2 + 10)
-    .attr("y", h / 2 - 12)
-    .attr("fill", "#666")
-    .style("font-size", "10px")
-    .text("I-Scale: " + maxI.toFixed(1) + "A");
+  if (autoMaxV === 0) autoMaxV = 132790;
+  if (autoMaxI === 0) autoMaxI = 300;
+  _phasorAutoScales[scaleKey] = { maxV: autoMaxV, maxI: autoMaxI };
+
+  const ov = _phasorScaleOverrides[scaleKey] || {};
+  const maxV = ov.maxV != null ? ov.maxV : autoMaxV;
+  const maxI = ov.maxI != null ? ov.maxI : autoMaxI;
+
+  const isVAuto = ov.maxV == null;
+  const isIAuto = ov.maxI == null;
+
   drawVector(g, pMap, summary, r, w, h, center, maxV, maxI);
+
+  // Scale control bar rendered as HTML below the SVG
+  const sk = JSON.stringify(scaleKey);
+  div.append("div")
+    .attr("class", "phasor-scale-ctrl")
+    .html(
+      `<span class="psc-label">V</span>` +
+      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'V',-1)" title="Halve V scale">−</button>` +
+      `<span class="psc-val${isVAuto ? " psc-auto-active" : ""}">${_fmtPhasorScale(maxV, "V")}</span>` +
+      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'V',1)" title="Double V scale">+</button>` +
+      `<button class="psc-btn psc-auto${isVAuto ? " psc-auto-active" : ""}" onclick="_phasorScaleReset(${sk},'V')" title="Reset to auto">AUTO</button>` +
+      `<span class="psc-sep"></span>` +
+      `<span class="psc-label">I</span>` +
+      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'I',-1)" title="Halve I scale">−</button>` +
+      `<span class="psc-val${isIAuto ? " psc-auto-active" : ""}">${_fmtPhasorScale(maxI, "I")}</span>` +
+      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'I',1)" title="Double I scale">+</button>` +
+      `<button class="psc-btn psc-auto${isIAuto ? " psc-auto-active" : ""}" onclick="_phasorScaleReset(${sk},'I')" title="Reset to auto">AUTO</button>`
+    );
+}
+
+function _fmtPhasorScale(val, axis) {
+  if (axis === "V") {
+    if (val >= 1e6) return (val / 1e6).toPrecision(3) + "MV";
+    if (val >= 1e3) return (val / 1e3).toPrecision(3) + "kV";
+    return val.toPrecision(3) + "V";
+  }
+  if (val >= 1e3) return (val / 1e3).toPrecision(3) + "kA";
+  return val.toPrecision(3) + "A";
 }
 
 /**

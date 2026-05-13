@@ -184,8 +184,13 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
                 for list_key in ["connections", "secondary_connections", "secondary2_connections", "dc_connections", "trip_connections", "close_connections"]:
                     if list_key in d:
                         d[list_key] = [
-                            c for c in d[list_key] 
+                            c for c in d[list_key]
                             if (c if isinstance(c, str) else c.get("id")) != target_id
                         ]
                 break
+    elif action == "set_reference":
+        if "reference" not in data:
+            data["reference"] = {}
+        data["reference"]["device_id"] = req.get("device_id")
+        data["reference"]["phase"] = req.get("phase", "A")
     return data

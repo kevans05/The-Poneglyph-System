@@ -490,6 +490,27 @@ function deleteDevice(id) {
   }
 }
 
+// Device type → short abbreviation for the badge
+const _DEV_TYPE_SHORT = {
+  Bus: "BUS", VoltageSource: "SRC", Load: "LOAD",
+  CircuitBreaker: "CB", ThreePoleDisconnect: "DS", SinglePoleDisconnect: "DS",
+  PowerTransformer: "XFR", VoltageTransformer: "VT", CurrentTransformer: "CT",
+  DualWindingVT: "DVT", Relay: "RLY", CTTB: "CTTB", FTBlock: "FTB",
+  IsoBlock: "ISO", Meter: "MTR", Indicator: "IND", AuxiliaryTransformer: "AXT",
+  PowerLine: "LINE", VoltageRegulator: "REG", ShuntCapacitor: "CAP",
+  ShuntReactor: "RCT", SVC: "SVC", LineTrap: "TRAP",
+  NeutralGroundingResistor: "NGR", SeriesCapacitor: "SC",
+};
+// Device type → header accent colour
+const _DEV_TYPE_COLOR = {
+  Bus: "#0af", VoltageSource: "#0f0", Load: "#f80",
+  CircuitBreaker: "#ff0", ThreePoleDisconnect: "#ff0", SinglePoleDisconnect: "#ff0",
+  PowerTransformer: "#a0f", VoltageTransformer: "#4af", CurrentTransformer: "#4af",
+  DualWindingVT: "#4af", Relay: "#f44", CTTB: "#f44", FTBlock: "#f84",
+  IsoBlock: "#f84", Meter: "#0f8", Indicator: "#0f8", AuxiliaryTransformer: "#a0f",
+  PowerLine: "#888", VoltageRegulator: "#0af",
+};
+
 function openWindow(node) {
   if (openWindows[node.id]) {
     openWindows[node.id].style.zIndex = ++zIndexCounter;
@@ -502,18 +523,25 @@ function openWindow(node) {
   win.style.top = (60 + cascade) + "px";
   win.style.zIndex = ++zIndexCounter;
   const safeId = node.id.replace(/\s+/g, "-");
+  const typeShort = _DEV_TYPE_SHORT[node.type] || node.type;
+  const typeColor = _DEV_TYPE_COLOR[node.type] || "#888";
+  const escapedId = node.id.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
   win.innerHTML =
-    '<div class="window-header"><span class="window-title">' +
-    node.id +
-    '</span><span style="display:flex;gap:8px;align-items:center;">' +
+    '<div class="window-header" style="border-left:3px solid ' + typeColor + ';">' +
+    '<span style="display:flex;align-items:center;gap:7px;min-width:0;">' +
+    '<span class="dev-type-badge" style="background:' + typeColor + '22;color:' + typeColor + ';border-color:' + typeColor + '44;">' + typeShort + '</span>' +
+    '<span class="window-title" title="' + node.id + '">' + node.id + '</span>' +
+    '</span>' +
+    '<span style="display:flex;gap:6px;align-items:center;flex-shrink:0;">' +
     '<button class="ang-conv-btn" onclick="_toggleAngleConv()" title="Toggle angle convention">' +
     (_use360Lag ? "360°" : "±180°") +
     '</button>' +
-    '<span style="cursor:pointer" onclick="closeWindow(\'' +
-    node.id +
-    '\')">[X]</span></span></div><div class="window-content" id="win-' +
-    safeId +
-    '"></div>';
+    '<button class="ang-conv-btn ref-pick-btn" onclick="_showRefPicker(\'' + escapedId + '\')" title="Set device as 0° phase reference">⊙ REF</button>' +
+    '<span style="cursor:pointer;color:#888;padding:2px 4px;" onclick="closeWindow(\'' + escapedId + '\')" title="Close">✕</span>' +
+    '</span></div>' +
+    '<div class="window-content" id="win-' + safeId + '"></div>';
+
   document.body.appendChild(win);
   openWindows[node.id] = win;
   makeDraggable(win);
@@ -525,6 +553,64 @@ function closeWindow(id) {
     openWindows[id].remove();
     delete openWindows[id];
   }
+}
+
+/**
+ * Show a small dropdown beneath the REF button letting the user pick which
+ * phase (A / B / C) of this device becomes the global 0° reference, or clear
+ * the active reference entirely.
+ */
+function _showRefPicker(nodeId) {
+  // Remove any existing picker
+  const existing = document.getElementById("_ref-picker-popup");
+  if (existing) { existing.remove(); return; }
+
+  const win = openWindows[nodeId];
+  if (!win) return;
+  const btn = win.querySelector(".ref-pick-btn");
+  if (!btn) return;
+
+  const popup = document.createElement("div");
+  popup.id = "_ref-picker-popup";
+  popup.style.cssText =
+    "position:absolute;background:#111;border:1px solid #3af;z-index:99999;" +
+    "font-family:'Consolas','Courier New',monospace;font-size:10px;min-width:160px;" +
+    "box-shadow:0 4px 16px rgba(0,0,0,0.8);";
+
+  const rect = btn.getBoundingClientRect();
+  popup.style.left = rect.left + "px";
+  popup.style.top = (rect.bottom + 4) + "px";
+
+  const currentRef = currentData && currentData.reference;
+  const isActive = currentRef && currentRef.device_id === nodeId;
+
+  const phases = ["A", "B", "C"];
+  let html = '<div style="padding:6px 10px;color:#3af;letter-spacing:1px;border-bottom:1px solid #222;font-size:9px;">SET 0° REFERENCE — ' + nodeId + '</div>';
+  phases.forEach(ph => {
+    const isSelected = isActive && currentRef.phase === ph;
+    html += `<div class="ref-pick-item${isSelected ? " ref-pick-selected" : ""}" onclick="_applyRef('${nodeId.replace(/'/g,"\\'")}','${ph}')">`;
+    html += `<span style="color:#3af;width:18px;display:inline-block;">${isSelected ? "●" : "○"}</span>`;
+    html += `Phase ${ph} → 0°</div>`;
+  });
+  html += '<div class="ref-pick-item ref-pick-clear" onclick="_applyRef(null,null)">✕ &nbsp;Clear reference</div>';
+  popup.innerHTML = html;
+  document.body.appendChild(popup);
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener("click", function _closeRefPicker(e) {
+      if (!popup.contains(e.target)) {
+        popup.remove();
+        document.removeEventListener("click", _closeRefPicker);
+      }
+    });
+  }, 0);
+}
+
+function _applyRef(deviceId, phase) {
+  const popup = document.getElementById("_ref-picker-popup");
+  if (popup) popup.remove();
+  setAsReference(deviceId, phase);
 }
 
 // ── Summary row rendering helpers ─────────────────────────────────────────────
@@ -911,6 +997,12 @@ function updateWindow(id, node) {
   html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ANALOG HISTORY</div>';
   html += `<button class="eng-btn" style="width:100%; margin-top:2px;" onclick="showAnalogHistoryModal('${node.id}', ${JSON.stringify(Object.keys(node.summary || {}))})">VIEW RECORDED MEASUREMENTS</button>`;
 
+  // Device notes — free-form editable field stored on the device params
+  const curNotes = (node.params && node.params.notes) || "";
+  html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">DEVICE NOTES</div>';
+  html += `<textarea id="_dnotes-${safeId}" style="width:100%;box-sizing:border-box;margin-top:3px;background:#0d0d0d;border:1px solid #333;color:#bbb;font-family:inherit;font-size:10px;padding:5px 7px;resize:vertical;min-height:46px;outline:none;" placeholder="Add notes about this device…">${curNotes}</textarea>`;
+  html += `<button class="eng-btn" style="width:100%;margin-top:2px;color:#3af;border-color:#1a3a5a;" onclick="_saveDeviceNotes('${node.id}','${safeId}')">SAVE NOTES</button>`;
+
   content.innerHTML = html;
   drawPhasors(id, node.summary, node.type);
 }
@@ -1054,6 +1146,22 @@ function showAnalogHistoryModal(deviceId, summaryKeys) {
   };
   // Auto-load the first key if available
   if (measKeys.length) document.getElementById("_ah-load").click();
+}
+
+function _saveDeviceNotes(deviceId, safeId) {
+  const ta = document.getElementById("_dnotes-" + safeId);
+  if (!ta) return;
+  const notes = ta.value;
+  reconfigureAPI(deviceId, "update_device", { properties: { notes } }).then(() => {
+    // Update in-memory node so the window shows the saved value immediately
+    if (currentData && currentData.nodes) {
+      const node = currentData.nodes.find(n => n.id === deviceId);
+      if (node) { if (!node.params) node.params = {}; node.params.notes = notes; }
+    }
+    // Brief visual confirmation
+    ta.style.borderColor = "#3af";
+    setTimeout(() => { ta.style.borderColor = "#333"; }, 900);
+  });
 }
 
 function quickAddSensor(hostId, type, bushing) {
