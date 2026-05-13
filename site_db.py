@@ -146,6 +146,24 @@ CREATE TABLE IF NOT EXISTS device_drawings (
 );
 CREATE INDEX IF NOT EXISTS idx_dev_draw_device ON device_drawings(device_id);
 
+-- Append-only log of revision changes on device_drawings rows.
+-- The device_drawings row is updated in-place; this table preserves what
+-- revision was current before the change, so history is never lost.
+-- test_drawings rows are frozen by design (one row per test) and are never
+-- logged here — their revision is immutable once the drawing is added.
+CREATE TABLE IF NOT EXISTS drawing_revision_log (
+    id           TEXT    PRIMARY KEY,
+    drawing_id   TEXT    NOT NULL,    -- device_drawings.id
+    old_revision TEXT    DEFAULT '',
+    new_revision TEXT    NOT NULL,
+    old_url      TEXT    DEFAULT '',
+    new_url      TEXT    DEFAULT '',
+    epoch        INTEGER NOT NULL,
+    updated_by   TEXT    DEFAULT '',
+    notes        TEXT    DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_draw_rev_log ON drawing_revision_log(drawing_id);
+
 CREATE TABLE IF NOT EXISTS maintenance_log (
     id             TEXT    PRIMARY KEY,   -- UUID
     device_id      TEXT    NOT NULL,      -- logical device ID in the topology
@@ -758,3 +776,59 @@ def delete_device_drawing(db_path: str, drawing_id: str):
     with _conn(db_path) as c:
         c.execute("DELETE FROM device_drawings WHERE id = ?", (drawing_id,))
     _touch(db_path)
+
+
+def update_device_drawing(
+    db_path: str,
+    drawing_id: str,
+    new_revision: str,
+    new_url: str | None = None,
+    updated_by: str = "",
+    notes: str = "",
+) -> str:
+    """Update a device drawing's revision, logging the old values first.
+
+    The old revision/url are written to drawing_revision_log so history is
+    preserved.  If new_url is None the url is left unchanged.
+    Returns the UUID of the log entry.
+    """
+    log_id = str(uuid.uuid4())
+    with _conn(db_path) as c:
+        row = c.execute(
+            "SELECT revision, url FROM device_drawings WHERE id = ?", (drawing_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"drawing_id {drawing_id!r} not found")
+        old_revision = row["revision"] or ""
+        old_url = row["url"] or ""
+        resolved_url = new_url.strip() if new_url is not None else old_url
+        c.execute(
+            """INSERT INTO drawing_revision_log
+               (id, drawing_id, old_revision, new_revision, old_url, new_url, epoch, updated_by, notes)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                log_id, drawing_id,
+                old_revision, new_revision.strip(),
+                old_url, resolved_url,
+                int(time.time()), updated_by.strip(), notes.strip(),
+            ),
+        )
+        c.execute(
+            "UPDATE device_drawings SET revision = ?, url = ? WHERE id = ?",
+            (new_revision.strip(), resolved_url, drawing_id),
+        )
+    _touch(db_path)
+    return log_id
+
+
+def get_drawing_revision_history(db_path: str, drawing_id: str) -> list[dict]:
+    """Return the revision history for a device drawing, newest first."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            """SELECT id, epoch, old_revision, new_revision, old_url, new_url, updated_by, notes
+               FROM drawing_revision_log
+               WHERE drawing_id = ?
+               ORDER BY epoch DESC""",
+            (drawing_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]

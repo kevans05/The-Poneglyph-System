@@ -3147,9 +3147,13 @@ function _bpShowDeviceDrawings(deviceId, onBack) {
         return;
       }
       drawings.forEach(d => {
-        const item = list.append("div")
-          .style("display", "flex").style("align-items", "center").style("gap", "8px")
-          .style("padding", "5px 0").style("border-bottom", "1px solid #111");
+        const block = list.append("div")
+          .style("border-bottom", "1px solid #111").style("padding", "6px 0");
+
+        // ── Main row: title + revision + action buttons ──────────────────────
+        const item = block.append("div")
+          .style("display", "flex").style("align-items", "center").style("gap", "8px");
+
         const label = item.append("div").style("flex", "1").style("font-size", "10px");
         if (d.url) {
           label.append("a").attr("href", d.url).attr("target", "_blank")
@@ -3157,12 +3161,99 @@ function _bpShowDeviceDrawings(deviceId, onBack) {
         } else {
           label.append("span").text(d.title).style("color", "#ccc");
         }
-        if (d.revision) label.append("span").text(` (${d.revision})`).style("color", "#555").style("font-size", "9px");
+        if (d.revision) label.append("span").text(` (${d.revision})`).style("color", "#888").style("font-size", "9px");
         if (d.notes) label.append("div").text(d.notes).style("color", "#444").style("font-size", "9px");
+
+        const btnStyle = "background:none; border:1px solid #2a2a2a; color:#666; cursor:pointer; font-size:9px; padding:1px 6px; font-family:inherit; letter-spacing:1px;";
+        // "UPDATE REV" button toggles inline update form
+        const updateBtn = item.append("button").attr("style", btnStyle).text("UPDATE REV");
+        // "HISTORY" button toggles revision log
+        const histBtn = item.append("button").attr("style", btnStyle).text("HISTORY");
+        // Delete
         item.append("button").text("×")
           .style("background", "none").style("border", "none").style("color", "#555")
           .style("cursor", "pointer").style("font-size", "14px").style("padding", "0 4px")
           .on("click", () => deleteDeviceDrawing(d.id).then(renderList).catch(() => {}));
+
+        // ── Inline UPDATE REV form (hidden by default) ───────────────────────
+        const updateForm = block.append("div")
+          .style("display", "none")
+          .style("margin-top", "6px").style("padding", "8px 10px")
+          .style("background", "#0d0d0d").style("border", "1px solid #222")
+          .style("border-radius", "3px");
+
+        updateForm.append("div").text("NEW REVISION")
+          .style("font-size", "9px").style("color", "#666").style("letter-spacing", "1px")
+          .style("margin-bottom", "6px");
+
+        const inpRow = updateForm.append("div").style("display", "flex").style("gap", "6px").style("margin-bottom", "6px");
+        const revInp = inpRow.append("input").attr("type", "text")
+          .attr("placeholder", "e.g. R4")
+          .attr("style", "background:#111;border:1px solid #333;color:#eee;padding:5px 8px;font-family:inherit;font-size:11px;width:80px;box-sizing:border-box;");
+        const urlInp = inpRow.append("input").attr("type", "text")
+          .attr("placeholder", "URL (leave blank to keep current)")
+          .attr("style", "background:#111;border:1px solid #333;color:#eee;padding:5px 8px;font-family:inherit;font-size:11px;flex:1;box-sizing:border-box;");
+        const byInp = inpRow.append("input").attr("type", "text")
+          .attr("placeholder", "Updated by")
+          .attr("style", "background:#111;border:1px solid #333;color:#eee;padding:5px 8px;font-family:inherit;font-size:11px;width:100px;box-sizing:border-box;");
+
+        const saveRevBtn = updateForm.append("button")
+          .text("SAVE REVISION")
+          .style("background", "#001a1a").style("border", "1px solid #3af").style("color", "#3af")
+          .style("font-family", "inherit").style("font-size", "9px").style("padding", "4px 12px")
+          .style("cursor", "pointer").style("letter-spacing", "1px");
+
+        saveRevBtn.on("click", () => {
+          const rev = (revInp.property("value") || "").trim();
+          if (!rev) { revInp.style("border-color", "#f00"); return; }
+          revInp.style("border-color", "#333");
+          const newUrl = (urlInp.property("value") || "").trim() || null;
+          const by = (byInp.property("value") || "").trim();
+          saveRevBtn.text("SAVING...").property("disabled", true);
+          updateDeviceDrawing(d.id, rev, newUrl, by, "").then(() => renderList()).catch(() => {
+            saveRevBtn.text("SAVE REVISION").property("disabled", false);
+          });
+        });
+
+        updateBtn.on("click", () => {
+          const showing = updateForm.style("display") !== "none";
+          updateForm.style("display", showing ? "none" : "block");
+          histArea.style("display", "none");
+        });
+
+        // ── Revision history area (hidden by default) ────────────────────────
+        const histArea = block.append("div").style("display", "none");
+
+        histBtn.on("click", () => {
+          const showing = histArea.style("display") !== "none";
+          if (showing) { histArea.style("display", "none"); return; }
+          updateForm.style("display", "none");
+          histArea.style("display", "block").html("<div style='font-size:9px;color:#444;padding:4px 0'>Loading...</div>");
+          fetchDrawingHistory(d.id).then(hresp => {
+            const entries = hresp.history || [];
+            histArea.html("");
+            if (entries.length === 0) {
+              histArea.append("div").text("No revision history yet.")
+                .style("font-size", "9px").style("color", "#333").style("padding", "4px 0");
+              return;
+            }
+            const tbl = histArea.append("div")
+              .style("margin-top", "4px").style("border-left", "2px solid #1a1a2a")
+              .style("padding-left", "8px");
+            entries.forEach(h => {
+              const hrow = tbl.append("div").style("font-size", "9px").style("padding", "3px 0")
+                .style("border-bottom", "1px solid #0d0d0d").style("display", "flex")
+                .style("gap", "8px").style("align-items", "baseline");
+              hrow.append("span")
+                .text(new Date(h.epoch * 1000).toLocaleDateString())
+                .style("color", "#444").style("min-width", "70px");
+              hrow.append("span")
+                .text(`${h.old_revision || "—"} → ${h.new_revision}`)
+                .style("color", "#3af");
+              if (h.updated_by) hrow.append("span").text(h.updated_by).style("color", "#556");
+            });
+          }).catch(() => { histArea.html("<div style='font-size:9px;color:#555'>Error loading history.</div>"); });
+        });
       });
     }).catch(() => {});
   };
