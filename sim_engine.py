@@ -37,6 +37,7 @@ import queue
 import copy
 import uuid
 from model_loader import load_substation_model
+import config as _cfg
 
 class SimEngine:
     def __init__(self):
@@ -59,7 +60,7 @@ class SimEngine:
         self._frame_events = []  # notification events collected between frames
         
         self.thread = None
-        self.heartbeat_interval_ms = 100.0
+        self.heartbeat_interval_ms = _cfg.SIM_HEARTBEAT_MS
         self.last_heartbeat_sim_time = 0.0
 
     def start(self, topology_data):
@@ -107,7 +108,7 @@ class SimEngine:
 
     def set_speed(self, multiplier):
         with self.lock:
-            self.speed_multiplier = max(0.01, min(100.0, multiplier))
+            self.speed_multiplier = max(_cfg.SIM_MIN_SPEED, min(_cfg.SIM_MAX_SPEED, multiplier))
 
     def schedule_event(self, delay_ms, event_type, data):
         with self.lock:
@@ -132,7 +133,7 @@ class SimEngine:
                 if not self.running:
                     break
                 if self.paused:
-                    time.sleep(0.1)
+                    time.sleep(_cfg.SIM_TICK_INTERVAL_S)
                     continue
                 
                 now = time.time()

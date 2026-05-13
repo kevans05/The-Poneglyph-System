@@ -66,6 +66,7 @@ import os
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import config as _cfg
 import excel_report as _xrep
 import power_meters as _pmm
 import site_db as _sdb
@@ -1174,8 +1175,8 @@ class SCADAServer(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    httpd = HTTPServer(("0.0.0.0", 8000), SCADAServer)
-    print("SCADA Server on port 8000")
+    httpd = HTTPServer((_cfg.HOST, _cfg.PORT), SCADAServer)
+    print(f"SCADA Server on {_cfg.HOST}:{_cfg.PORT}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
