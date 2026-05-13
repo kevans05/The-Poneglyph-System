@@ -70,6 +70,9 @@ let connectionSource = null;
 let _winCascade = 0;
 let _configModalDragged = false;
 
+// Detached popup windows: deviceId → popup window reference
+let _popupWindows = {};
+
 /**
  * Handles a click on a node. If multiple nodes overlap, shows a selection menu.
  */
@@ -538,6 +541,7 @@ function openWindow(node) {
     (_use360Lag ? "360°" : "±180°") +
     '</button>' +
     '<button class="ang-conv-btn ref-pick-btn" onclick="_showRefPicker(\'' + escapedId + '\')" title="Set device as 0° phase reference">⊙ REF</button>' +
+    '<button class="ang-conv-btn" onclick="detachWindow(\'' + escapedId + '\')" title="Open in new window" style="font-size:12px;">⤢</button>' +
     '<span style="cursor:pointer;color:#888;padding:2px 4px;" onclick="closeWindow(\'' + escapedId + '\')" title="Close">✕</span>' +
     '</span></div>' +
     '<div class="window-content" id="win-' + safeId + '"></div>';
@@ -553,6 +557,96 @@ function closeWindow(id) {
     openWindows[id].remove();
     delete openWindows[id];
   }
+  // Also close any detached popup for this window
+  if (_popupWindows[id] && !_popupWindows[id].closed) {
+    _popupWindows[id].close();
+  }
+  delete _popupWindows[id];
+}
+
+/**
+ * Open a device window in a separate browser popup.
+ * The popup loads detached.html, which proxies all interactions back here.
+ */
+function detachWindow(id) {
+  // If popup already open, just focus it
+  if (_popupWindows[id] && !_popupWindows[id].closed) {
+    _popupWindows[id].focus();
+    return;
+  }
+  const w = 480, h = 700;
+  const left = Math.round(window.screenX + window.outerWidth / 2 - w / 2);
+  const top  = Math.round(window.screenY + 60);
+  const popup = window.open(
+    "/static/detached.html?id=" + encodeURIComponent(id),
+    "device_" + id.replace(/\s+/g, "_"),
+    "width=" + w + ",height=" + h + ",resizable=yes,scrollbars=yes,left=" + left + ",top=" + top
+  );
+  if (!popup) { alert("Popup blocked — please allow popups for this site."); return; }
+  _popupWindows[id] = popup;
+}
+
+// Called by detached.html once its DOM is ready
+function _detachedWindowReady(id, popup) {
+  _popupWindows[id] = popup;
+  const node = _resolveNode(id);
+  if (!node) return;
+  const typeShort = _DEV_TYPE_SHORT[node.type] || node.type;
+  const typeColor = _DEV_TYPE_COLOR[node.type] || "#888";
+  // Set title / badge in popup
+  try { popup._showDevice(id, typeShort, typeColor); } catch(e) {}
+  // Sync angle convention flag
+  try { popup._use360Lag = _use360Lag; } catch(e) {}
+  // Push current content
+  _syncWindowToPopup(id, node);
+}
+
+// Called by detached.html's beforeunload
+function _detachedWindowClosed(id) {
+  delete _popupWindows[id];
+}
+
+// Sync the local device-window content to its popup (if open)
+function _syncWindowToPopup(id, node) {
+  const popup = _popupWindows[id];
+  if (!popup || popup.closed) { delete _popupWindows[id]; return; }
+  const safeId = id.replace(/\s+/g, "-");
+  const src = document.getElementById("win-" + safeId);
+  if (!src) return;
+  try {
+    const target = popup.document.getElementById("win-" + safeId);
+    if (!target) return;
+    target.innerHTML = src.innerHTML;
+    if (typeof popup.drawPhasors === "function") {
+      popup.drawPhasors(id, node.summary, node.type);
+    }
+    // Sync angle button label
+    const angBtn = popup.document.getElementById("detached-ang-btn");
+    if (angBtn) {
+      angBtn.innerText      = _use360Lag ? "360°" : "±180°";
+      angBtn.style.color    = _use360Lag ? "#3af" : "#888";
+      angBtn.style.borderColor = _use360Lag ? "#3af" : "#555";
+    }
+  } catch(e) {
+    // Popup closed or cross-origin
+    delete _popupWindows[id];
+  }
+}
+
+// Resolve the current node data from either live data or simulation data
+function _resolveNode(id) {
+  const data = (typeof simData !== "undefined" && simData) ? simData : currentData;
+  return data && data.nodes && data.nodes.find(n => n.id === id);
+}
+
+// Called from detached.html proxy for _saveDeviceNotes (reads popup textarea value)
+function _saveDeviceNotesFromPopup(deviceId, notes) {
+  reconfigureAPI(deviceId, "update_device", { properties: { notes } }).then(() => {
+    if (currentData && currentData.nodes) {
+      const node = currentData.nodes.find(n => n.id === deviceId);
+      if (node) { if (!node.params) node.params = {}; node.params.notes = notes; }
+    }
+  });
 }
 
 /**
@@ -664,11 +758,6 @@ function updateWindow(id, node) {
   if (compareData) compNode = compareData.nodes.find((n) => n.id === node.id);
 
   let html = "";
-
-  // DRAWINGS — always at the top so it's immediately visible
-  html += '<div class="section-title">DRAWINGS</div>';
-  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
-  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id.replace(/'/g, "\\'")}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
 
   // 1. PHASOR DIAGRAMS + TELEMETRY — per-winding layout for multi-winding devices
   if (node.type === "DualWindingVT") {
@@ -1001,6 +1090,11 @@ function updateWindow(id, node) {
   html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ANALOG HISTORY</div>';
   html += `<button class="eng-btn" style="width:100%; margin-top:2px;" onclick="showAnalogHistoryModal('${node.id}', ${JSON.stringify(Object.keys(node.summary || {}))})">VIEW RECORDED MEASUREMENTS</button>`;
 
+  // Drawings — attached drawing references for this device
+  html += '<div class="section-title" style="margin-top:12px;">DRAWINGS</div>';
+  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
+  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id.replace(/'/g, "\\'")}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
+
   // Device notes — free-form editable field stored on the device params
   const curNotes = (node.params && node.params.notes) || "";
   html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">DEVICE NOTES</div>';
@@ -1010,6 +1104,7 @@ function updateWindow(id, node) {
   content.innerHTML = html;
   drawPhasors(id, node.summary, node.type);
   _renderWindowDrawingStrip(safeId, node.id);
+  _syncWindowToPopup(id, node);
 }
 
 function _renderWindowDrawingStrip(safeId, deviceId) {
@@ -1448,6 +1543,90 @@ function _predKey(node, phase, qty) {
   }
   if (qty === "i-angle") return `Phase ${phase} I-Angle`;
   return null;
+}
+
+/**
+ * Detach Brain Point to a separate popup window.
+ * Uses a MutationObserver to sync DOM changes from D3 operations to the popup.
+ */
+let _bpPopup = null;
+let _bpObserver = null;
+
+function detachBrainPoint() {
+  const module = document.getElementById("brain-point-module");
+  if (!module) return;
+
+  // If already open, focus it
+  if (_bpPopup && !_bpPopup.closed) { _bpPopup.focus(); return; }
+
+  const rect = module.getBoundingClientRect();
+  const w = Math.round(rect.width)  || 700;
+  const h = Math.round(rect.height) || 600;
+  const left = Math.round(window.screenX + window.outerWidth / 2 - w / 2);
+
+  const styleLinks = Array.from(document.querySelectorAll("link[rel=stylesheet]"))
+    .map(l => '<link rel="stylesheet" href="' + l.href + '">').join("\n");
+
+  _bpPopup = window.open("", "brain_point",
+    "width=" + (w + 40) + ",height=" + (h + 40) + ",resizable=yes,scrollbars=yes,left=" + left + ",top=60");
+  if (!_bpPopup) { alert("Popup blocked — please allow popups for this site."); return; }
+
+  _bpPopup.document.write(`<!doctype html><html><head>
+    <meta charset="UTF-8">
+    <title>BRAIN POINT — Telemetry Interface</title>
+    ${styleLinks}
+    <style>
+      body { overflow: auto; margin: 0; background: #080808; }
+      .measure-wizard {
+        position: relative !important;
+        top: auto !important; left: auto !important;
+        transform: none !important;
+        width: 100% !important; height: auto !important;
+        box-shadow: none; border-radius: 0;
+      }
+    </style>
+  </head><body>
+    <div id="brain-point-module" class="measure-wizard">
+      <div id="brain-point-body" style="flex:1;overflow-y:auto;padding:16px;"></div>
+      <div id="brain-point-footer" class="wizard-footer" style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #222;background:#0e0e0e;"></div>
+    </div>
+  </body></html>`);
+  _bpPopup.document.close();
+
+  // Hide main window modal
+  module.style.display = "none";
+
+  // Sync content immediately
+  _syncBrainPointToPopup();
+
+  // Watch for any DOM changes to the Brain Point module and re-sync
+  if (_bpObserver) _bpObserver.disconnect();
+  _bpObserver = new MutationObserver(() => _syncBrainPointToPopup());
+  _bpObserver.observe(module, { childList: true, subtree: true, characterData: true, attributes: true });
+
+  // Clean up when popup closes
+  _bpPopup.addEventListener("beforeunload", () => {
+    if (_bpObserver) { _bpObserver.disconnect(); _bpObserver = null; }
+    _bpPopup = null;
+    // Restore main window modal
+    const m = document.getElementById("brain-point-module");
+    if (m) m.style.display = "flex";
+  });
+}
+
+function _syncBrainPointToPopup() {
+  if (!_bpPopup || _bpPopup.closed) {
+    if (_bpObserver) { _bpObserver.disconnect(); _bpObserver = null; }
+    return;
+  }
+  try {
+    const src = document.getElementById("brain-point-body");
+    const foot = document.getElementById("brain-point-footer");
+    const dst = _bpPopup.document.getElementById("brain-point-body");
+    const dstFoot = _bpPopup.document.getElementById("brain-point-footer");
+    if (src && dst)     dst.innerHTML     = src.innerHTML;
+    if (foot && dstFoot) dstFoot.innerHTML = foot.innerHTML;
+  } catch(e) { /* popup closed */ }
 }
 
 // 360 lag angle convention (default on — relays show 0–360°, no negative angles)
