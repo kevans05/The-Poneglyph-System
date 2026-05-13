@@ -1,4 +1,4 @@
-# Advanced Network Analysis & Load-Tester
+# The Poneglyph System
 ### SCADA Pro Console — Field Protection Test Platform
 
 A browser-based SCADA simulator and field measurement platform for electrical substation equipment. It combines a live power-flow model of a substation with tools for recording, organising, and analysing real-world protection relay test measurements taken in the field.
@@ -17,11 +17,12 @@ A browser-based SCADA simulator and field measurement platform for electrical su
 8. [Hardware Power Meters](#hardware-power-meters)
 9. [Field Report](#field-report)
 10. [History & Snapshots](#history--snapshots)
-11. [Database Architecture](#database-architecture)
-12. [API Reference](#api-reference)
-13. [File Structure](#file-structure)
-14. [Power Flow Model](#power-flow-model)
-15. [Phasor Mathematics](#phasor-mathematics)
+11. [Simulation Engine](#simulation-engine)
+12. [Database Architecture](#database-architecture)
+13. [API Reference](#api-reference)
+14. [File Structure](#file-structure)
+15. [Power Flow Model](#power-flow-model)
+16. [Phasor Mathematics](#phasor-mathematics)
 
 ---
 
@@ -31,25 +32,31 @@ This tool was built to solve a real problem: running protection relay load tests
 
 The system does three things:
 
-1. **Simulates** the substation topology — a mathematical model of transformers, circuit breakers, disconnects, current transformers, voltage transformers, relays, and loads. Power flows through the network in real time; you can open and close breakers and watch voltage and current re-propagate.
+1. **Simulates** the substation topology — a mathematical model of transformers, circuit breakers, disconnects, current transformers, voltage transformers, relays, and loads. Power flows through the network in real time; you can open and close breakers and watch voltage and current re-propagate. A real-time physics simulation engine can also run fault scenarios with configurable speed.
 
 2. **Records** field measurements against that model — taking readings from handheld power meters (or entering them manually), attaching them to named tests with drawing references, and attributing every session to the technician who took it.
 
-3. **Analyses** the measurements — comparing them against the model's predictions, flagging deviations, and producing a structured field report.
+3. **Analyses** the measurements — comparing them against the model's predictions, flagging deviations, and producing a structured field report exportable as XLSX.
 
 ---
 
 ## Getting Started
 
-**Requirements:** Python 3.10 or later. External dependencies are listed in `requirements.txt` (currently `openpyxl` for Excel reports).
+**Requirements:** Python 3.10 or later. External dependencies are listed in `requirements.txt` (`openpyxl` for Excel reports).
 
 ```bash
-cd ~/Coding/LoadTest
 pip install -r requirements.txt
 python api.py
 ```
 
 Open a browser and navigate to `http://localhost:8000`.
+
+Configuration is controlled via environment variables (see `config.py`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `PONEGLYPH_HOST` | `0.0.0.0` | Bind address |
+| `PONEGLYPH_PORT` | `8000` | HTTP port |
 
 On first load, the splash screen appears for three seconds and then the **Site Selector** opens automatically. You must load or create a site before the main diagram is accessible.
 
@@ -154,6 +161,10 @@ All measurement sessions attached to this test are listed with the date/time, te
 
 The dropdown in the detail header lets you change the test status inline. Changing to ARCHIVED hides the test from the session picker but preserves all data.
 
+### XLSX Report
+
+Each test can export a structured load-test report via **EXPORT XLSX**. The report is generated from `excel_report.py` using a template at `templates/load_test_template.xlsx`. Measurements can also be imported back from a hand-entered XLSX file via the ingest endpoint.
+
 ---
 
 ## The One-Line Diagram
@@ -191,6 +202,7 @@ Clicking a device opens a floating draggable window showing:
 - Power (MVA, MW, MVAR)
 - Manual measurements (if recorded)
 - Device parameters (ratio, CT class, etc.)
+- Per-device drawing references and analog history
 
 Multiple windows can be open simultaneously. Windows update automatically when **RESCAN BUS** is clicked or a measurement is recorded.
 
@@ -314,7 +326,7 @@ The report includes a count of total checks, passed, warnings, and faults.
 
 ### Export
 
-**EXPORT CSV** downloads the full report as a comma-separated file for import into Excel or a test management system.
+**EXPORT CSV** downloads the full report as a comma-separated file for import into Excel or a test management system. **EXPORT XLSX** produces a structured Excel workbook from the load-test template.
 
 ---
 
@@ -338,6 +350,34 @@ Click **COMPARE** next to any snapshot. The diagram loads the historical topolog
 ### Deleting Snapshots
 
 Click **DELETE** next to a snapshot. This removes only the topology record; measurement sessions and their data are not affected.
+
+---
+
+## Simulation Engine
+
+The simulation engine (`sim_engine.py`) runs a real-time physics model in a background thread, independent of the HTTP server.
+
+### Starting the Simulation
+
+Use the **SIM** controls in the header to start, pause, or stop the simulation. The simulation can also be controlled via the API.
+
+### Key Features
+
+- **Real-time propagation** — voltage and current re-propagate through the network on every tick (~100 ms by default).
+- **Fault injection** — schedule a fault on any bus at a specified simulation time. The engine emits `FAULT` events visible in the animation frame stream.
+- **Speed control** — wall-clock time is scaled by a configurable multiplier (0.01× to 100×), enabling slow-motion or fast-forward scenarios.
+- **Animation frames** — the frontend polls `/api/sim/frames` to receive incremental state updates (only nodes whose values changed since the last frame), avoiding full topology reloads.
+
+### Event Types
+
+| Event | Description |
+|---|---|
+| `FAULT` | A fault has been applied to the network |
+| `CLEAR_FAULT` | An active fault has been cleared |
+| `RELAY_PICKUP` | A relay element has picked up |
+| `RELAY_DROPOUT` | A relay element has dropped out |
+| `TRIP` | A breaker trip has been commanded |
+| `CLOSE` | A breaker close has been commanded |
 
 ---
 
@@ -445,6 +485,7 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `GET` | `/api/sites/active` | Return active site info or `{"active": false}` |
 | `POST` | `/api/sites/create` | Create a new site DB. Body: `station`, `site_name`, `leader_code`, `number_code`, `description`, `gps_lat`, `gps_lon`, `seed_current` |
 | `POST` | `/api/sites/load` | Activate a site and load its topology. Body: `station` |
+| `POST` | `/api/sites/update` | Patch editable `site_info` fields for the active site |
 
 ### Tests
 
@@ -455,14 +496,22 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `POST` | `/api/tests/create` | Create a test. Body: `name`, `description`, `created_by` |
 | `POST` | `/api/tests/delete` | Delete a test. Body: `id` |
 | `POST` | `/api/tests/status` | Update test status. Body: `id`, `status` |
+| `POST` | `/api/tests/capture-points` | Save capture-point device list for a test. Body: `test_id`, `devices` |
+| `POST` | `/api/tests/vref` | Store the reference VT for a test. Body: `test_id`, `vref_device_id` |
 | `POST` | `/api/tests/drawings/add` | Add a drawing. Body: `test_id`, `title`, `url`, `revision`, `notes` |
 | `POST` | `/api/tests/drawings/delete` | Remove a drawing. Body: `id` |
+| `GET` | `/api/tests/<id>/devices` | Distinct device IDs that have measurements for a test |
+| `GET` | `/api/tests/<id>/report-data` | Full measurement data for report rendering |
+| `GET` | `/api/tests/<id>/report.xlsx` | Download the XLSX load-test report |
+| `POST` | `/api/tests/ingest-report` | Import hand-entered measurements from an XLSX file |
 
 ### Topology
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/topology` | Load `substation.json`, run power flow, return nodes/edges/reference |
+| `GET` | `/api/topology/export` | Download the raw `substation.json` |
+| `POST` | `/api/topology/import` | Replace the active topology from an uploaded JSON file |
 | `GET` | `/api/toggle/<name>` | Toggle a breaker or disconnect open/closed |
 | `POST` | `/api/reconfigure` | Device and topology mutations (see actions below) |
 
@@ -475,6 +524,7 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `update_rotation` | Rotate a device symbol |
 | `add_device` | Insert a new device |
 | `delete_device` | Remove a device and clean up its connections |
+| `rename_device` | Change a device ID everywhere (topology dict and all connection lists) |
 | `add_connection` | Add a primary connection between devices |
 | `add_secondary_connection` | Add a protection/secondary connection |
 | `record_measurement` | Save field measurements to device and database |
@@ -494,6 +544,7 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `POST` | `/api/db/sessions/delete` | Delete a session. Body: `id` |
 | `GET` | `/api/db/sessions/<id>/measurements` | Get all measurements for a session |
 | `GET` | `/api/db/history/<device_id>/<key>` | Time-series for one device+key across all sessions (max 200 readings) |
+| `GET` | `/api/db/device-config-history/<id>` | Per-device configuration and snapshot audit trail |
 
 ### Power Meters
 
@@ -506,17 +557,32 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `POST` | `/api/pmm/configure` | Set channel assignments. Body: `chan1`, `chan2` |
 | `POST` | `/api/pmm/disconnect` | Disconnect from meter |
 
+### Simulation Engine
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/sim/start` | Start the physics simulation engine |
+| `POST` | `/api/sim/stop` | Stop the simulation engine |
+| `POST` | `/api/sim/pause` | Pause or resume the simulation |
+| `POST` | `/api/sim/speed` | Set the simulation time multiplier. Body: `multiplier` |
+| `POST` | `/api/sim/fault` | Schedule a fault event. Body: `device_id`, `trigger_time_ms` |
+| `POST` | `/api/sim/clear_fault` | Clear an active fault |
+| `GET` | `/api/sim/frames` | Poll incremental animation frames since last poll |
+
 ---
 
 ## File Structure
 
 ```
-LoadTest/
+The-Poneglyph-System/
 ├── api.py                   # HTTP server — all endpoints, request routing
-├── site_db.py               # Per-site SQLite persistence (UUID-keyed)
+├── sim_engine.py            # Real-time physics simulation engine (background thread)
+├── model_loader.py          # Shared logic for building the device graph from topology JSON
+├── topology_utils.py        # Pure topology mutation helpers (add/delete/rename devices, etc.)
+├── site_db.py               # Per-site SQLite persistence (UUID-keyed, auto-migrating)
+├── excel_report.py          # XLSX load-test report builder and ingest
+├── config.py                # Central configuration (host, port, simulation parameters)
 ├── substation.json          # Active working topology (loaded from site DB)
-├── CLAUDE.md                # Architecture notes for Claude Code
-├── README.md                # This file
 │
 ├── phasors/                 # Power-flow model and phasor mathematics
 │   ├── __init__.py
@@ -526,14 +592,21 @@ LoadTest/
 │   ├── wye_system.py        # 3-phase wye connection model
 │   ├── delta_system.py      # 3-phase delta connection model
 │   ├── phasor_operations.py # Arithmetic and multiplier constants
+│   ├── utilities/
+│   │   ├── formatter.py     # SI prefix formatting for display values
+│   │   └── power_utilities.py
 │   └── devices/
 │       ├── factory.py       # DeviceFactory — deserialises substation.json
 │       ├── bus.py           # Bus base class
-│       ├── source_load.py   # VoltageSource, Load, PowerLine
+│       ├── source_load.py   # VoltageSource, Load
+│       ├── passive.py       # Passive network elements
+│       ├── power_line.py    # PowerLine device
 │       ├── switching.py     # CircuitBreaker, Disconnect
 │       ├── transformers.py  # PowerTransformer (HV/LV bushings)
+│       ├── regulator.py     # Voltage regulator
 │       ├── sensors.py       # CurrentTransformer, VoltageTransformer, CTTB, Relay
-│       └── protection.py    # Protection logic
+│       ├── protection.py    # Protection logic
+│       └── protection_elements.py  # Individual protection element models
 │
 ├── power_meters/            # Hardware instrument drivers
 │   ├── __init__.py          # Module API (api_connect, api_query, etc.)
@@ -544,10 +617,27 @@ LoadTest/
 ├── sites/                   # Per-site SQLite databases (created at runtime)
 │   └── <STATION>.db
 │
+├── templates/               # Excel templates
+│   └── load_test_template.xlsx
+│
 └── static/                  # Browser frontend
     ├── api-client.js        # All fetch() calls to the backend
     ├── visualization.js     # D3.js SVG one-line diagram renderer
-    ├── ui.js                # Device windows, measurement wizard, PLUG sequence, reports
+    ├── windows.js           # Floating device information windows
+    ├── panels.js            # Side-panel layout and tabbed content
+    ├── device-ops.js        # Device add/edit/delete operations
+    ├── measurement-wizard.js # Field measurement entry wizard and PLUG sequence
+    ├── analog-history.js    # Analog trend history display
+    ├── history-modal.js     # Snapshot history modal
+    ├── protection-view.js   # Protection element status and single-injection view
+    ├── relay-controls.js    # Relay trip/close DC output controls
+    ├── tcc-plot.js          # Time-current characteristic coordination plot
+    ├── sim.js               # Simulation mode controller
+    ├── config-modal.js      # Per-device configuration modal
+    ├── context-menu.js      # Right-click context menu
+    ├── selector.js          # Device selector / filter panel
+    ├── dialogs.js           # Generic dialog helpers
+    ├── serial-dialog.js     # Serial port connection dialog
     ├── sites.js             # Site selector modal
     ├── tests.js             # Test manager modal and session test picker
     ├── splash.js            # Splash screen and startup flow
