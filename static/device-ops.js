@@ -1,3 +1,5 @@
+"use strict";
+
 function startConnectionMode(sourceId, bushing) {
   connectionSource = { id: sourceId, bushing: bushing };
   const bText = bushing ? " (Bushing " + bushing + ")" : "";

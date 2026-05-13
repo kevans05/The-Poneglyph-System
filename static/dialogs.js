@@ -1,3 +1,5 @@
+"use strict";
+
 // ── Generic input dialog (replaces all browser prompt() calls) ─────────────────
 
 function showInputDialog(label, defaultVal, callback) {

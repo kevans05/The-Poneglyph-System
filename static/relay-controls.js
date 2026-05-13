@@ -1,3 +1,5 @@
+"use strict";
+
 function toggleRelayTrip(id, state) {
   reconfigureAPI(id, "update_device", { properties: { dc_output_state: state } }).then(() => refreshData());
 }

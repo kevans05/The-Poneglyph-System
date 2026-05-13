@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * SCADA Pro Console - UI & Window Management
  * Handles draggable windows, context menus, and modals.

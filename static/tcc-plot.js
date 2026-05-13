@@ -1,3 +1,5 @@
+"use strict";
+
 // ── TCC Coordination Plot ─────────────────────────────────────────────────
 
 const _TCC_COLORS = [

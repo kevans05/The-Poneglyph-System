@@ -1,3 +1,5 @@
+"use strict";
+
 function showHistoryModal() {
   d3.select("#history-modal").style("display", "flex");
   _renderHistoryTab("snapshots");

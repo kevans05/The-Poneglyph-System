@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * SCADA Pro Console - API Client
  * Manages communication with the Python backend.

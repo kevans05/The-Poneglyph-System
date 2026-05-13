@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * SCADA Pro Console - Visualization Engine
  * Handles D3 rendering and Phasor diagrams.

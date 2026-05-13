@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * Simulation Mode Controller
  */

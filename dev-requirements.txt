@@ -1,0 +1,13 @@
+# Runtime dependencies (always required)
+-r requirements.txt
+
+# Linting & formatting
+ruff>=0.4.0       # fast Python linter + formatter (replaces flake8/isort/pycodestyle)
+black>=24.0.0     # opinionated Python formatter
+
+# Type checking
+pyright>=1.1.0   # static type checker (works without stubs for stdlib)
+
+# Testing (add pytest-based tests under tests/)
+pytest>=8.0.0
+pytest-cov>=5.0.0

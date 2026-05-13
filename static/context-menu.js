@@ -1,3 +1,5 @@
+"use strict";
+
 function showContextMenu(e, d) {
   if (typeof simActive !== 'undefined' && simActive) console.log('Sim mode menu showing for', d.id);
   e.preventDefault();

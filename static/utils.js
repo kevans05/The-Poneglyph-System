@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * SCADA Pro Console - Utilities & Constants
  * Handles data formatting and unit mapping.

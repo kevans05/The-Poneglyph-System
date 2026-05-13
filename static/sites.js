@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * SCADA Pro — Site Selector
  * Manages site listing, creation, and activation.

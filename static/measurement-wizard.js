@@ -1,3 +1,5 @@
+"use strict";
+
 // Types that carry electrical signals worth measuring
 const WIZARD_MEASURABLE = new Set([
   "VoltageSource",

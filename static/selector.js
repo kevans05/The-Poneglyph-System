@@ -1,3 +1,5 @@
+"use strict";
+
 // ── Selection Tool ───────────────────────────────────────────────────────────
 
 const selectedIds = new Set();

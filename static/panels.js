@@ -1,3 +1,5 @@
+"use strict";
+
 // ── Config modal drag support ──────────────────────────────────────────────
 
 function _resetConfigModalPos() {

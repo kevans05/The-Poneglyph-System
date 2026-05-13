@@ -1,3 +1,5 @@
+"use strict";
+
 let _bpSISelectedPhase = "A";
 let _bpInSIMode = false;
 let compareData = null;

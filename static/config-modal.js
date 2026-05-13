@@ -1,3 +1,5 @@
+"use strict";
+
 function showConfigModal(id) {
   const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
   if (!node) return;
