@@ -665,11 +665,6 @@ function updateWindow(id, node) {
 
   let html = "";
 
-  // DRAWINGS — always at the top so it's immediately visible
-  html += '<div class="section-title">DRAWINGS</div>';
-  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
-  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id.replace(/'/g, "\\'")}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
-
   // 1. PHASOR DIAGRAMS + TELEMETRY — per-winding layout for multi-winding devices
   if (node.type === "DualWindingVT") {
     const allEntries = Object.entries(node.summary || {});
@@ -1000,6 +995,11 @@ function updateWindow(id, node) {
   // Analog history — lets technician review all recorded measurements for this device
   html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ANALOG HISTORY</div>';
   html += `<button class="eng-btn" style="width:100%; margin-top:2px;" onclick="showAnalogHistoryModal('${node.id}', ${JSON.stringify(Object.keys(node.summary || {}))})">VIEW RECORDED MEASUREMENTS</button>`;
+
+  // Drawings — attached drawing references for this device
+  html += '<div class="section-title" style="margin-top:12px;">DRAWINGS</div>';
+  html += `<div id="dstrip-${safeId}" class="device-drawing-strip"><span style="color:#2a2a2a;font-size:9px;">Loading…</span></div>`;
+  html += `<button class="eng-btn" style="width:100%;margin-top:3px;color:#aaf;border-color:#2a2a4a;" onclick="_openDrawingsManager('${node.id.replace(/'/g, "\\'")}')">📎 ATTACH / MANAGE DRAWINGS</button>`;
 
   // Device notes — free-form editable field stored on the device params
   const curNotes = (node.params && node.params.notes) || "";
