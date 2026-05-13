@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * SCADA Pro — Test Manager
  * Handles the TESTS modal: listing, creating, viewing detail, and managing drawings.

@@ -1,3 +1,5 @@
+"use strict";
+
 window.addEventListener('load', () => {
     setTimeout(() => {
         const splash = document.getElementById('splash-screen');
