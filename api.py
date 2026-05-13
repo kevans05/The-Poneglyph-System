@@ -819,6 +819,25 @@ class SCADAServer(BaseHTTPRequestHandler):
                 _sdb.delete_device_drawing(_active_site, req.get("id", ""))
                 return _json_response(self, {"ok": True})
 
+            # Update a device drawing's revision (logs the old one).
+            # Body: {id, revision, url (optional), updated_by, notes}
+            if self.path == "/api/db/device-drawings/update":
+                if not _require_site(self):
+                    return
+                drawing_id = req.get("id", "").strip()
+                revision   = req.get("revision", "").strip()
+                if not drawing_id or not revision:
+                    return _json_response(self, {"error": "id and revision required"}, 400)
+                log_id = _sdb.update_device_drawing(
+                    _active_site,
+                    drawing_id=drawing_id,
+                    new_revision=revision,
+                    new_url=req.get("url") if "url" in req else None,
+                    updated_by=req.get("updated_by", ""),
+                    notes=req.get("notes", ""),
+                )
+                return _json_response(self, {"ok": True, "log_id": log_id})
+
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1031,6 +1050,15 @@ class SCADAServer(BaseHTTPRequestHandler):
                 device_id = self.path.split("/", 4)[-1]
                 rows = _sdb.get_maintenance_log(_active_site, device_id)
                 return _json_response(self, {"maintenance": rows})
+
+            # Revision history for a single drawing
+            # GET /api/db/drawing-history/<drawing_id>
+            if self.path.startswith("/api/db/drawing-history/"):
+                if not _require_site(self):
+                    return
+                drawing_id = self.path.split("/", 4)[-1]
+                rows = _sdb.get_drawing_revision_history(_active_site, drawing_id)
+                return _json_response(self, {"history": rows})
 
             # Drawings attached to a device
             # GET /api/db/device-drawings/<device_id>

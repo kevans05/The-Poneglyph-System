@@ -304,6 +304,22 @@ function deleteDeviceDrawing(id) {
     }).then(r => r.json());
 }
 
+// Update a drawing's revision. Logs the old revision automatically.
+// newUrl is optional — omit or pass null to leave the URL unchanged.
+function updateDeviceDrawing(id, revision, newUrl, updatedBy, notes) {
+    const body = { id, revision, updated_by: updatedBy || "", notes: notes || "" };
+    if (newUrl !== null && newUrl !== undefined) body.url = newUrl;
+    return fetch("/api/db/device-drawings/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    }).then(r => r.json());
+}
+
+function fetchDrawingHistory(drawingId) {
+    return fetch("/api/db/drawing-history/" + encodeURIComponent(drawingId)).then(r => r.json());
+}
+
 /**
  * Device Analog History (time-series measurements for one key)
  */
