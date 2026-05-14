@@ -219,6 +219,16 @@ class SimEngine:
                     else:
                         self.schedule_event(e["delay"], e["type"], e["data"])
 
+        # Nodal admittance (Y-bus) solve: populate voltage caches before any
+        # device property is read by _emit_frame or external callers.
+        # Falls back silently to the recursive tree-walk if numpy is
+        # unavailable or the network matrix is singular.
+        try:
+            from phasors.nodal_solver import solve_and_cache
+            solve_and_cache(self.devices)
+        except Exception:
+            pass
+
     def _emit_frame(self, is_snapshot=False):
         frame = {
             "id": self.next_frame_id,
