@@ -171,20 +171,10 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .attr("data-offset", 0)
         .attr("data-frac", frac);
     } else {
-      const srcB = facingBushing(
-        src.gx,
-        src.gy,
-        src.rotation || 0,
-        tgt.gx,
-        tgt.gy,
-      );
-      const tgtB = facingBushing(
-        tgt.gx,
-        tgt.gy,
-        tgt.rotation || 0,
-        src.gx,
-        src.gy,
-      );
+      const srcB = edge.source_bushing ||
+        facingBushing(src.gx, src.gy, src.rotation || 0, tgt.gx, tgt.gy);
+      const tgtB = edge.target_bushing ||
+        facingBushing(tgt.gx, tgt.gy, tgt.rotation || 0, src.gx, src.gy);
 
       // Determine wire count based on connection type
       let isDelta = false;
