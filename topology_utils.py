@@ -135,13 +135,19 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
         source_id = req.get("id")
         target_id = req.get("target_id")
         bushing = req.get("bushing")
+        to_bushing = req.get("to_bushing")
         for d in data["devices"]:
             if d["id"] == source_id:
                 if "connections" not in d:
                     d["connections"] = []
-                new_conn = target_id
-                if bushing:
-                    new_conn = {"id": target_id, "via_bushing": bushing}
+                if bushing or to_bushing:
+                    new_conn = {"id": target_id}
+                    if bushing:
+                        new_conn["via_bushing"] = bushing
+                    if to_bushing:
+                        new_conn["to_bushing"] = to_bushing
+                else:
+                    new_conn = target_id
                 d["connections"].append(new_conn)
                 break
     elif action == "add_secondary_connection":
