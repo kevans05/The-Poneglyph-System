@@ -181,9 +181,16 @@ class Switch(Bus):
 
     @property
     def connection_type(self) -> str:
-        if self.upstream_device:
-            return getattr(self.upstream_device, "downstream_connection_type", getattr(self.upstream_device, "connection_type", "wye"))
-        return "wye"
+        if getattr(self, "_evaluating_ct", False):
+            return "wye"
+        self._evaluating_ct = True
+        try:
+            if self.upstream_device:
+                return getattr(self.upstream_device, "downstream_connection_type",
+                               getattr(self.upstream_device, "connection_type", "wye"))
+            return "wye"
+        finally:
+            self._evaluating_ct = False
 
     @property
     def downstream_connection_type(self) -> str: return self.connection_type
