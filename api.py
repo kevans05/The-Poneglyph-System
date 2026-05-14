@@ -233,6 +233,14 @@ def _detect_sync_errors(sources, devices):
 def _build_topology_response(sources, devices, raw_devices, reference):
     raw_map = {d["id"]: d for d in raw_devices}
 
+    # Build a lookup for explicitly-specified target bushings: {source_id: {target_id: bushing}}
+    _to_bushing_map = {}
+    for raw_dev in raw_devices:
+        src_id = raw_dev["id"]
+        for c in raw_dev.get("connections", []):
+            if isinstance(c, dict) and c.get("to_bushing"):
+                _to_bushing_map.setdefault(src_id, {})[c["id"]] = c["to_bushing"]
+
     ref_angle = 0
     ref_dev_id = reference.get("device_id")
     ref_phase = reference.get("phase", "A")
@@ -284,24 +292,28 @@ def _build_topology_response(sources, devices, raw_devices, reference):
     for did, dev in devices.items():
         if hasattr(dev, "h_connections"):
             for conn in dev.h_connections:
-                edges.append(
-                    {
-                        "source": dev.name,
-                        "target": conn.name,
-                        "type": "primary",
-                        "source_bushing": "H",
-                    }
-                )
+                edge = {
+                    "source": dev.name,
+                    "target": conn.name,
+                    "type": "primary",
+                    "source_bushing": "H",
+                }
+                tb = _to_bushing_map.get(dev.name, {}).get(conn.name)
+                if tb:
+                    edge["target_bushing"] = tb
+                edges.append(edge)
         if hasattr(dev, "x_connections"):
             for conn in dev.x_connections:
-                edges.append(
-                    {
-                        "source": dev.name,
-                        "target": conn.name,
-                        "type": "primary",
-                        "source_bushing": "X",
-                    }
-                )
+                edge = {
+                    "source": dev.name,
+                    "target": conn.name,
+                    "type": "primary",
+                    "source_bushing": "X",
+                }
+                tb = _to_bushing_map.get(dev.name, {}).get(conn.name)
+                if tb:
+                    edge["target_bushing"] = tb
+                edges.append(edge)
         if hasattr(dev, "downstream_device") and dev.downstream_device:
             bushing = None
             if (
@@ -318,22 +330,26 @@ def _build_topology_response(sources, devices, raw_devices, reference):
                 e["source"] == dev.name and e["target"] == dev.downstream_device.name
                 for e in edges
             ):
-                edges.append(
-                    {
-                        "source": dev.name,
-                        "target": dev.downstream_device.name,
-                        "type": "primary",
-                        "source_bushing": bushing,
-                    }
-                )
+                edge = {
+                    "source": dev.name,
+                    "target": dev.downstream_device.name,
+                    "type": "primary",
+                    "source_bushing": bushing,
+                }
+                tb = _to_bushing_map.get(dev.name, {}).get(dev.downstream_device.name)
+                if tb:
+                    edge["target_bushing"] = tb
+                edges.append(edge)
         if hasattr(dev, "connections"):
             for c in dev.connections:
                 if not any(
                     e["source"] == dev.name and e["target"] == c.name for e in edges
                 ):
-                    edges.append(
-                        {"source": dev.name, "target": c.name, "type": "primary"}
-                    )
+                    edge = {"source": dev.name, "target": c.name, "type": "primary"}
+                    tb = _to_bushing_map.get(dev.name, {}).get(c.name)
+                    if tb:
+                        edge["target_bushing"] = tb
+                    edges.append(edge)
         if hasattr(dev, "secondary_connections"):
             for s in dev.secondary_connections:
                 edges.append(

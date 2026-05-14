@@ -117,7 +117,16 @@ function cancelConnectionMode() {
     .text("Navigation System Standby.");
 }
 
-function completeConnection(targetId, toLabel = null) {
+// Device types that only have a single AC bushing (X side only).
+// Two-bushing devices (CB, Disconnect, Transformer, etc.) will trigger the bushing picker.
+const _SINGLE_BUSHING_TYPES = new Set([
+  "Wire", "Bus", "VoltageSource", "Load",
+  "ShuntCapacitor", "ShuntReactor", "SurgeArrester", "SVC", "NeutralGroundingResistor",
+  "CurrentTransformer", "VoltageTransformer", "DualWindingVT",
+  "CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Relay", "Meter", "Indicator",
+]);
+
+function completeConnection(targetId, toLabel = null, toBushing = undefined) {
   if (!connectionSource) return;
   const { id, bushing, isSecondary, isSecondary2, isDC, isTrip, isClose, from } = connectionSource;
 
@@ -138,12 +147,29 @@ function completeConnection(targetId, toLabel = null) {
     }
   }
 
+  // For primary AC connections to two-bushing devices, ask which end of the target to land on.
+  if (!isSecondary && !isSecondary2 && !isDC && !isTrip && !isClose && toBushing === undefined) {
+    const targetNode = currentData && currentData.nodes && currentData.nodes.find(n => n.id === targetId);
+    if (targetNode && !_SINGLE_BUSHING_TYPES.has(targetNode.type)) {
+      showTerminalPicker(
+        "CONNECT TO WHICH END OF " + targetId + "?",
+        ["H — HIGH SIDE", "X — LOW SIDE", "AUTO (GEOMETRIC)"],
+        (label) => {
+          const tb = label.startsWith("H") ? "H" : label.startsWith("X") ? "X" : null;
+          completeConnection(targetId, toLabel, tb);
+        }
+      );
+      return;
+    }
+    toBushing = null; // single-bushing target — no explicit override needed
+  }
+
   if (id === targetId) {
     alert("Cannot connect a device to itself.");
     return;
   }
   const action = isTrip ? "add_trip_connection" : isClose ? "add_close_connection" : isDC ? "add_dc_connection" : isSecondary2 ? "add_secondary2_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
-  reconfigureAPI(id, action, { target_id: targetId, bushing: bushing, from: from, to: toLabel }).then(
+  reconfigureAPI(id, action, { target_id: targetId, bushing: bushing, to_bushing: toBushing, from: from, to: toLabel }).then(
     () => {
       cancelConnectionMode();
       refreshData();
