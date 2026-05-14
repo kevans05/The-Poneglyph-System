@@ -143,6 +143,14 @@ function render3LD(data) { if (!data || !data.nodes) return;
 
     const frac = _bendFrac[src.id + "→" + tgt.id] ?? 0.5;
 
+    const _wireRightClick = (srcId, tgtId) => (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (confirm("Delete wire: " + srcId + " → " + tgtId + "?")) {
+        breakConnection(srcId, tgtId);
+      }
+    };
+
     if (edge.type === "protection" || edge.type === "protection2" || edge.type === "dc" || edge.type === "trip" || edge.type === "close") {
       let wireClass = "secondary-wire";
       if (edge.type === "dc") wireClass = "dc-wire";
@@ -158,10 +166,17 @@ function render3LD(data) { if (!data || !data.nodes) return;
       )
         wireClass = "vt-wire";
 
+      const pathD = getPathData(src.gx, src.gy, tgt.gx, tgt.gy, 0, frac);
+      // Invisible wide hit area — right-click anywhere near the wire to delete it
+      linkGroup
+        .append("path")
+        .attr("class", "wire-hit")
+        .attr("d", pathD)
+        .on("contextmenu", _wireRightClick(src.id, tgt.id));
       linkGroup
         .append("path")
         .attr("class", wireClass)
-        .attr("d", getPathData(src.gx, src.gy, tgt.gx, tgt.gy, 0, frac))
+        .attr("d", pathD)
         .attr("data-src", src.id)
         .attr("data-tgt", tgt.id)
         .attr("data-x1", src.gx)
@@ -169,7 +184,8 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .attr("data-x2", tgt.gx)
         .attr("data-y2", tgt.gy)
         .attr("data-offset", 0)
-        .attr("data-frac", frac);
+        .attr("data-frac", frac)
+        .on("contextmenu", _wireRightClick(src.id, tgt.id));
     } else {
       const srcB = edge.source_bushing ||
         facingBushing(src.gx, src.gy, src.rotation || 0, tgt.gx, tgt.gy);
@@ -193,6 +209,15 @@ function render3LD(data) { if (!data || !data.nodes) return;
           ? ["phase-a", "phase-b", "phase-c"]
           : ["phase-a", "phase-b", "phase-c", "neutral"];
 
+      // One hit area per logical connection (not per phase)
+      const a1mid = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, 0);
+      const a2mid = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, 0);
+      linkGroup
+        .append("path")
+        .attr("class", "wire-hit")
+        .attr("d", getPathData(a1mid.x, a1mid.y, a2mid.x, a2mid.y, 0, frac))
+        .on("contextmenu", _wireRightClick(src.id, tgt.id));
+
       offsets.forEach((off, i) => {
         const a1 = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, off),
           a2 = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, off);
@@ -207,7 +232,8 @@ function render3LD(data) { if (!data || !data.nodes) return;
           .attr("data-x2", a2.x)
           .attr("data-y2", a2.y)
           .attr("data-offset", off)
-          .attr("data-frac", frac);
+          .attr("data-frac", frac)
+          .on("contextmenu", _wireRightClick(src.id, tgt.id));
       });
     }
   });

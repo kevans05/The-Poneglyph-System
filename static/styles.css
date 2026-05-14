@@ -1308,6 +1308,15 @@ svg {
 .trip-wire { stroke: #ff4444; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
 .close-wire { stroke: #44ff44; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; }
 
+/* Invisible wide stroke used as right-click hit area on wires */
+.wire-hit {
+  fill: none;
+  stroke: rgba(255,255,255,0.01);
+  stroke-width: 14px;
+  cursor: context-menu;
+  pointer-events: stroke;
+}
+
 /* Simulation Mode Styles */
 body.sim-mode-active #header {
     background-color: #180505;
