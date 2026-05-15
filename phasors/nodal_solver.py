@@ -94,11 +94,13 @@ _PRIMARY_TYPES = frozenset({
     'CircuitBreaker', 'Disconnect',
     'PowerTransformer', 'VoltageRegulator',
     'Load', 'ShuntCapacitor', 'ShuntReactor', 'SVC',
+    'Generator',
 })
 
 _TWO_PORT_TYPES = frozenset({'PowerTransformer', 'VoltageRegulator'})
 _SWITCH_TYPES   = frozenset({'CircuitBreaker', 'Disconnect'})
 _LOAD_TYPES     = frozenset({'Load', 'ShuntCapacitor', 'ShuntReactor', 'SVC'})
+_PV_TYPES       = frozenset({'Generator'})   # voltage-controlled buses
 
 # ---------------------------------------------------------------------------
 # Admittance constants
@@ -402,15 +404,24 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
 def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
     """
     Partition [Y][V] = [I] into slack (known V) and unknown rows/cols.
-    Iterates 3 times, updating PQ current injections each pass.
-    Returns complex voltage vector of length N, or None if matrix is singular.
+    Iterates up to MAX_ITER passes with PQ and PV bus updates each pass.
+
+    PV bus algorithm (per iteration):
+      1. Compute Q at the PV node from Y-bus: Q = -Im(V_k* × (Y[k,:]·V))
+      2. Clamp Q within [q_min, q_max]; bus converts to PQ if limit is hit.
+      3. Inject S = P + jQ as current: I_k = -(S/V_k)*
+      4. Solve linear system for all unknowns.
+      5. Restore voltage magnitude: V_k ← V_set · exp(j·∠V_k_new)
+
+    Returns complex voltage vector of length N, or None if singular.
     """
+    _MAX_ITER = 6   # enough for PV buses to converge; PQ buses converge in 2-3
+
     slack_list   = sorted(slack_idx.keys())
     slack_set    = set(slack_list)
     unknown_list = [i for i in range(N) if i not in slack_set]
 
     if not unknown_list:
-        # Every node is a slack bus.
         V = np.zeros(N, dtype=complex)
         for i, va in slack_idx.items():
             V[i] = va
@@ -429,30 +440,71 @@ def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
     Y_us = Y[np.ix_(unknown_list, slack_list)]
     V_s  = np.array([V[i] for i in slack_list], dtype=complex)
 
-    # Check Y_uu is non-singular before iterating.
     if np.linalg.matrix_rank(Y_uu) < len(unknown_list):
         return None
 
-    for _iter in range(3):
-        # Build injection vector for PQ buses.
+    # Build PV-bus table: {node_idx: (v_set_V, q_min_VA, q_max_VA, dev)}
+    # The constraint is applied at the upstream bus node so that the controlled
+    # voltage is the bus voltage, not a separate device node.
+    pv_buses: dict = {}
+    for dev in reachable:
+        cls = dev.__class__.__name__
+        v_set = 0.0
+        q_min = -1e18
+        q_max =  1e18
+        if cls in _PV_TYPES:
+            v_set = getattr(dev, 'v_setpoint_kv', 0.0) * 1e3
+            q_min = getattr(dev, 'q_min_mvar', -9999.0) * 1e6
+            q_max = getattr(dev, 'q_max_mvar',  9999.0) * 1e6
+        elif cls == 'SVC' and getattr(dev, 'v_setpoint_kv', 0.0) > 0:
+            v_set = dev.v_setpoint_kv * 1e3
+            q_min = dev.mvar_min * 1e6
+            q_max = dev.mvar_max * 1e6
+        if v_set > 0:
+            # Prefer the upstream bus node; fall back to this device's own node.
+            up = getattr(dev, 'upstream_device', None)
+            if up is not None:
+                k = key_idx.get(_dev_key(up, False))  # X-side of upstream (= its output)
+            else:
+                k = None
+            if k is None:
+                k = key_idx.get(_dev_key(dev, True))
+            if k is not None and k not in slack_set:
+                pv_buses[k] = (v_set, q_min, q_max, dev)
+                V[k] = complex(v_set)   # warm-start at setpoint
+
+    for _iter in range(_MAX_ITER):
         I = np.zeros(N, dtype=complex)
+
+        # PQ injections (loads / shunts).
         for dev in reachable:
             if dev.__class__.__name__ not in _LOAD_TYPES:
                 continue
             k = key_idx.get(_dev_key(dev, True))
-            if k is None:
+            if k is None or k in pv_buses:
                 continue
-            va_node = V[k]
-            if abs(va_node) < 1e-6:
-                va_node = complex(V_init_mag)
+            va_node = V[k] if abs(V[k]) > 1e-6 else complex(V_init_mag)
             try:
                 pq  = dev.get_phase_pq()
                 s_a = complex(pq['a'][0], pq['a'][1])
-                # Load absorbs power → negative current injection into bus.
-                # I = conj(S/V)  → I_inj = −conj(S/V) = −S*.conj() / V.conj()
                 I[k] += -(s_a.conjugate()) / (va_node.conjugate())
             except Exception:
                 pass
+
+        # PV injections — Q derived from network, clamped, then injected.
+        # q_limited tracks buses where a limit was hit (convert to PQ for snap).
+        q_limited: set = set()
+        for k, (v_set, q_min, q_max, dev) in pv_buses.items():
+            va_node = V[k] if abs(V[k]) > 1e-6 else complex(v_set)
+            # Q = -Im(V_k* × Σ_j Y_kj V_j)
+            q_calc = -( va_node.conjugate() * (Y[k, :] @ V) ).imag
+            q_inj  = max(q_min, min(q_max, q_calc))
+            if q_inj != q_calc:
+                q_limited.add(k)
+            dev.q_mvar_solved = q_inj / 1e6
+            p_inj = getattr(dev, 'p_mw', 0.0) * 1e6
+            s_inj = complex(p_inj, q_inj)   # positive = generation
+            I[k] += s_inj.conjugate() / va_node.conjugate()
 
         rhs = I[unknown_list] - Y_us @ V_s
         try:
@@ -462,6 +514,12 @@ def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
 
         for idx, val in zip(unknown_list, V_u):
             V[idx] = val
+
+        # Restore PV bus voltage magnitudes only when Q is within limits.
+        # A limited bus behaves as PQ this iteration; magnitude droops naturally.
+        for k, (v_set, q_min, q_max, _dev) in pv_buses.items():
+            if k not in q_limited and abs(V[k]) > 1e-12:
+                V[k] = v_set * (V[k] / abs(V[k]))
 
     return V
 

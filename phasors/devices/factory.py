@@ -7,7 +7,7 @@ from phasors.devices.power_line import PowerLine
 from phasors.devices.protection import CTTB, FTBlock, IsoBlock, Relay, AuxiliaryTransformer, Meter, Indicator
 from phasors.devices.regulator import VoltageRegulator
 from phasors.devices.sensors import CurrentTransformer, VoltageTransformer, DualWindingVT
-from phasors.devices.source_load import Load, ShuntCapacitor, ShuntReactor, SVC, VoltageSource
+from phasors.devices.source_load import Generator, Load, ShuntCapacitor, ShuntReactor, SVC, VoltageSource
 from phasors.devices.switching import CircuitBreaker, Disconnect
 from phasors.devices.transformers import PowerTransformer
 from phasors.voltage_phasor import VoltagePhasor
@@ -43,6 +43,15 @@ class DeviceFactory:
                 nominal_current=nom_i,
                 winding_type=data.get("winding_type", "Y"),
                 phase_shift_deg=ps,
+            )
+
+        elif dtype == "Generator":
+            return Generator(
+                did,
+                p_mw=data.get("p_mw", 0.0),
+                v_setpoint_kv=data.get("v_setpoint_kv", 0.0),
+                q_min_mvar=data.get("q_min_mvar", -9999.0),
+                q_max_mvar=data.get("q_max_mvar", 9999.0),
             )
 
         elif dtype in ["Bus", "Wire"]:
