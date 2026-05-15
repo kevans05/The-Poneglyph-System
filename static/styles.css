@@ -1010,6 +1010,12 @@ svg {
     gap: 4px;
     align-items: flex-end;
     pointer-events: none;
+    transition: right 0.2s;
+}
+
+/* Shift canvas controls left when sim log panel is open so they don't overlap */
+body.sim-log-open #canvas-controls {
+    right: 296px;
 }
 
 #canvas-controls > * { pointer-events: all; }
@@ -1318,8 +1324,8 @@ svg {
 }
 
 .wire-bend-handle {
-  fill: #1a1a1a;
-  stroke: #555;
+  fill: rgba(30,30,30,0.85);
+  stroke: #666;
   stroke-width: 1.5px;
   cursor: grab;
   opacity: 0;
@@ -1328,12 +1334,13 @@ svg {
 }
 .wire-bend-handle:hover,
 .wire-bend-handle.dragging {
-  opacity: 1;
+  opacity: 1 !important;
   stroke: #88aaff;
+  fill: #223;
   cursor: grabbing;
 }
 #links:hover .wire-bend-handle {
-  opacity: 0.6;
+  opacity: 0.7;
 }
 
 /* Simulation Mode Styles */

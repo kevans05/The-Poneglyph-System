@@ -238,7 +238,6 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .attr("class", "wire-hit")
         .attr("d", getPathData(a1mid.x, a1mid.y, a2mid.x, a2mid.y, 0, frac))
         .on("contextmenu", _wireRightClick(src.id, tgt.id));
-      _addWireBendHandle(linkGroup, a1mid.x, a1mid.y, a2mid.x, a2mid.y, frac, src.id, tgt.id);
 
       offsets.forEach((off, i) => {
         const a1 = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, off),
@@ -257,6 +256,8 @@ function render3LD(data) { if (!data || !data.nodes) return;
           .attr("data-frac", frac)
           .on("contextmenu", _wireRightClick(src.id, tgt.id));
       });
+      // Handle appended AFTER phase paths so it sits on top in Z-order
+      _addWireBendHandle(linkGroup, a1mid.x, a1mid.y, a2mid.x, a2mid.y, frac, src.id, tgt.id);
     }
   });
 
@@ -694,7 +695,7 @@ function _addWireBendHandle(linkGroup, x1, y1, x2, y2, frac, srcId, tgtId) {
     .attr("class", "wire-bend-handle")
     .attr("cx", hx)
     .attr("cy", hy)
-    .attr("r", 5)
+    .attr("r", 7)
     .datum({ x1, y1, x2, y2, isHoriz });
 
   handle.call(d3.drag()
@@ -732,7 +733,7 @@ function _addWireBendHandle(linkGroup, x1, y1, x2, y2, frac, srcId, tgtId) {
       });
     })
     .on("end", function() {
-      d3.select(this).attr("r", 5).attr("stroke", "#555");
+      d3.select(this).attr("r", 7).attr("stroke", "#666");
       const newFrac = _wireBends[key];
       if (newFrac != null) {
         reconfigureAPI(null, "update_wire_bend", { src: srcId, tgt: tgtId, frac: newFrac });

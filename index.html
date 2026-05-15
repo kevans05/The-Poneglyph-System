@@ -227,7 +227,10 @@
             <div id="sim-log-panel">
                 <div id="sim-log-header">
                     <span>EVENT LOG</span>
-                    <button onclick="clearSimLog()">CLR</button>
+                    <span style="display:flex;gap:4px;">
+                        <button onclick="detachSimLog()" title="Open in popup window">⤢</button>
+                        <button onclick="clearSimLog()">CLR</button>
+                    </span>
                 </div>
                 <div id="sim-log-entries"></div>
             </div>

@@ -279,6 +279,14 @@ class SimEngine:
                 state["summary"] = dev.get_summary_dict()
             except Exception:
                 pass
+        elif hasattr(dev, "is_closed"):
+            # Switch/CB/Disconnect — include Status so the SLD visualization updates
+            try:
+                sd = dev.get_summary_dict() if hasattr(dev, "get_summary_dict") else {}
+                sd["Status"] = "CLOSED" if dev.is_closed else "OPEN"
+                state["summary"] = sd
+            except Exception:
+                state["summary"] = {"Status": "CLOSED" if dev.is_closed else "OPEN"}
 
         return state
 
