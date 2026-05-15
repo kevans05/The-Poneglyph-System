@@ -313,8 +313,8 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
         Y[i, j] -= y
         Y[j, i] -= y
 
-    def stamp_xfmr(ki_h, ki_x, ratio, shift_deg):
-        """Ideal off-nominal-tap transformer branch."""
+    def stamp_xfmr(ki_h, ki_x, ratio, shift_deg, Y_t=_Y_XFMR):
+        """Off-nominal-tap transformer branch with leakage admittance Y_t."""
         i = key_idx.get(ki_h)
         j = key_idx.get(ki_x)
         if i is None or j is None:
@@ -326,10 +326,10 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
         shift = math.radians(shift_deg)
         # a_c = ratio × exp(−j·shift)
         # Constraint: V_X = V_H / a_c = (V_H / ratio) × exp(+j·shift)
-        Y[i, i] += _Y_XFMR / (ratio * ratio)
-        Y[j, j] += _Y_XFMR
-        Y[i, j] -= (_Y_XFMR / ratio) * cmath.exp(-1j * shift)
-        Y[j, i] -= (_Y_XFMR / ratio) * cmath.exp(+1j * shift)
+        Y[i, i] += Y_t / (ratio * ratio)
+        Y[j, j] += Y_t
+        Y[i, j] -= (Y_t / ratio) * cmath.exp(-1j * shift)
+        Y[j, i] -= (Y_t / ratio) * cmath.exp(+1j * shift)
 
     for dev in reachable:
         cls  = dev.__class__.__name__
@@ -338,7 +338,8 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
 
         # ── PowerTransformer ──────────────────────────────────────────────
         if cls == 'PowerTransformer':
-            stamp_xfmr(k_h, k_x, dev.ratio, dev.phase_shift_deg)
+            Y_t = getattr(dev, 'leakage_admittance_s', _Y_XFMR)
+            stamp_xfmr(k_h, k_x, dev.ratio, dev.phase_shift_deg, Y_t)
             # H-side ↔ upstream device
             up = getattr(dev, 'upstream_device', None)
             if up in reachable:
@@ -559,7 +560,7 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
         if i is not None:
             Y[i, i] += y
 
-    def stamp_xfmr_zero(ki_h, ki_x, h_winding, x_winding, ratio, shift_deg):
+    def stamp_xfmr_zero(ki_h, ki_x, h_winding, x_winding, ratio, shift_deg, Y_t=_Y_XFMR):
         h_pass = h_winding in _ZS_PASS
         x_pass = x_winding in _ZS_PASS
         i = key_idx.get(ki_h)
@@ -572,16 +573,16 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
                 return
             seen.add(edge)
             shift = math.radians(shift_deg)
-            Y[i, i] += _Y_XFMR / (ratio * ratio)
-            Y[j, j] += _Y_XFMR
-            Y[i, j] -= (_Y_XFMR / ratio) * cmath.exp(-1j * shift)
-            Y[j, i] -= (_Y_XFMR / ratio) * cmath.exp(+1j * shift)
+            Y[i, i] += Y_t / (ratio * ratio)
+            Y[j, j] += Y_t
+            Y[i, j] -= (Y_t / ratio) * cmath.exp(-1j * shift)
+            Y[j, i] -= (Y_t / ratio) * cmath.exp(+1j * shift)
         elif h_pass and not x_pass:
             # Delta/ungrounded-Y on X: H-side shunt to ground (delta circulates).
-            stamp_shunt(ki_h, _Y_XFMR)
+            stamp_shunt(ki_h, Y_t)
         elif not h_pass and x_pass:
             # Delta/ungrounded-Y on H: X-side shunt to ground.
-            stamp_shunt(ki_x, _Y_XFMR)
+            stamp_shunt(ki_x, Y_t)
         # else: both blocked — no stamp.
 
     for dev in reachable:
@@ -590,8 +591,9 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
         k_x = _dev_key(dev, False)
 
         if cls == 'PowerTransformer':
+            Y_t = getattr(dev, 'leakage_admittance_s', _Y_XFMR)
             stamp_xfmr_zero(k_h, k_x, dev.h_winding, dev.x_winding,
-                             dev.ratio, dev.phase_shift_deg)
+                             dev.ratio, dev.phase_shift_deg, Y_t)
             up = getattr(dev, 'upstream_device', None)
             if up in reachable:
                 stamp(_dev_key(up, False), k_h, _Y_IDEAL)

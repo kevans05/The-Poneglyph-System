@@ -70,6 +70,9 @@ class PowerTransformer(Bus):
         polarity_reversed: bool = False,  # False → -30° (ANSI), True → +30°
         tap_configs: list | None = None,
         selected_tap_index: int = 0,
+        mva_base: float = 0.0,   # nameplate MVA; 0 → ideal (no leakage)
+        z_pu: float = 0.0,       # total leakage impedance in per-unit on mva_base
+        x_r_ratio: float = 10.0, # X/R ratio of leakage impedance
     ):
         super().__init__(name)
         self.h_winding = h_winding.upper()
@@ -77,6 +80,9 @@ class PowerTransformer(Bus):
         self.polarity_reversed = polarity_reversed
         self.h_connections = []
         self.x_connections = []
+        self.mva_base  = float(mva_base)
+        self.z_pu      = float(z_pu)
+        self.x_r_ratio = float(x_r_ratio)
 
         if tap_configs:
             self.tap_configs = tap_configs
@@ -92,6 +98,29 @@ class PowerTransformer(Bus):
             self.sec_kv = float(sec_kv)
 
         self.ratio = self.pri_kv / self.sec_kv
+
+    # ── Leakage impedance ────────────────────────────────────────────────────
+
+    @property
+    def leakage_admittance_s(self) -> complex:
+        """
+        Leakage admittance in siemens, referred to the X (secondary) side.
+
+        Z_base_X = sec_kv² / mva_base  [Ω, with kV and MVA]
+        Z_t      = z_pu × Z_base_X × (R + jX) / |Z|
+        Y_t      = 1 / Z_t
+
+        Returns a large ideal admittance (1e4 S) when z_pu or mva_base is zero.
+        """
+        import cmath as _cm, math as _m
+        if self.z_pu <= 0.0 or self.mva_base <= 0.0:
+            return 1e4 + 0j   # ideal (no leakage)
+        z_base = (self.sec_kv ** 2) / self.mva_base   # Ω
+        scale  = _m.sqrt(1.0 + self.x_r_ratio ** 2)
+        r_pu   = self.z_pu / scale
+        x_pu   = self.z_pu * self.x_r_ratio / scale
+        z_t    = complex(r_pu * z_base, x_pu * z_base)
+        return 1.0 / z_t
 
     # ── Winding helpers ──────────────────────────────────────────────────────
 
@@ -256,6 +285,13 @@ class PowerTransformer(Bus):
         )
         current_tap = self.tap_configs[self.selected_tap_index]
         tap_label = current_tap.get("label", f"Tap {self.selected_tap_index}")
+        if self.z_pu > 0 and self.mva_base > 0:
+            y_t = self.leakage_admittance_s
+            z_t = 1.0 / y_t
+            leakage_str = (f"{self.z_pu*100:.2f}% on {self.mva_base:.0f} MVA  "
+                           f"(Z={abs(z_t):.3f} Ω, X/R={self.x_r_ratio:.0f})")
+        else:
+            leakage_str = "Ideal (none)"
         stats = {
             "Type": "Power Transformer",
             "HV Winding (H)": h_name,
@@ -264,6 +300,7 @@ class PowerTransformer(Bus):
             "Active Tap": f"{tap_label} ({self.pri_kv} kV / {self.sec_kv} kV)",
             "Phase Shift": f"{self.phase_shift_deg:+.0f}°",
             "Connection": "Delta (Δ)" if self.x_is_delta else "Wye (Y)",
+            "Leakage Impedance": leakage_str,
         }
         up_v = self.primary_voltage
         up_i = self.primary_current

@@ -161,6 +161,9 @@ class DeviceFactory:
                 polarity_reversed=data.get("polarity_reversed", False),
                 tap_configs=data.get("tap_configs"),
                 selected_tap_index=data.get("selected_tap_index", 0),
+                mva_base=data.get("mva_base", 0.0),
+                z_pu=data.get("z_pu", 0.0),
+                x_r_ratio=data.get("x_r_ratio", 10.0),
             )
 
         elif dtype == "VoltageRegulator":
