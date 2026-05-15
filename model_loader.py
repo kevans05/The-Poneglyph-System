@@ -3,6 +3,16 @@ Shared logic for loading the substation model from topology JSON.
 """
 
 from phasors.devices.factory import DeviceFactory
+import logging
+
+def _upstream_chain(dev):
+    """Return the set of object ids reachable from dev (inclusive) via upstream_device links."""
+    visited = set()
+    cur = dev
+    while cur is not None and id(cur) not in visited:
+        visited.add(id(cur))
+        cur = getattr(cur, "upstream_device", None)
+    return visited
 
 def load_substation_model(topology: dict):
     """Reconstruct the device graph and connections from topology JSON.
@@ -30,11 +40,26 @@ def load_substation_model(topology: dict):
             b = None if isinstance(c, str) else c.get("via_bushing")
             if tid in devices:
                 if b and b.upper() in ("H", "Y"):
-                    devices[tid].connect(devices[did])
+                    # devices[tid].connect(devices[did]) → did.upstream_device = tid
+                    # Cycle if did is already reachable from tid's upstream chain
+                    if id(devices[did]) in _upstream_chain(devices[tid]):
+                        logging.warning("Skipping connection %s→%s: would create an upstream_device cycle", tid, did)
+                    else:
+                        devices[tid].connect(devices[did])
                 elif b:
-                    devices[did].connect(devices[tid], to_bushing=b)
+                    # devices[did].connect(devices[tid], ...) → tid.upstream_device = did
+                    # Cycle if tid is already reachable from did's upstream chain
+                    if id(devices[tid]) in _upstream_chain(devices[did]):
+                        logging.warning("Skipping connection %s→%s: would create an upstream_device cycle", did, tid)
+                    else:
+                        devices[did].connect(devices[tid], to_bushing=b)
                 else:
-                    devices[did].connect(devices[tid])
+                    # devices[did].connect(devices[tid]) → tid.upstream_device = did
+                    # Cycle if tid is already reachable from did's upstream chain
+                    if id(devices[tid]) in _upstream_chain(devices[did]):
+                        logging.warning("Skipping connection %s→%s: would create an upstream_device cycle", did, tid)
+                    else:
+                        devices[did].connect(devices[tid])
         
         # Secondary connections
         for c in d.get("secondary_connections", []):
