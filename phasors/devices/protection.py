@@ -250,7 +250,12 @@ class Relay(ProtectionDevice):
             reset_delay  = float(self.settings.get(f"{label}_RESET_DELAY", 0.0))
 
             if pickup_delay <= 0 and reset_delay <= 0:
+                prev = self._sim_active_outputs.get(label, False)
                 self._sim_active_outputs[label] = raw_state
+                if raw_state and not prev:
+                    events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"device_id": self.name, "label": label}})
+                elif not raw_state and prev:
+                    events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"device_id": self.name, "label": label}})
                 continue
 
             if raw_state:

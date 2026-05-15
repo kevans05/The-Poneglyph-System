@@ -96,8 +96,21 @@ class OC50Element(ProtectionElement):
 
     def step(self, i_sys, v_sys, dt_ms: float) -> list:
         pickup = float(self.settings.get(f"{self.bit_name}P", 5.0))
-        self.operated = _phase_current(i_sys, self.bit_name) >= pickup
-        return []
+        was_operated = self.operated
+        I = _phase_current(i_sys, self.bit_name)
+        self.operated = I >= pickup
+        events = []
+        if self.operated and not was_operated:
+            multiple = round(I / pickup, 2) if pickup > 0 else None
+            events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {
+                "label": self.bit_name,
+                "multiple": multiple,
+            }})
+        elif not self.operated and was_operated:
+            events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {
+                "label": self.bit_name,
+            }})
+        return events
 
     def get_state(self) -> dict:
         pickup = self.settings.get(f"{self.bit_name}P", "?")
@@ -110,11 +123,17 @@ class OV59Element(ProtectionElement):
 
     def step(self, i_sys, v_sys, dt_ms: float) -> list:
         pickup = float(self.settings.get(f"{self.bit_name}P", 120.0))
+        was_operated = self.operated
         V = 0.0
         if v_sys and v_sys.is_energized():
             V = max(v_sys.a.magnitude, v_sys.b.magnitude, v_sys.c.magnitude)
         self.operated = V >= pickup
-        return []
+        events = []
+        if self.operated and not was_operated:
+            events.append({"type": "RELAY_PICKUP", "delay": 0, "data": {"label": self.bit_name}})
+        elif not self.operated and was_operated:
+            events.append({"type": "RELAY_DROPOUT", "delay": 0, "data": {"label": self.bit_name}})
+        return events
 
     def get_state(self) -> dict:
         pickup = self.settings.get(f"{self.bit_name}P", "?")
