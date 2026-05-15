@@ -77,6 +77,7 @@ function stopSim() {
             _lastRewindSnapshotTime = -Infinity;
             // Hide log panel
             if (simLogOpen) toggleSimLog();
+            document.body.classList.remove("sim-log-open");
             // Trigger a refresh of the real data
             refreshData();
         });
@@ -205,7 +206,12 @@ function applyFrame(frame) {
         let change = frame.changes[did];
         let node = simData.nodes.find(n => n.id === did);
         if (node) {
-            Object.assign(node, change);
+            const { summary: chSummary, ...rest } = change;
+            Object.assign(node, rest);
+            if (chSummary) {
+                if (!node.summary) node.summary = {};
+                Object.assign(node.summary, chSummary);
+            }
             if (change.fault_state === null) delete node.fault_state;
         }
     }
@@ -777,6 +783,18 @@ function addSimLogEntry(sim_time_ms, type, data) {
     while (entries.children.length > 500) {
         entries.removeChild(entries.firstChild);
     }
+
+    // Mirror to detached popup if open
+    if (_simLogPopup && !_simLogPopup.closed) {
+        try {
+            const pe = _simLogPopup.document.getElementById("log-entries");
+            if (pe) {
+                pe.appendChild(row.cloneNode(true));
+                pe.scrollTop = pe.scrollHeight;
+                while (pe.children.length > 500) pe.removeChild(pe.firstChild);
+            }
+        } catch(e) { _simLogPopup = null; }
+    }
 }
 
 function toggleSimLog() {
@@ -784,12 +802,55 @@ function toggleSimLog() {
     const panel = document.getElementById("sim-log-panel");
     const btn = document.getElementById("sim-log-btn");
     panel.style.display = simLogOpen ? "flex" : "none";
+    document.body.classList.toggle("sim-log-open", simLogOpen);
     if (btn) btn.innerText = simLogOpen ? "LOG ▼" : "LOG";
 }
 
 function clearSimLog() {
     const entries = document.getElementById("sim-log-entries");
     if (entries) entries.innerHTML = "";
+    if (_simLogPopup && !_simLogPopup.closed) {
+        const pe = _simLogPopup.document.getElementById("log-entries");
+        if (pe) pe.innerHTML = "";
+    }
+}
+
+let _simLogPopup = null;
+
+function detachSimLog() {
+    if (_simLogPopup && !_simLogPopup.closed) {
+        _simLogPopup.focus();
+        return;
+    }
+    const w = window.open("", "sim-log-popup", "width=500,height=600,resizable=yes");
+    if (!w) return;
+    _simLogPopup = w;
+    w.document.write(`<!DOCTYPE html><html><head>
+<title>Sim Event Log</title>
+<style>
+body{margin:0;background:#0d0101;color:#ccc;font-family:monospace;font-size:11px;}
+#toolbar{display:flex;justify-content:space-between;align-items:center;padding:5px 10px;background:#200;border-bottom:1px solid #500;color:#f55;font-weight:bold;letter-spacing:1px;}
+#toolbar button{background:none;border:1px solid #500;color:#888;cursor:pointer;padding:1px 6px;font-size:10px;font-family:monospace;}
+#toolbar button:hover{border-color:#f55;color:#f55;}
+#log-entries{overflow-y:auto;height:calc(100vh - 34px);padding:2px 0;}
+.sim-log-entry{display:flex;gap:5px;padding:2px 8px;border-bottom:1px solid #1a0000;line-height:1.5;word-break:break-all;}
+.sim-log-entry:hover{background:#1a0505;}
+.sim-log-time{color:#555;min-width:55px;flex-shrink:0;}
+.sim-log-type{min-width:72px;flex-shrink:0;font-weight:bold;}
+.sim-log-detail{color:#999;}
+</style></head><body>
+<div id="toolbar"><span>EVENT LOG</span><button onclick="document.getElementById('log-entries').innerHTML=''">CLR</button></div>
+<div id="log-entries"></div>
+</body></html>`);
+    w.document.close();
+    // Copy current log entries into popup
+    const entries = document.getElementById("sim-log-entries");
+    if (entries) {
+        const pe = w.document.getElementById("log-entries");
+        if (pe) pe.innerHTML = entries.innerHTML;
+        pe.scrollTop = pe.scrollHeight;
+    }
+    w.addEventListener("beforeunload", () => { _simLogPopup = null; });
 }
 
 /**
@@ -806,8 +867,8 @@ const OSC_EVENT_COLORS = {
 };
 
 function showOscillography(deviceId, windowMs) {
-    if (!simActive || _oscBuffer.length === 0) {
-        alert("Oscillography is only available during an active simulation.");
+    if (!simActive) {
+        alert("Oscillography is only available in simulation mode.");
         return;
     }
     windowMs = windowMs || 30000;
@@ -872,7 +933,10 @@ function _renderOsc(deviceId, windowMs) {
         ctx.fillStyle = "#555";
         ctx.font = "12px monospace";
         ctx.textAlign = "center";
-        ctx.fillText("No current data for " + deviceId + " in this window.", W / 2, H / 2);
+        const msg = _oscBuffer.length === 0
+            ? "Waiting for simulation data... (press RESUME to start)"
+            : "No current data for " + deviceId + " in this window.";
+        ctx.fillText(msg, W / 2, H / 2);
         return;
     }
 
@@ -1021,7 +1085,7 @@ function _renderOsc(deviceId, windowMs) {
  * Called by the popup on a 1-second timer.
  */
 function _renderOscToPopup(popup, deviceId, windowMs) {
-    if (!simActive || _oscBuffer.length === 0) return;
+    if (!simActive) return;
     try {
         const canvas = popup.document.getElementById("osc-canvas");
         const legend = popup.document.getElementById("osc-legend");
@@ -1064,7 +1128,10 @@ function _renderOscOnCanvas(canvas, legendEl, deviceId, windowMs) {
         ctx.fillStyle = "#555";
         ctx.font = "12px monospace";
         ctx.textAlign = "center";
-        ctx.fillText("No current data for " + deviceId + " in this window.", W / 2, H / 2);
+        const msg2 = _oscBuffer.length === 0
+            ? "Waiting for simulation data... (press RESUME to start)"
+            : "No current data for " + deviceId + " in this window.";
+        ctx.fillText(msg2, W / 2, H / 2);
         return;
     }
 
