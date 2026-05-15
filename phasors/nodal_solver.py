@@ -72,6 +72,14 @@ Zero-sequence transformer model (winding grounding matters):
   D–YG  : shunt admittance on X-node
   otherwise: both ports isolated in Y0
 
+Sparse matrix solve
+-------------------
+When scipy is available the Y-bus is assembled in COO format (row/col/val
+lists) and converted to CSR at the end of stamping.  scipy.sparse.linalg.
+spsolve (SuperLU) replaces np.linalg.solve; NaN detection replaces the
+matrix-rank pre-check.  Falls back to dense numpy automatically when scipy
+is not installed.
+
 Fallback
 --------
 If numpy is unavailable or the reduced admittance matrix is singular,
@@ -153,13 +161,20 @@ def solve_and_cache(devices: dict) -> bool:
     except ImportError:
         return False
 
+    try:
+        import scipy.sparse as _sps
+        import scipy.sparse.linalg as _spla
+        sp = (_sps, _spla)
+    except ImportError:
+        sp = None
+
     primary = [d for d in devices.values()
                if d.__class__.__name__ in _PRIMARY_TYPES]
     if not primary:
         return False
 
     try:
-        return _run_solver(primary, np)
+        return _run_solver(primary, np, sp)
     except Exception as exc:
         log.debug("nodal_solver fallback — %s: %s", type(exc).__name__, exc)
         return False
@@ -169,7 +184,7 @@ def solve_and_cache(devices: dict) -> bool:
 # Internal solver
 # ---------------------------------------------------------------------------
 
-def _run_solver(primary: list, np) -> bool:
+def _run_solver(primary: list, np, sp=None) -> bool:
     primary_set = set(primary)
 
     # 1. BFS: find all devices energised from any VoltageSource.
@@ -196,8 +211,8 @@ def _run_solver(primary: list, np) -> bool:
         return False
 
     # 4. Build positive-sequence Y-bus and solve pre-fault voltages.
-    Y1 = _build_ybus(reachable, primary_set, key_idx, N, np)
-    V1_pf = _iterative_solve(Y1, node_keys, key_idx, reachable, slack_idx, N, np)
+    Y1 = _build_ybus(reachable, primary_set, key_idx, N, np, sp)
+    V1_pf = _iterative_solve(Y1, node_keys, key_idx, reachable, slack_idx, N, np, sp)
     if V1_pf is None:
         return False
 
@@ -210,8 +225,8 @@ def _run_solver(primary: list, np) -> bool:
     else:
         # Y2 = Y1 (passive network is symmetric for negative-sequence).
         Y2 = Y1
-        Y0 = _build_ybus_zero(reachable, primary_set, key_idx, N, np)
-        V0, V1, V2 = _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults, slack_idx, N, np)
+        Y0 = _build_ybus_zero(reachable, primary_set, key_idx, N, np, sp)
+        V0, V1, V2 = _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults, slack_idx, N, np, sp)
         _write_cache_seq(V0, V1, V2, node_keys, key_idx, reachable)
 
     return True
@@ -316,8 +331,11 @@ def _dev_key(dev, upstream_side: bool = True) -> tuple:
 # Y-bus construction
 # ---------------------------------------------------------------------------
 
-def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
-    Y    = np.zeros((N, N), dtype=complex)
+def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np, sp=None):
+    # Accumulate in COO format; convert to CSR (sparse) or scatter to dense.
+    rows: list = []
+    cols: list = []
+    vals: list = []
     seen: set = set()   # (min_i, max_i) — prevents double-stamping
 
     def stamp(ki, kj, y):
@@ -329,10 +347,9 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
         if edge in seen:
             return
         seen.add(edge)
-        Y[i, i] += y
-        Y[j, j] += y
-        Y[i, j] -= y
-        Y[j, i] -= y
+        rows.extend([i, j, i, j])
+        cols.extend([i, j, j, i])
+        vals.extend([y, y, -y, -y])
 
     def stamp_xfmr(ki_h, ki_x, ratio, shift_deg, Y_t=_Y_XFMR):
         """Off-nominal-tap transformer branch with leakage admittance Y_t."""
@@ -345,12 +362,14 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
             return
         seen.add(edge)
         shift = math.radians(shift_deg)
-        # a_c = ratio × exp(−j·shift)
-        # Constraint: V_X = V_H / a_c = (V_H / ratio) × exp(+j·shift)
-        Y[i, i] += Y_t / (ratio * ratio)
-        Y[j, j] += Y_t
-        Y[i, j] -= (Y_t / ratio) * cmath.exp(-1j * shift)
-        Y[j, i] -= (Y_t / ratio) * cmath.exp(+1j * shift)
+        rows.extend([i, j, i, j])
+        cols.extend([i, j, j, i])
+        vals.extend([
+            Y_t / (ratio * ratio),
+            Y_t,
+            -(Y_t / ratio) * cmath.exp(-1j * shift),
+            -(Y_t / ratio) * cmath.exp(+1j * shift),
+        ])
 
     for dev in reachable:
         cls  = dev.__class__.__name__
@@ -413,14 +432,23 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np):
             # Open switch: Bus-to-CB edge still stamped when Bus processes
             # its connections list (Bus → CB ideal, CB → Bus2 nothing).
 
-    return Y
+    if sp is not None:
+        sps, _ = sp
+        if not vals:
+            return sps.csr_matrix((N, N), dtype=complex)
+        return sps.coo_matrix((vals, (rows, cols)), shape=(N, N), dtype=complex).tocsr()
+    else:
+        Y = np.zeros((N, N), dtype=complex)
+        for r, c, v in zip(rows, cols, vals):
+            Y[r, c] += v
+        return Y
 
 
 # ---------------------------------------------------------------------------
 # Iterative solve
 # ---------------------------------------------------------------------------
 
-def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
+def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np, sp=None):
     """
     Partition [Y][V] = [I] into slack (known V) and unknown rows/cols.
     Iterates up to MAX_ITER passes with PQ and PV bus updates each pass.
@@ -455,12 +483,19 @@ def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
         V[i] = complex(V_init_mag)
 
     # Extract sub-matrices (constant across iterations).
-    Y_uu = Y[np.ix_(unknown_list, unknown_list)]
-    Y_us = Y[np.ix_(unknown_list, slack_list)]
-    V_s  = np.array([V[i] for i in slack_list], dtype=complex)
+    if sp is not None:
+        sps, spla = sp
+        unknown_arr = np.array(unknown_list)
+        slack_arr   = np.array(slack_list)
+        Y_uu = Y[unknown_arr, :][:, unknown_arr]
+        Y_us = Y[unknown_arr, :][:, slack_arr]
+    else:
+        Y_uu = Y[np.ix_(unknown_list, unknown_list)]
+        Y_us = Y[np.ix_(unknown_list, slack_list)]
+        if np.linalg.matrix_rank(Y_uu) < len(unknown_list):
+            return None
 
-    if np.linalg.matrix_rank(Y_uu) < len(unknown_list):
-        return None
+    V_s = np.array([V[i] for i in slack_list], dtype=complex)
 
     # Build PV-bus table: {node_idx: (v_set_V, q_min_VA, q_max_VA, dev)}
     # The constraint is applied at the upstream bus node so that the controlled
@@ -516,7 +551,9 @@ def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
         for k, (v_set, q_min, q_max, dev) in pv_buses.items():
             va_node = V[k] if abs(V[k]) > 1e-6 else complex(v_set)
             # Q = -Im(V_k* × Σ_j Y_kj V_j)
-            q_calc = -( va_node.conjugate() * (Y[k, :] @ V) ).imag
+            # .dot() + flat[0] handles both dense (scalar) and sparse (1×1).
+            yv_k   = complex(np.asarray(Y[k, :].dot(V)).flat[0])
+            q_calc = -(va_node.conjugate() * yv_k).imag
             q_inj  = max(q_min, min(q_max, q_calc))
             if q_inj != q_calc:
                 q_limited.add(k)
@@ -525,11 +562,16 @@ def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np):
             s_inj = complex(p_inj, q_inj)   # positive = generation
             I[k] += s_inj.conjugate() / va_node.conjugate()
 
-        rhs = I[unknown_list] - Y_us @ V_s
-        try:
-            V_u = np.linalg.solve(Y_uu, rhs)
-        except np.linalg.LinAlgError:
-            return None
+        rhs = I[unknown_list] - Y_us.dot(V_s)
+        if sp is not None:
+            V_u = spla.spsolve(Y_uu, rhs)
+            if np.any(np.isnan(V_u.real) | np.isnan(V_u.imag)):
+                return None
+        else:
+            try:
+                V_u = np.linalg.solve(Y_uu, rhs)
+            except np.linalg.LinAlgError:
+                return None
 
         for idx, val in zip(unknown_list, V_u):
             V[idx] = val
@@ -607,7 +649,7 @@ def _collect_faults(reachable: set, key_idx: dict) -> list:
 # Zero-sequence Y-bus
 # ---------------------------------------------------------------------------
 
-def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np):
+def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np, sp=None):
     """
     Build zero-sequence admittance matrix.
 
@@ -615,7 +657,9 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
     - PowerLine: uses r0_per_km / x0_per_km (default 3× positive-seq).
     - PowerTransformer: zero-sequence model depends on winding grounding.
     """
-    Y = np.zeros((N, N), dtype=complex)
+    rows: list = []
+    cols: list = []
+    vals: list = []
     seen: set = set()
 
     def stamp(ki, kj, y):
@@ -627,15 +671,16 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
         if edge in seen:
             return
         seen.add(edge)
-        Y[i, i] += y
-        Y[j, j] += y
-        Y[i, j] -= y
-        Y[j, i] -= y
+        rows.extend([i, j, i, j])
+        cols.extend([i, j, j, i])
+        vals.extend([y, y, -y, -y])
 
     def stamp_shunt(ki, y):
         i = key_idx.get(ki)
         if i is not None:
-            Y[i, i] += y
+            rows.append(i)
+            cols.append(i)
+            vals.append(y)
 
     def stamp_xfmr_zero(ki_h, ki_x, h_winding, x_winding, ratio, shift_deg, Y_t=_Y_XFMR):
         h_pass = h_winding in _ZS_PASS
@@ -650,10 +695,14 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
                 return
             seen.add(edge)
             shift = math.radians(shift_deg)
-            Y[i, i] += Y_t / (ratio * ratio)
-            Y[j, j] += Y_t
-            Y[i, j] -= (Y_t / ratio) * cmath.exp(-1j * shift)
-            Y[j, i] -= (Y_t / ratio) * cmath.exp(+1j * shift)
+            rows.extend([i, j, i, j])
+            cols.extend([i, j, j, i])
+            vals.extend([
+                Y_t / (ratio * ratio),
+                Y_t,
+                -(Y_t / ratio) * cmath.exp(-1j * shift),
+                -(Y_t / ratio) * cmath.exp(+1j * shift),
+            ])
         elif h_pass and not x_pass:
             # Delta/ungrounded-Y on X: H-side shunt to ground (delta circulates).
             stamp_shunt(ki_h, Y_t)
@@ -712,14 +761,23 @@ def _build_ybus_zero(reachable: set, primary_set: set, key_idx: dict, N: int, np
                     if c in reachable:
                         stamp(k_h, _dev_key(c, True), _Y_IDEAL)
 
-    return Y
+    if sp is not None:
+        sps, _ = sp
+        if not vals:
+            return sps.csr_matrix((N, N), dtype=complex)
+        return sps.coo_matrix((vals, (rows, cols)), shape=(N, N), dtype=complex).tocsr()
+    else:
+        Y = np.zeros((N, N), dtype=complex)
+        for r, c, v in zip(rows, cols, vals):
+            Y[r, c] += v
+        return Y
 
 
 # ---------------------------------------------------------------------------
 # Sequence-network fault solve (superposition / Thevenin)
 # ---------------------------------------------------------------------------
 
-def _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults: list, slack_idx: dict, N: int, np):
+def _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults: list, slack_idx: dict, N: int, np, sp=None):
     """
     Apply sequence-network Thevenin method for each active fault.
 
@@ -731,9 +789,6 @@ def _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults: list, slack_idx: dict, N: int, n
 
     Returns (V0, V1, V2) arrays of length N.
     """
-    alpha  = _ROT_B   # exp(+j120°)
-    alpha2 = _ROT_C   # exp(+j240°)
-
     V0 = np.zeros(N, dtype=complex)
     V1 = V1_pf.copy()
     V2 = np.zeros(N, dtype=complex)
@@ -743,14 +798,20 @@ def _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults: list, slack_idx: dict, N: int, n
     if not free:
         return V0, V1, V2
 
-    Y0r = Y0[np.ix_(free, free)]
-    Y1r = Y1[np.ix_(free, free)]
-    Y2r = Y2[np.ix_(free, free)]
-
-    if (np.linalg.matrix_rank(Y1r) < len(free) or
-            np.linalg.matrix_rank(Y0r) < len(free) or
-            np.linalg.matrix_rank(Y2r) < len(free)):
-        return V0, V1, V2
+    if sp is not None:
+        sps, spla = sp
+        free_arr = np.array(free)
+        Y0r = Y0[free_arr, :][:, free_arr]
+        Y1r = Y1[free_arr, :][:, free_arr]
+        Y2r = Y2[free_arr, :][:, free_arr]
+    else:
+        Y0r = Y0[np.ix_(free, free)]
+        Y1r = Y1[np.ix_(free, free)]
+        Y2r = Y2[np.ix_(free, free)]
+        if (np.linalg.matrix_rank(Y1r) < len(free) or
+                np.linalg.matrix_rank(Y0r) < len(free) or
+                np.linalg.matrix_rank(Y2r) < len(free)):
+            return V0, V1, V2
 
     free_map = {node: pos for pos, node in enumerate(free)}
 
@@ -766,12 +827,21 @@ def _seq_fault_solve(Y0, Y1, Y2, V1_pf, faults: list, slack_idx: dict, N: int, n
         # Thevenin impedance columns: solve Y·z = e_f in each sequence network.
         e_f = np.zeros(len(free), dtype=complex)
         e_f[f_pos] = 1.0
-        try:
-            z1_col = np.linalg.solve(Y1r, e_f)
-            z2_col = np.linalg.solve(Y2r, e_f)
-            z0_col = np.linalg.solve(Y0r, e_f)
-        except np.linalg.LinAlgError:
-            continue
+        if sp is not None:
+            z1_col = spla.spsolve(Y1r, e_f)
+            z2_col = spla.spsolve(Y2r, e_f)
+            z0_col = spla.spsolve(Y0r, e_f)
+            if (np.any(np.isnan(z1_col.real) | np.isnan(z1_col.imag)) or
+                    np.any(np.isnan(z2_col.real) | np.isnan(z2_col.imag)) or
+                    np.any(np.isnan(z0_col.real) | np.isnan(z0_col.imag))):
+                continue
+        else:
+            try:
+                z1_col = np.linalg.solve(Y1r, e_f)
+                z2_col = np.linalg.solve(Y2r, e_f)
+                z0_col = np.linalg.solve(Y0r, e_f)
+            except np.linalg.LinAlgError:
+                continue
 
         Z1f = z1_col[f_pos]
         Z2f = z2_col[f_pos]
