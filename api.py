@@ -55,6 +55,7 @@ POST /api/sim/speed                   — set simulation time multiplier
 POST /api/sim/fault                   — schedule a fault event
 POST /api/sim/clear_fault             — clear an active fault
 GET  /api/sim/frames                  — poll simulation animation frames
+GET  /api/sim/scc                     — short-circuit capacity at each bus (MVA, kA)
 """
 
 import topology_utils
@@ -886,6 +887,13 @@ class SCADAServer(BaseHTTPRequestHandler):
             })
 
         try:
+            # ── Solver GET endpoints ───────────────────────────────────────────
+            if self.path == "/api/sim/scc":
+                from phasors.nodal_solver import compute_scc
+                _, devices, _, _, _ = load_substation()
+                result = compute_scc(devices)
+                return _json_response(self, {"buses": result})
+
             # ── PMM GET endpoints ──────────────────────────────────────────────
             if self.path == "/api/pmm/ports":
                 return _json_response(self, {"ports": _pmm.api_list_ports()})

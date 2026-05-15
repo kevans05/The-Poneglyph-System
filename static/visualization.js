@@ -543,6 +543,20 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .attr("stroke", "#666")
         .attr("stroke-width", 2)
         .attr("stroke-dasharray", "4,2");
+      // Loading indicator for PowerLine/Line
+      if (["Line", "PowerLine"].includes(d.type) && d.loading_pct !== undefined && d.loading_pct !== null) {
+        const lp = d.loading_pct;
+        const lc = lp >= 100 ? "#ff2222" : lp >= 80 ? "#ff9900" : lp >= 50 ? "#ffee00" : "#22cc44";
+        const barW = Math.min(80, lp * 0.8);
+        el.append("rect").attr("x", -40).attr("y", PHASE_GAP * 2 + 6).attr("width", 80).attr("height", 6)
+          .attr("fill", "#1a1a1a").attr("stroke", "#333").attr("stroke-width", 0.5).attr("rx", 2);
+        el.append("rect").attr("x", -40).attr("y", PHASE_GAP * 2 + 6).attr("width", barW).attr("height", 6)
+          .attr("fill", lc).attr("rx", 2).attr("opacity", 0.85);
+        el.append("text").attr("x", 0).attr("y", PHASE_GAP * 2 + 19)
+          .attr("text-anchor", "middle").attr("fill", lc)
+          .style("font-size", "7px").style("font-weight", "bold")
+          .text(lp.toFixed(1) + "%");
+      }
     } else if (d.type === "ShuntCapacitor") {
       const g = el.append("g").attr("transform", "translate(0, -10)");
       g.append("line").attr("x1", 0).attr("y1", -15).attr("x2", 0).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
@@ -1367,7 +1381,14 @@ function updateMinimap() {
       if (d.type === "PowerTransformer") return "#4488ff";
       if (d.type === "VoltageRegulator") return "#44ff88";
       if (d.type === "Load") return "#ff4444";
-      if (["Bus", "Line", "PowerLine", "Wire"].includes(d.type)) return "#555";
+      if (["Bus", "Wire"].includes(d.type)) return "#555";
+      if (["Line", "PowerLine"].includes(d.type)) {
+        if (d.loading_pct >= 100) return "#ff2222";
+        if (d.loading_pct >= 80) return "#ff9900";
+        if (d.loading_pct >= 50) return "#ffee00";
+        if (d.loading_pct > 0) return "#22cc44";
+        return "#555";
+      }
       return "#505050";
     });
   nodeSel.exit().remove();

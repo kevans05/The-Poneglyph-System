@@ -6,7 +6,7 @@ import math
 
 class PowerLine(Bus):
     def __init__(self, name: str, length_km: float = 0.0, r_per_km: float = 0.0, x_per_km: float = 0.0,
-                 r0_per_km: float = None, x0_per_km: float = None):
+                 r0_per_km: float = None, x0_per_km: float = None, ampacity_amps: float = 0.0):
         super().__init__(name)
         self._cache = {}
         self.name = name
@@ -16,8 +16,17 @@ class PowerLine(Bus):
         # Zero-sequence impedance defaults to 3× positive-sequence (typical overhead line)
         self.r0_per_km = r0_per_km if r0_per_km is not None else r_per_km * 3.0
         self.x0_per_km = x0_per_km if x0_per_km is not None else x_per_km * 3.0
+        self.ampacity_amps = float(ampacity_amps)   # continuous thermal rating; 0 = unrated
         self.upstream_device = None
         self.downstream_device = None
+
+    @property
+    def loading_pct(self):
+        """Per-cent of thermal ampacity, based on phase-A branch current from the last Y-bus solve."""
+        I_a = self._cache.get('branch_current_a')
+        if I_a is None or self.ampacity_amps <= 0:
+            return None
+        return abs(I_a) / self.ampacity_amps * 100.0
         
 
     @property
@@ -65,15 +74,27 @@ class PowerLine(Bus):
             'Type': 'Line',
             'Length (km)': self.length_km,
             'R (Ω/km)': self.r_per_km,
-            'X (Ω/km)': self.x_per_km
+            'X (Ω/km)': self.x_per_km,
         }
-        up_name = self.upstream_device.name if self.upstream_device else 'Source'
+        if self.ampacity_amps > 0:
+            stats['Ampacity'] = f'{self.ampacity_amps:.0f} A'
+        up_name   = self.upstream_device.name   if self.upstream_device   else 'Source'
         down_name = self.downstream_device.name if self.downstream_device else 'End of Line'
         stats['Logical Flow'] = f'{up_name} -> [ {self.name} ] -> {down_name}'
         stats['Connection'] = 'Delta (Δ)' if is_delta else 'Wye (Y)'
         v = self.voltage; i = self.current
         if v: stats['Line Voltage (LL)'] = v.a.magnitude * math.sqrt(3)
-        if i and v:
+
+        # Branch current from Y-bus solve (more accurate than tree-walk current)
+        I_a = self._cache.get('branch_current_a')
+        if I_a is not None:
+            i_mag = abs(I_a)
+            stats['Branch Current (A)'] = f'{i_mag:.1f} A'
+            if self.ampacity_amps > 0:
+                lp = i_mag / self.ampacity_amps * 100.0
+                label = '🔴 OVERLOADED' if lp >= 100 else ('🟠 HIGH' if lp >= 80 else ('🟡 MODERATE' if lp >= 50 else '🟢 NORMAL'))
+                stats['Loading'] = f'{lp:.1f}% — {label}'
+        elif i and v:
             try:
                 sa = voltage_current_multiplier(v.a, i.a)
                 sb = voltage_current_multiplier(v.b, i.b)
@@ -83,7 +104,8 @@ class PowerLine(Bus):
                 stats['Active Power'] = s_total.real
                 stats['Reactive Power'] = s_total.imag
                 stats['Apparent Power'] = abs(s_total)
-            except: pass
+            except:
+                pass
         return append_3phase_details(stats, v, i, is_delta=is_delta)
 
     def inject_fault(self, data):

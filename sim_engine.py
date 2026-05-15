@@ -314,7 +314,12 @@ class SimEngine:
                 "b": {"mag": dev.current.b.magnitude, "ang": dev.current.b.angle_degrees},
                 "c": {"mag": dev.current.c.magnitude, "ang": dev.current.c.angle_degrees},
             }
-        
+
+        if hasattr(dev, 'loading_pct'):
+            lp = dev.loading_pct
+            if lp is not None:
+                state["loading_pct"] = round(lp, 1)
+
         return state
 
 

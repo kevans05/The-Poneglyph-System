@@ -62,7 +62,10 @@ class DeviceFactory:
                 did,
                 length_km=data.get("length_km", 0.0),
                 r_per_km=data.get("r_per_km", 0.0),
-                x_per_km=data.get("x_per_km", 0.0)
+                x_per_km=data.get("x_per_km", 0.0),
+                r0_per_km=data.get("r0_per_km", None),
+                x0_per_km=data.get("x0_per_km", None),
+                ampacity_amps=data.get("ampacity_amps", 0.0),
             )
 
         elif dtype == "CircuitBreaker":

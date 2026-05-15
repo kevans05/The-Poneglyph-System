@@ -44,7 +44,9 @@ Solving — normal operation
 --------------------------
 Three-phase balanced positive-sequence: one complex Y-bus is solved for the
 phase-A phasor.  Phases B and C are derived by +120° / +240° rotation.
-Three Gauss-Seidel iterations update PQ-bus current injections.
+Newton-Raphson (polar form, sparse Jacobian) iterates power-mismatch equations
+to convergence; converges quadratically in 2-3 steps for typical substations
+and handles heavily-loaded ring buses close to the voltage-collapse point.
 
 Solving — fault conditions (symmetrical components)
 ----------------------------------------------------
@@ -212,7 +214,7 @@ def _run_solver(primary: list, np, sp=None) -> bool:
 
     # 4. Build positive-sequence Y-bus and solve pre-fault voltages.
     Y1 = _build_ybus(reachable, primary_set, key_idx, N, np, sp)
-    V1_pf = _iterative_solve(Y1, node_keys, key_idx, reachable, slack_idx, N, np, sp)
+    V1_pf = _nr_solve(Y1, node_keys, key_idx, reachable, slack_idx, N, np, sp)
     if V1_pf is None:
         return False
 
@@ -448,139 +450,220 @@ def _build_ybus(reachable: set, primary_set: set, key_idx: dict, N: int, np, sp=
 # Iterative solve
 # ---------------------------------------------------------------------------
 
-def _iterative_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np, sp=None):
+def _nr_solve(Y, node_keys, key_idx, reachable, slack_idx, N, np, sp=None,
+             tol=1e3, max_iter=8):
     """
-    Partition [Y][V] = [I] into slack (known V) and unknown rows/cols.
-    Iterates up to MAX_ITER passes with PQ and PV bus updates each pass.
+    Newton-Raphson power flow (polar form, sparse Jacobian).
 
-    PV bus algorithm (per iteration):
-      1. Compute Q at the PV node from Y-bus: Q = -Im(V_k* × (Y[k,:]·V))
-      2. Clamp Q within [q_min, q_max]; bus converts to PQ if limit is hit.
-      3. Inject S = P + jQ as current: I_k = -(S/V_k)*
-      4. Solve linear system for all unknowns.
-      5. Restore voltage magnitude: V_k ← V_set · exp(j·∠V_k_new)
+    For each free bus k the polar state is (θ_k, ln|V_k|).  The system
 
-    Returns complex voltage vector of length N, or None if singular.
+        J · [Δθ; Δln|V|] = [ΔP; ΔQ]
+
+    is assembled and solved each iteration.  Off-diagonal Jacobian entries
+    come from T[k,m] = V[k]·conj(Y[k,m])·conj(V[m]):
+
+        H[k,m] = Im(T)   N[k,m] = Re(T)   M = −N   L = H   (k ≠ m)
+
+    Diagonal entries use P_k, Q_k, G_kk, B_kk directly.
+
+    PV buses: |V| is held at v_setpoint between iterations (magnitude snap);
+    when Q exceeds a limit the bus is demoted to PQ for that iteration.
+
+    tol: convergence tolerance in watts (per-phase power mismatch).
+    Returns complex voltage vector length N, or None on failure.
     """
-    _MAX_ITER = 6   # enough for PV buses to converge; PQ buses converge in 2-3
+    slack_set = set(slack_idx.keys())
 
-    slack_list   = sorted(slack_idx.keys())
-    slack_set    = set(slack_list)
-    unknown_list = [i for i in range(N) if i not in slack_set]
+    # ── Schedules and PV-bus table ───────────────────────────────────────────
+    P_sched = np.zeros(N)
+    Q_sched = np.zeros(N)
+    pv_info: dict = {}   # idx → (v_set_V, q_min_VA/ph, q_max_VA/ph, dev)
 
-    if not unknown_list:
-        V = np.zeros(N, dtype=complex)
-        for i, va in slack_idx.items():
-            V[i] = va
-        return V
+    for dev in reachable:
+        cls = dev.__class__.__name__
+        k   = key_idx.get(_dev_key(dev, True))
+        if k is None or k in slack_set:
+            continue
 
-    # Flat-start: unknowns initialised to slack voltage magnitude, angle 0.
+        v_set = 0.0
+        if cls in _PV_TYPES:
+            v_set = getattr(dev, 'v_setpoint_kv', 0.0) * 1e3
+        elif cls == 'SVC' and getattr(dev, 'v_setpoint_kv', 0.0) > 0:
+            v_set = dev.v_setpoint_kv * 1e3
+
+        if v_set > 0:
+            q_min = getattr(dev, 'q_min_mvar',
+                            getattr(dev, 'mvar_min', -9999.0)) * 1e6 / 3
+            q_max = getattr(dev, 'q_max_mvar',
+                            getattr(dev, 'mvar_max',  9999.0)) * 1e6 / 3
+            pv_info[k] = (v_set, q_min, q_max, dev)
+            P_sched[k] = getattr(dev, 'p_mw', 0.0) * 1e6 / 3
+        elif cls in _LOAD_TYPES:
+            try:
+                pq = dev.get_phase_pq()
+                P_sched[k] = -pq['a'][0]
+                Q_sched[k] = -pq['a'][1]
+            except Exception:
+                pass
+
+    pv_set    = set(pv_info)
+    q_limited: dict = {}   # idx → clamped Q (VA/phase); bus acts as PQ when here
+
+    # ── Initial voltages (flat start) ────────────────────────────────────────
     V_init_mag = abs(next(iter(slack_idx.values())))
     V = np.zeros(N, dtype=complex)
     for i, va in slack_idx.items():
         V[i] = va
-    for i in unknown_list:
-        V[i] = complex(V_init_mag)
+    for k in range(N):
+        if k not in slack_set:
+            V[k] = complex(pv_info[k][0] if k in pv_info else V_init_mag)
 
-    # Extract sub-matrices (constant across iterations).
+    # Y diagonal for Jacobian diagonal terms
     if sp is not None:
-        sps, spla = sp
-        unknown_arr = np.array(unknown_list)
-        slack_arr   = np.array(slack_list)
-        Y_uu = Y[unknown_arr, :][:, unknown_arr]
-        Y_us = Y[unknown_arr, :][:, slack_arr]
+        Ydiag = np.asarray(Y.diagonal()).ravel().astype(complex)
     else:
-        Y_uu = Y[np.ix_(unknown_list, unknown_list)]
-        Y_us = Y[np.ix_(unknown_list, slack_list)]
-        if np.linalg.matrix_rank(Y_uu) < len(unknown_list):
-            return None
+        Ydiag = np.array([Y[k, k] for k in range(N)], dtype=complex)
 
-    V_s = np.array([V[i] for i in slack_list], dtype=complex)
+    # ── NR iterations ────────────────────────────────────────────────────────
+    for _iter in range(max_iter):
+        # Effective PV set: PV buses not currently Q-limited
+        eff_pv   = pv_set - set(q_limited)
+        all_free = [i for i in range(N) if i not in slack_set]
+        pq_free  = [i for i in all_free  if i not in eff_pv]
+        n_th = len(all_free)
+        n_v  = len(pq_free)
+        n_eq = n_th + n_v
+        if n_eq == 0:
+            break
 
-    # Build PV-bus table: {node_idx: (v_set_V, q_min_VA, q_max_VA, dev)}
-    # The constraint is applied at the upstream bus node so that the controlled
-    # voltage is the bus voltage, not a separate device node.
-    pv_buses: dict = {}
-    for dev in reachable:
-        cls = dev.__class__.__name__
-        v_set = 0.0
-        q_min = -1e18
-        q_max =  1e18
-        if cls in _PV_TYPES:
-            v_set = getattr(dev, 'v_setpoint_kv', 0.0) * 1e3
-            q_min = getattr(dev, 'q_min_mvar', -9999.0) * 1e6
-            q_max = getattr(dev, 'q_max_mvar',  9999.0) * 1e6
-        elif cls == 'SVC' and getattr(dev, 'v_setpoint_kv', 0.0) > 0:
-            v_set = dev.v_setpoint_kv * 1e3
-            q_min = dev.mvar_min * 1e6
-            q_max = dev.mvar_max * 1e6
-        if v_set > 0:
-            # Prefer the upstream bus node; fall back to this device's own node.
-            up = getattr(dev, 'upstream_device', None)
-            if up is not None:
-                k = key_idx.get(_dev_key(up, False))  # X-side of upstream (= its output)
-            else:
-                k = None
-            if k is None:
-                k = key_idx.get(_dev_key(dev, True))
-            if k is not None and k not in slack_set:
-                pv_buses[k] = (v_set, q_min, q_max, dev)
-                V[k] = complex(v_set)   # warm-start at setpoint
+        th_pos = {k: pos        for pos, k in enumerate(all_free)}
+        v_pos  = {k: pos + n_th for pos, k in enumerate(pq_free)}
 
-    for _iter in range(_MAX_ITER):
-        I = np.zeros(N, dtype=complex)
+        # Power at all buses
+        Iv = np.asarray(Y.dot(V)).ravel()
+        S  = V * Iv.conj()
 
-        # PQ injections (loads / shunts).
-        for dev in reachable:
-            if dev.__class__.__name__ not in _LOAD_TYPES:
-                continue
-            k = key_idx.get(_dev_key(dev, True))
-            if k is None or k in pv_buses:
-                continue
-            va_node = V[k] if abs(V[k]) > 1e-6 else complex(V_init_mag)
-            try:
-                pq  = dev.get_phase_pq()
-                s_a = complex(pq['a'][0], pq['a'][1])
-                I[k] += -(s_a.conjugate()) / (va_node.conjugate())
-            except Exception:
-                pass
+        # Mismatch
+        mis = np.zeros(n_eq)
+        for pos, k in enumerate(all_free):
+            mis[pos] = P_sched[k] - float(S[k].real)
+        for pos, k in enumerate(pq_free):
+            q_sch = q_limited.get(k, Q_sched[k])
+            mis[n_th + pos] = q_sch - float(S[k].imag)
 
-        # PV injections — Q derived from network, clamped, then injected.
-        # q_limited tracks buses where a limit was hit (convert to PQ for snap).
-        q_limited: set = set()
-        for k, (v_set, q_min, q_max, dev) in pv_buses.items():
-            va_node = V[k] if abs(V[k]) > 1e-6 else complex(v_set)
-            # Q = -Im(V_k* × Σ_j Y_kj V_j)
-            # .dot() + flat[0] handles both dense (scalar) and sparse (1×1).
-            yv_k   = complex(np.asarray(Y[k, :].dot(V)).flat[0])
-            q_calc = -(va_node.conjugate() * yv_k).imag
-            q_inj  = max(q_min, min(q_max, q_calc))
-            if q_inj != q_calc:
-                q_limited.add(k)
-            dev.q_mvar_solved = q_inj / 1e6
-            p_inj = getattr(dev, 'p_mw', 0.0) * 1e6
-            s_inj = complex(p_inj, q_inj)   # positive = generation
-            I[k] += s_inj.conjugate() / va_node.conjugate()
+        if np.max(np.abs(mis)) < tol:
+            break
 
-        rhs = I[unknown_list] - Y_us.dot(V_s)
+        # ── Jacobian (COO accumulation) ──────────────────────────────────────
+        jrows: list = []
+        jcols: list = []
+        jvals: list = []
+
         if sp is not None:
-            V_u = spla.spsolve(Y_uu, rhs)
-            if np.any(np.isnan(V_u.real) | np.isnan(V_u.imag)):
-                return None
+            sps, spla = sp
+            # T[k,m] = V[k]·conj(Y[k,m])·conj(V[m]) for each CSR nonzero
+            row_idx = np.repeat(np.arange(N), np.diff(Y.indptr))
+            T_data  = V[row_idx] * np.conj(Y.data) * np.conj(V[Y.indices])
+            for ptr in range(Y.nnz):
+                k = int(row_idx[ptr])
+                m = int(Y.indices[ptr])
+                if k == m or k not in th_pos or m not in th_pos:
+                    continue
+                H_km = float(T_data[ptr].imag)
+                N_km = float(T_data[ptr].real)
+                r_k  = th_pos[k]
+                jrows.append(r_k);  jcols.append(th_pos[m]); jvals.append(H_km)
+                if m in v_pos:
+                    jrows.append(r_k);  jcols.append(v_pos[m]); jvals.append(N_km)
+                if k in v_pos:
+                    r_kq = v_pos[k]
+                    jrows.append(r_kq); jcols.append(th_pos[m]); jvals.append(-N_km)
+                    if m in v_pos:
+                        jrows.append(r_kq); jcols.append(v_pos[m]); jvals.append(H_km)
         else:
+            for k in all_free:
+                r_k  = th_pos[k]
+                r_kq = v_pos.get(k)
+                for m in all_free:
+                    if m == k:
+                        continue
+                    Ykm = Y[k, m]
+                    if Ykm == 0:
+                        continue
+                    T_km = V[k] * Ykm.conj() * V[m].conj()
+                    H_km = float(T_km.imag)
+                    N_km = float(T_km.real)
+                    jrows.append(r_k);  jcols.append(th_pos[m]); jvals.append(H_km)
+                    if m in v_pos:
+                        jrows.append(r_k);  jcols.append(v_pos[m]); jvals.append(N_km)
+                    if r_kq is not None:
+                        jrows.append(r_kq); jcols.append(th_pos[m]); jvals.append(-N_km)
+                        if m in v_pos:
+                            jrows.append(r_kq); jcols.append(v_pos[m]); jvals.append(H_km)
+
+        # Diagonal contributions
+        Vabs2 = np.abs(V) ** 2
+        for k in all_free:
+            r_k = th_pos[k]
+            Pk  = float(S[k].real)
+            Qk  = float(S[k].imag)
+            Gkk = float(Ydiag[k].real)
+            Bkk = float(Ydiag[k].imag)
+            Vk2 = float(Vabs2[k])
+            jrows.append(r_k); jcols.append(r_k); jvals.append(-Qk - Bkk * Vk2)
+            if k in v_pos:
+                r_kq = v_pos[k]
+                jrows.append(r_k);  jcols.append(r_kq); jvals.append( Pk + Gkk * Vk2)
+                jrows.append(r_kq); jcols.append(r_k);  jvals.append( Pk - Gkk * Vk2)
+                jrows.append(r_kq); jcols.append(r_kq); jvals.append( Qk - Bkk * Vk2)
+
+        # ── Solve ────────────────────────────────────────────────────────────
+        if sp is not None:
+            J = sps.coo_matrix(
+                (jvals, (jrows, jcols)), shape=(n_eq, n_eq), dtype=float
+            ).tocsr()
+            x = spla.spsolve(J, mis)
+        else:
+            J = np.zeros((n_eq, n_eq))
+            for r, c, v in zip(jrows, jcols, jvals):
+                J[r, c] += v
             try:
-                V_u = np.linalg.solve(Y_uu, rhs)
+                x = np.linalg.solve(J, mis)
             except np.linalg.LinAlgError:
                 return None
+        if np.any(np.isnan(x)):
+            return None
 
-        for idx, val in zip(unknown_list, V_u):
-            V[idx] = val
+        # ── Update polar coordinates ─────────────────────────────────────────
+        theta = np.angle(V).copy()
+        Vabs  = np.abs(V).copy()
+        for pos, k in enumerate(all_free):
+            theta[k] += x[pos]
+        for pos, k in enumerate(pq_free):
+            # clamp step to prevent magnitude going negative
+            Vabs[k] *= max(0.1, 1.0 + x[n_th + pos])
+        for k in eff_pv:
+            Vabs[k] = pv_info[k][0]   # magnitude snap for unconstrained PV buses
+        for k in all_free:
+            V[k] = Vabs[k] * np.exp(1j * theta[k])
+        # slack voltages are never modified above (not in all_free)
 
-        # Restore PV bus voltage magnitudes only when Q is within limits.
-        # A limited bus behaves as PQ this iteration; magnitude droops naturally.
-        for k, (v_set, q_min, q_max, _dev) in pv_buses.items():
-            if k not in q_limited and abs(V[k]) > 1e-12:
-                V[k] = v_set * (V[k] / abs(V[k]))
+        # ── Q-limit check for PV buses ───────────────────────────────────────
+        Iv2 = np.asarray(Y.dot(V)).ravel()
+        S2  = V * Iv2.conj()
+        new_q_limited: dict = {}
+        for k, (v_set, q_min, q_max, dev) in pv_info.items():
+            q_inj = float(S2[k].imag)
+            dev.q_mvar_solved = q_inj * 3 / 1e6
+            if q_inj < q_min:
+                new_q_limited[k] = q_min
+                dev.q_mvar_solved = q_min * 3 / 1e6
+                Q_sched[k] = q_min
+            elif q_inj > q_max:
+                new_q_limited[k] = q_max
+                dev.q_mvar_solved = q_max * 3 / 1e6
+                Q_sched[k] = q_max
+        q_limited = new_q_limited
 
     return V
 
@@ -623,6 +706,22 @@ def _write_cache(V, node_keys, key_idx, reachable) -> None:
             idx = key_idx.get((dev, ''))
             if idx is not None:
                 dev._cache['voltage'] = _make_wye(V[idx])
+
+    # Branch currents for PowerLine devices (series current through line impedance).
+    for dev in reachable:
+        if dev.__class__.__name__ != 'PowerLine':
+            continue
+        k_h = key_idx.get((dev, ''))
+        dd  = getattr(dev, 'downstream_device', None)
+        if k_h is None or dd is None or dd not in reachable:
+            continue
+        k_d = key_idx.get(_dev_key(dd, True))
+        if k_d is None:
+            continue
+        z = complex(dev.r_per_km, dev.x_per_km) * dev.length_km
+        if abs(z) < 1e-12:
+            continue
+        dev._cache['branch_current_a'] = (V[k_h] - V[k_d]) / z
 
 
 # ---------------------------------------------------------------------------
@@ -939,3 +1038,169 @@ def _write_cache_seq(V0, V1, V2, node_keys: list, key_idx: dict, reachable: set)
             idx = key_idx.get((dev, ''))
             if idx is not None:
                 dev._cache['voltage'] = _make_wye_seq(V0[idx], V1[idx], V2[idx])
+
+    # Branch currents for PowerLine devices (unbalanced: sequence → phase A).
+    for dev in reachable:
+        if dev.__class__.__name__ != 'PowerLine':
+            continue
+        k_h = key_idx.get((dev, ''))
+        dd  = getattr(dev, 'downstream_device', None)
+        if k_h is None or dd is None or dd not in reachable:
+            continue
+        k_d = key_idx.get(_dev_key(dd, True))
+        if k_d is None:
+            continue
+        z1 = complex(dev.r_per_km, dev.x_per_km)  * dev.length_km
+        z0 = complex(dev.r0_per_km, dev.x0_per_km) * dev.length_km
+        if abs(z1) < 1e-12:
+            continue
+        I1 = (V1[k_h] - V1[k_d]) / z1
+        I2 = (V2[k_h] - V2[k_d]) / z1   # negative-seq uses positive-seq impedance
+        I0 = (V0[k_h] - V0[k_d]) / z0 if abs(z0) > 1e-12 else 0j
+        dev._cache['branch_current_a'] = I0 + I1 + I2   # phase-A current
+
+
+# ---------------------------------------------------------------------------
+# Short-circuit capacity (SCC) at each bus
+# ---------------------------------------------------------------------------
+
+def compute_scc(devices: dict) -> dict:
+    """
+    Compute the three-phase short-circuit capacity (MVA) and fault current (kA)
+    at every energised primary bus.
+
+    Algorithm: build the positive-sequence Y-bus, reduce by grounding slacks,
+    factorize once with LU, then solve one unit vector per free bus to obtain
+    the diagonal of Z_bus = Y_bus^-1.
+
+      SCC_mva[k] = 3 · |V_k|² / |Z_kk| / 1e6
+      I_fault_ka [k] = |V_k| / (|Z_kk| · √3 · 1e3)
+
+    Returns {device_name: {"scc_mva": float, "scc_ka": float}}.
+    Falls back silently on any error.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return {}
+    try:
+        import scipy.sparse as _sps
+        import scipy.sparse.linalg as _spla
+        sp = (_sps, _spla)
+    except ImportError:
+        sp = None
+
+    primary = [d for d in devices.values()
+               if d.__class__.__name__ in _PRIMARY_TYPES]
+    if not primary:
+        return {}
+
+    try:
+        return _run_scc(primary, np, sp)
+    except Exception as exc:
+        log.debug("compute_scc error — %s: %s", type(exc).__name__, exc)
+        return {}
+
+
+def _run_scc(primary: list, np, sp) -> dict:
+    primary_set = set(primary)
+    reachable   = _bfs_reachable(primary_set)
+    if not reachable:
+        return {}
+
+    node_keys, key_idx = _build_node_index(reachable)
+    N = len(node_keys)
+    if N == 0:
+        return {}
+
+    slack_idx: dict = {}
+    for dev in reachable:
+        if dev.__class__.__name__ == 'VoltageSource':
+            v = getattr(dev, '_voltage', None)
+            if v is not None:
+                idx = key_idx.get((dev, ''))
+                if idx is not None:
+                    slack_idx[idx] = v.a.to_complex()
+    if not slack_idx:
+        return {}
+
+    Y = _build_ybus(reachable, primary_set, key_idx, N, np, sp)
+
+    slack_set = set(slack_idx.keys())
+    free      = [i for i in range(N) if i not in slack_set]
+    if not free:
+        return {}
+
+    # Build reverse map: node index → device
+    idx_to_dev = {idx: nk[0] for nk, idx in key_idx.items()}
+
+    # Pre-fault voltage at each bus: use cached value or slack magnitude
+    V_nominal = np.zeros(N, dtype=complex)
+    for i, va in slack_idx.items():
+        V_nominal[i] = va
+    for k in free:
+        dev_k = idx_to_dev.get(k)
+        if dev_k is not None:
+            wv = getattr(dev_k, '_cache', {}).get('voltage')
+            if wv is not None:
+                V_nominal[k] = wv.a.to_complex()
+            else:
+                V_nominal[k] = next(iter(slack_idx.values()))
+
+    result: dict = {}
+
+    if sp is not None:
+        sps, spla = sp
+        free_arr = np.array(free)
+        Y_red    = Y[free_arr, :][:, free_arr]
+        # Factorize once; solve N right-hand sides with LU
+        try:
+            lu = spla.splu(Y_red.tocsc())
+        except Exception:
+            return {}
+        for pos, k in enumerate(free):
+            e_k = np.zeros(len(free), dtype=complex)
+            e_k[pos] = 1.0
+            z_col = lu.solve(e_k)
+            if np.any(np.isnan(z_col.real) | np.isnan(z_col.imag)):
+                continue
+            Z_kk = complex(z_col[pos])
+            if abs(Z_kk) < 1e-14:
+                continue
+            Vk = abs(V_nominal[k])
+            if Vk < 1.0:
+                Vk = abs(next(iter(slack_idx.values())))
+            scc_mva = 3.0 * Vk ** 2 / abs(Z_kk) / 1e6
+            scc_ka  = Vk / (abs(Z_kk) * math.sqrt(3) * 1e3)
+            dev_k   = idx_to_dev.get(k)
+            if dev_k is not None:
+                result[dev_k.name] = {
+                    "scc_mva": round(scc_mva, 2),
+                    "scc_ka":  round(scc_ka,  3),
+                }
+    else:
+        # Dense fallback: invert the reduced admittance matrix once
+        Y_red = np.array(
+            Y[np.ix_(free, free)], dtype=complex
+        ) if hasattr(Y, 'toarray') else Y[np.ix_(free, free)]
+        try:
+            Z_red = np.linalg.inv(Y_red)
+        except np.linalg.LinAlgError:
+            return {}
+        for pos, k in enumerate(free):
+            Z_kk = complex(Z_red[pos, pos])
+            if abs(Z_kk) < 1e-14:
+                continue
+            Vk = abs(V_nominal[k])
+            if Vk < 1.0:
+                Vk = abs(next(iter(slack_idx.values())))
+            scc_mva = 3.0 * Vk ** 2 / abs(Z_kk) / 1e6
+            scc_ka  = Vk / (abs(Z_kk) * math.sqrt(3) * 1e3)
+            dev_k   = idx_to_dev.get(k)
+            if dev_k is not None:
+                result[dev_k.name] = {
+                    "scc_mva": round(scc_mva, 2),
+                    "scc_ka":  round(scc_ka,  3),
+                }
+
+    return result
