@@ -243,7 +243,8 @@ class SimEngine:
             import api
             _, _, raw_devices, reference, _ = self._load_model(self.topology_data)
             frame["full_sld"] = api._build_topology_response(
-                self.sources, self.devices, raw_devices, reference
+                self.sources, self.devices, raw_devices, reference,
+                self.topology_data.get("wire_bends")
             )
 
         for did, dev in self.devices.items():

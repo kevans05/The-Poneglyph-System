@@ -137,7 +137,7 @@
     function showLogicDesigner(id)                    { window.opener.showLogicDesigner(id); }
     function showTCCPlot(id)                          { window.opener.showTCCPlot(id); }
     function showRelaySettingsEditor(id)              { window.opener.showRelaySettingsEditor(id); }
-    function showOscillography(id, w)                 { window.opener.showOscillography(id, w); }
+    function showOscillography(id, w)                 { window.opener.detachOscillography(id, w || 30000); }
     function startConnectionMode(id, b)               { window.opener.startConnectionMode(id, b); }
     function showPlantMenu(x, y, gx, gy, id, b)       { window.opener.showPlantMenu(x, y, gx, gy, id, b); }
     function quickAddSensor(id, t, b)                 { window.opener.quickAddSensor(id, t, b); }

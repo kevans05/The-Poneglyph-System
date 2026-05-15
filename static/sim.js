@@ -90,6 +90,8 @@ function resetSim() {
         .then(() => {
             simPaused = true;
             lastFrameId = -1;
+            simTime = 0;
+            lastRealTime = 0;
             frameQueue = [];
             _oscBuffer = [];
             _oscEvents = [];
@@ -139,7 +141,7 @@ function simPoll() {
                 lastFrameId = res.frames[res.frames.length - 1].id;
             }
             document.getElementById("sim-status").innerText = simPaused ? "PAUSED" : (frameQueue.length > 100 ? "BUFFERING..." : "LIVE");
-            document.getElementById("sim-pause-btn").innerText = "RESUME";
+            document.getElementById("sim-pause-btn").innerText = simPaused ? "RESUME" : "PAUSE";
             setTimeout(simPoll, 200);
         })
         .catch(err => {
@@ -175,8 +177,16 @@ function simPlaybackLoop(now) {
                 applyFrame(latest);
             }
         }
+    } else if (!_rewindMode) {
+        // While paused, still consume snapshot frames so the SLD reflects
+        // reset/mutate topology changes immediately.
+        while (frameQueue.length > 0 && frameQueue[0].full_sld) {
+            const f = frameQueue.shift();
+            applyFrame(f);
+            simTime = f.sim_time;
+        }
     }
-    
+
     updateSimUI();
     requestAnimationFrame(simPlaybackLoop);
 }
@@ -186,6 +196,9 @@ function applyFrame(frame) {
 
     if (frame.full_sld) {
         simData = JSON.parse(JSON.stringify(frame.full_sld));
+        if (typeof updateWireBendsFromEdges === "function") {
+            updateWireBendsFromEdges(simData.edges);
+        }
     }
 
     for (let did in frame.changes) {

@@ -230,7 +230,7 @@ def _detect_sync_errors(sources, devices):
     return errors
 
 
-def _build_topology_response(sources, devices, raw_devices, reference):
+def _build_topology_response(sources, devices, raw_devices, reference, wire_bends=None):
     raw_map = {d["id"]: d for d in raw_devices}
 
     # Build a lookup for explicitly-specified target bushings: {source_id: {target_id: bushing}}
@@ -377,6 +377,12 @@ def _build_topology_response(sources, devices, raw_devices, reference):
             for s in dev.close_dc_inputs:
                 if not any(e["source"] == s.name and e["target"] == dev.name and e["type"] == "close" for e in edges):
                     edges.append({"source": s.name, "target": dev.name, "type": "close"})
+
+    if wire_bends:
+        for edge in edges:
+            key = edge["source"] + "→" + edge["target"]
+            if key in wire_bends:
+                edge["bend_frac"] = wire_bends[key]
 
     return {
         "nodes": nodes,
@@ -676,18 +682,25 @@ class SCADAServer(BaseHTTPRequestHandler):
                 return _json_response(self, {"ok": True})
 
             if self.path == "/api/reconfigure":
-                if _sim.sim_engine.running:
+                action = req.get("action")
+                if _sim.sim_engine.running and action != "update_wire_bend":
                     _sim.sim_engine.mutate(req)
                     return _json_response(self, {"ok": True})
-                
+
                 if _current_topology is None:
                     return _json_response(self, {"error": "No site loaded"}, 409)
 
                 _current_topology = topology_utils.apply_reconfiguration(
                     _current_topology, req, _active_site, _active_session_id
                 )
-                if req.get("action") not in ["update_position", "update_rotation", "record_measurement"]:
-                    _autosave(_current_topology, "reconfigure:" + req.get("action", "unknown"))
+                # Also keep the running sim's topology_data in sync for wire bends
+                if action == "update_wire_bend" and _sim.sim_engine.running:
+                    with _sim.sim_engine.lock:
+                        _sim.sim_engine.topology_data = topology_utils.apply_reconfiguration(
+                            _sim.sim_engine.topology_data, req
+                        )
+                if action not in ["update_position", "update_rotation", "record_measurement"]:
+                    _autosave(_current_topology, "reconfigure:" + action)
                 return _json_response(self, {"ok": True})
 
             if self.path == "/api/topology/import":
@@ -1093,7 +1106,8 @@ class SCADAServer(BaseHTTPRequestHandler):
                     load_substation()
                 )
                 resp = _build_topology_response(
-                    sources, devices, raw_devices, reference
+                    sources, devices, raw_devices, reference,
+                    _current_topology.get("wire_bends", {}) if _current_topology else None
                 )
                 resp["project_info"] = project_info
                 resp["site"] = (
