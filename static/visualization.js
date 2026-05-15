@@ -8,6 +8,20 @@
 const svg = d3.select("#sld-svg");
 const zoomGroup = d3.select("#zoom-group");
 
+// User-overridden wire bend fractions, keyed "srcId→tgtId" → frac (0.1–0.9).
+// Populated from server-stored bend_frac on load and updated on each drag.
+let _wireBends = {};
+
+function updateWireBendsFromEdges(edges) {
+    if (!edges) return;
+    edges.forEach(e => {
+        if (e.bend_frac == null) return;
+        const sid = typeof e.source === "string" ? e.source : e.source.id;
+        const tid = typeof e.target === "string" ? e.target : e.target.id;
+        _wireBends[sid + "→" + tid] = e.bend_frac;
+    });
+}
+
 const zoom = d3
   .zoom()
   .scaleExtent([0.1, 10])
@@ -111,20 +125,25 @@ function render3LD(data) { if (!data || !data.nodes) return;
 
   // Pre-pass: stagger bend fractions for edges that share a source or target
   // so their elbows land at different points instead of all bunching at 50%.
+  // User-dragged bends (_wireBends) take priority and are also synced from
+  // server-stored bend_frac on each full topology load.
   const _resolveId = v => typeof v === "string" ? v : v.id;
   const _bendFrac = {};
   const _bySrc = {}, _byTgt = {};
   data.edges.forEach(edge => {
     const sid = _resolveId(edge.source), tid = _resolveId(edge.target);
     const key = sid + "→" + tid;
-    _bendFrac[key] = 0.5;
+    // Server-stored bend_frac is the baseline; user drag overrides further.
+    if (edge.bend_frac != null) _wireBends[key] = edge.bend_frac;
+    _bendFrac[key] = _wireBends[key] ?? 0.5;
     (_bySrc[sid] = _bySrc[sid] || []).push(key);
     (_byTgt[tid] = _byTgt[tid] || []).push(key);
   });
   const _stagger = (keys) => {
     if (keys.length < 2) return;
     keys.forEach((k, j) => {
-      _bendFrac[k] = 0.3 + 0.4 * (j / (keys.length - 1));
+      // Only auto-stagger edges that have no user override
+      if (_wireBends[k] == null) _bendFrac[k] = 0.3 + 0.4 * (j / (keys.length - 1));
     });
   };
   Object.values(_byTgt).forEach(_stagger);
@@ -132,7 +151,8 @@ function render3LD(data) { if (!data || !data.nodes) return;
   Object.values(_bySrc).forEach(keys => {
     if (keys.length < 2) return;
     keys.forEach((k, j) => {
-      if (_bendFrac[k] === 0.5) _bendFrac[k] = 0.3 + 0.4 * (j / (keys.length - 1));
+      if (_wireBends[k] == null && _bendFrac[k] === 0.5)
+        _bendFrac[k] = 0.3 + 0.4 * (j / (keys.length - 1));
     });
   });
 
@@ -186,6 +206,7 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .attr("data-offset", 0)
         .attr("data-frac", frac)
         .on("contextmenu", _wireRightClick(src.id, tgt.id));
+      _addWireBendHandle(linkGroup, src.gx, src.gy, tgt.gx, tgt.gy, frac, src.id, tgt.id);
     } else {
       const srcB = edge.source_bushing ||
         facingBushing(src.gx, src.gy, src.rotation || 0, tgt.gx, tgt.gy);
@@ -217,6 +238,7 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .attr("class", "wire-hit")
         .attr("d", getPathData(a1mid.x, a1mid.y, a2mid.x, a2mid.y, 0, frac))
         .on("contextmenu", _wireRightClick(src.id, tgt.id));
+      _addWireBendHandle(linkGroup, a1mid.x, a1mid.y, a2mid.x, a2mid.y, frac, src.id, tgt.id);
 
       offsets.forEach((off, i) => {
         const a1 = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, off),
@@ -652,6 +674,71 @@ function render3LD(data) { if (!data || !data.nodes) return;
   });
 
   positionLabels(nodeGroup, data.nodes);
+}
+
+/**
+ * Add a small draggable handle at the wire elbow so the user can pull the
+ * bend point to a new fraction along the wire's dominant axis.
+ */
+function _addWireBendHandle(linkGroup, x1, y1, x2, y2, frac, srcId, tgtId) {
+  const dx = x2 - x1, dy = y2 - y1;
+  if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return; // degenerate wire
+  const isHoriz = Math.abs(dx) >= Math.abs(dy);
+  const key = srcId + "→" + tgtId;
+
+  // Compute initial handle position (midpoint of the bent segment)
+  const hx = isHoriz ? x1 + dx * frac : (x1 + x2) / 2;
+  const hy = isHoriz ? (y1 + y2) / 2  : y1 + dy * frac;
+
+  const handle = linkGroup.append("circle")
+    .attr("class", "wire-bend-handle")
+    .attr("cx", hx)
+    .attr("cy", hy)
+    .attr("r", 5)
+    .datum({ x1, y1, x2, y2, isHoriz });
+
+  handle.call(d3.drag()
+    .on("start", function(event) {
+      event.sourceEvent.stopPropagation();
+      d3.select(this).attr("r", 7).attr("stroke", "#fff");
+    })
+    .on("drag", function(event) {
+      const d = d3.select(this).datum();
+      const ddx = d.x2 - d.x1, ddy = d.y2 - d.y1;
+      let newFrac;
+      if (d.isHoriz) {
+        newFrac = ddx !== 0 ? (event.x - d.x1) / ddx : 0.5;
+        d3.select(this).attr("cx", event.x).attr("cy", (d.y1 + d.y2) / 2);
+      } else {
+        newFrac = ddy !== 0 ? (event.y - d.y1) / ddy : 0.5;
+        d3.select(this).attr("cx", (d.x1 + d.x2) / 2).attr("cy", event.y);
+      }
+      newFrac = Math.max(0.1, Math.min(0.9, newFrac));
+      _wireBends[key] = newFrac;
+
+      // Live-update all wire paths that belong to this edge
+      linkGroup.selectAll("path").filter(function() {
+        return this.getAttribute("data-src") === srcId &&
+               this.getAttribute("data-tgt") === tgtId;
+      }).each(function() {
+        const el = d3.select(this);
+        const ox1 = parseFloat(el.attr("data-x1"));
+        const oy1 = parseFloat(el.attr("data-y1"));
+        const ox2 = parseFloat(el.attr("data-x2"));
+        const oy2 = parseFloat(el.attr("data-y2"));
+        const off = parseFloat(el.attr("data-offset") || 0);
+        el.attr("d", getPathData(ox1, oy1, ox2, oy2, off, newFrac))
+          .attr("data-frac", newFrac);
+      });
+    })
+    .on("end", function() {
+      d3.select(this).attr("r", 5).attr("stroke", "#555");
+      const newFrac = _wireBends[key];
+      if (newFrac != null) {
+        reconfigureAPI(null, "update_wire_bend", { src: srcId, tgt: tgtId, frac: newFrac });
+      }
+    })
+  );
 }
 
 function updateLinksDuringDrag(nodeId, newX, newY, angle, data, linkGroup) {

@@ -199,4 +199,12 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
             data["reference"] = {}
         data["reference"]["device_id"] = req.get("device_id")
         data["reference"]["phase"] = req.get("phase", "A")
+    elif action == "update_wire_bend":
+        src = req.get("src")
+        tgt = req.get("tgt")
+        frac = req.get("frac")
+        if src and tgt and frac is not None:
+            if "wire_bends" not in data:
+                data["wire_bends"] = {}
+            data["wire_bends"][src + "→" + tgt] = frac
     return data

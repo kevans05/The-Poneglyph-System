@@ -1317,6 +1317,25 @@ svg {
   pointer-events: stroke;
 }
 
+.wire-bend-handle {
+  fill: #1a1a1a;
+  stroke: #555;
+  stroke-width: 1.5px;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: all;
+}
+.wire-bend-handle:hover,
+.wire-bend-handle.dragging {
+  opacity: 1;
+  stroke: #88aaff;
+  cursor: grabbing;
+}
+#links:hover .wire-bend-handle {
+  opacity: 0.6;
+}
+
 /* Simulation Mode Styles */
 body.sim-mode-active #header {
     background-color: #180505;

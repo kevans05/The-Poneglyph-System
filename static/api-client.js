@@ -21,6 +21,9 @@ function refreshData() {
     .then((r) => r.json())
     .then((data) => {
       currentData = data;
+      if (typeof updateWireBendsFromEdges === "function") {
+        updateWireBendsFromEdges(data.edges);
+      }
       render3LD(data);
       updateMinimap();
       if (typeof onTopologyRefreshed === "function") onTopologyRefreshed();
