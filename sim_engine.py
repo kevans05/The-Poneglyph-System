@@ -62,6 +62,7 @@ class SimEngine:
         self.thread = None
         self.heartbeat_interval_ms = _cfg.SIM_HEARTBEAT_MS
         self.last_heartbeat_sim_time = 0.0
+        self._prev_energized = None   # frozenset[str] of energised device names; None = uninitialised
 
     def start(self, topology_data):
         with self.lock:
@@ -78,7 +79,8 @@ class SimEngine:
             self._frame_events = []
             self.event_queue = queue.PriorityQueue()
             self._event_seq = 0
-            
+            self._prev_energized = None   # reset so first tick establishes baseline silently
+
             # Initial frame
             self._emit_frame(is_snapshot=True)
             
@@ -229,6 +231,46 @@ class SimEngine:
         except Exception:
             pass
 
+        self._detect_island_changes()
+
+    def _detect_island_changes(self):
+        """
+        Compare the current energised set against the previous tick and emit
+        ISLAND_SPLIT / ISLAND_ENERGIZED events into the frame buffer when the
+        reachable set changes.
+
+        First call after start() / reset() establishes the baseline silently
+        (no events) so the initial topology does not flood the log.
+        """
+        try:
+            from phasors.nodal_solver import get_energized_set
+            curr = get_energized_set(self.devices)
+        except Exception:
+            return
+
+        if self._prev_energized is None:
+            # Baseline established — no events for the initial state.
+            self._prev_energized = curr
+            return
+
+        newly_dead = self._prev_energized - curr
+        newly_live = curr - self._prev_energized
+
+        if newly_dead:
+            self._frame_events.append({
+                "type": "ISLAND_SPLIT",
+                "sim_time": self.sim_time_ms,
+                "dead_devices": sorted(newly_dead),
+            })
+        if newly_live:
+            self._frame_events.append({
+                "type": "ISLAND_ENERGIZED",
+                "sim_time": self.sim_time_ms,
+                "energized_devices": sorted(newly_live),
+            })
+
+        self._prev_energized = curr
+
     def _emit_frame(self, is_snapshot=False):
         frame = {
             "id": self.next_frame_id,
@@ -317,6 +359,7 @@ class SimEngine:
             
             self.sources = new_sources
             self.devices = new_devices
+            self._detect_island_changes()
             self._emit_frame(is_snapshot=True)
 
     def update_relay_settings(self, device_id: str, new_settings: dict):

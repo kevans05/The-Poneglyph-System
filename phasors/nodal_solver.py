@@ -117,8 +117,27 @@ _ROT_C = cmath.exp(1j * math.radians(240))   # α²
 _ZS_PASS = frozenset({"YG", "ZG"})
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
+
+def get_energized_set(devices: dict) -> frozenset:
+    """
+    Return the frozenset of primary-device names currently reachable from
+    any VoltageSource through closed switches.
+
+    Used by SimEngine to detect island splits and re-energisation events
+    without re-running the full Y-bus solve.
+    """
+    primary = [d for d in devices.values()
+               if d.__class__.__name__ in _PRIMARY_TYPES]
+    if not primary:
+        return frozenset()
+    try:
+        reachable = _bfs_reachable(set(primary))
+        return frozenset(d.name for d in reachable)
+    except Exception:
+        return frozenset()
+
 
 def solve_and_cache(devices: dict) -> bool:
     """
