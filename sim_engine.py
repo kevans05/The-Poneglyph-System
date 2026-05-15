@@ -265,14 +265,20 @@ class SimEngine:
         if hasattr(dev, "target_dropped"):
             state["target_dropped"] = dev.target_dropped
         state["fault_state"] = getattr(dev, "fault_state", None)
-        
+
         if hasattr(dev, "current") and dev.current:
             state["current"] = {
                 "a": {"mag": dev.current.a.magnitude, "ang": dev.current.a.angle_degrees},
                 "b": {"mag": dev.current.b.magnitude, "ang": dev.current.b.angle_degrees},
                 "c": {"mag": dev.current.c.magnitude, "ang": dev.current.c.angle_degrees},
             }
-        
+
+        if hasattr(dev, "elements"):
+            try:
+                state["summary"] = dev.get_summary_dict()
+            except Exception:
+                pass
+
         return state
 
 
