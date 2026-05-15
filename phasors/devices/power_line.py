@@ -5,13 +5,17 @@ from ..utilities.power_utilities import append_3phase_details
 import math
 
 class PowerLine(Bus):
-    def __init__(self, name: str, length_km: float = 0.0, r_per_km: float = 0.0, x_per_km: float = 0.0):
+    def __init__(self, name: str, length_km: float = 0.0, r_per_km: float = 0.0, x_per_km: float = 0.0,
+                 r0_per_km: float = None, x0_per_km: float = None):
         super().__init__(name)
         self._cache = {}
         self.name = name
         self.length_km = length_km
         self.r_per_km = r_per_km
         self.x_per_km = x_per_km
+        # Zero-sequence impedance defaults to 3× positive-sequence (typical overhead line)
+        self.r0_per_km = r0_per_km if r0_per_km is not None else r_per_km * 3.0
+        self.x0_per_km = x0_per_km if x0_per_km is not None else x_per_km * 3.0
         self.upstream_device = None
         self.downstream_device = None
         
