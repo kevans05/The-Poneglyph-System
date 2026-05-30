@@ -20,7 +20,6 @@ class MainWindow:
         root.geometry("1200x750")
         root.minsize(800, 500)
 
-        # Tracks which tool each dropdown group is currently showing
         self._lines_tool = TOOL_BUS
         self._xfmr_tool  = TOOL_TRANSFORMER
 
@@ -76,15 +75,22 @@ class MainWindow:
         self._btn_lines["menu"] = lines_menu
         self._btn_lines.pack(side=tk.LEFT, padx=2, pady=2)
 
-        # Transformers dropdown
+        # Transformers dropdown (power transformers only)
         self._btn_xfmr = tk.Menubutton(bar, text="Transformers ▾", width=14, relief="raised",
                                         direction="below")
         xfmr_menu = tk.Menu(self._btn_xfmr, tearoff=0)
-        xfmr_menu.add_command(label="Power Transformer",         command=lambda: self._set_xfmr_tool(TOOL_TRANSFORMER))
-        xfmr_menu.add_command(label="Current Transformer (CT)",  command=lambda: self._set_xfmr_tool(TOOL_CT))
-        xfmr_menu.add_command(label="Voltage Transformer (VT)",  command=lambda: self._set_xfmr_tool(TOOL_VT))
+        xfmr_menu.add_command(label="Power Transformer", command=lambda: self._set_xfmr_tool(TOOL_TRANSFORMER))
         self._btn_xfmr["menu"] = xfmr_menu
         self._btn_xfmr.pack(side=tk.LEFT, padx=2, pady=2)
+
+        # Instrument Devices dropdown
+        self._btn_instr = tk.Menubutton(bar, text="Instrument Devices ▾", width=18, relief="raised",
+                                         direction="below")
+        instr_menu = tk.Menu(self._btn_instr, tearoff=0)
+        instr_menu.add_command(label="Current Transformer (CT)", command=lambda: self._set_instr_tool(TOOL_CT))
+        instr_menu.add_command(label="Voltage Transformer (VT)", command=lambda: self._set_instr_tool(TOOL_VT))
+        self._btn_instr["menu"] = instr_menu
+        self._btn_instr.pack(side=tk.LEFT, padx=2, pady=2)
 
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=2)
 
@@ -134,14 +140,9 @@ class MainWindow:
 
     # ── Tool management ───────────────────────────────────────────────────
 
-    _TOOL_LABELS = {
-        TOOL_SELECT: "Select",  TOOL_DELETE: "Delete",
-        TOOL_BUS: "Lines: Bus", TOOL_TLINE: "Lines: T-Line", TOOL_FEEDER: "Lines: Feeder",
-        TOOL_TRANSFORMER: "Transformers: Power Tx",
-        TOOL_CT: "Transformers: CT", TOOL_VT: "Transformers: VT",
-    }
-    _LINES_TOOLS  = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
-    _XFMR_TOOLS   = {TOOL_TRANSFORMER, TOOL_CT, TOOL_VT}
+    _LINES_TOOLS = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
+    _XFMR_TOOLS  = {TOOL_TRANSFORMER}
+    _INSTR_TOOLS = {TOOL_CT, TOOL_VT}
 
     def _set_lines_tool(self, tool: str) -> None:
         self._lines_tool = tool
@@ -151,17 +152,20 @@ class MainWindow:
 
     def _set_xfmr_tool(self, tool: str) -> None:
         self._xfmr_tool = tool
-        labels = {TOOL_TRANSFORMER: "Power Tx ▾", TOOL_CT: "CT ▾", TOOL_VT: "VT ▾"}
-        self._btn_xfmr.config(text=labels.get(tool, "Transformers ▾"))
+        self._btn_xfmr.config(text="Power Tx ▾")
+        self._set_tool(tool)
+
+    def _set_instr_tool(self, tool: str) -> None:
+        labels = {TOOL_CT: "CT ▾", TOOL_VT: "VT ▾"}
+        self._btn_instr.config(text=labels.get(tool, "Instrument Devices ▾"))
         self._set_tool(tool)
 
     def _set_tool(self, tool: str) -> None:
-        # Visual feedback on standalone buttons
         self._btn_select.config(relief="sunken" if tool == TOOL_SELECT else "flat")
         self._btn_delete.config(relief="sunken" if tool == TOOL_DELETE else "flat")
-        # Dropdown buttons show sunken when their group is active
-        self._btn_lines.config(relief="sunken" if tool in self._LINES_TOOLS else "raised")
-        self._btn_xfmr.config( relief="sunken" if tool in self._XFMR_TOOLS  else "raised")
+        self._btn_lines.config( relief="sunken" if tool in self._LINES_TOOLS else "raised")
+        self._btn_xfmr.config(  relief="sunken" if tool in self._XFMR_TOOLS  else "raised")
+        self._btn_instr.config( relief="sunken" if tool in self._INSTR_TOOLS  else "raised")
         self.diagram.set_tool(tool)
 
     # ── Selection → properties ────────────────────────────────────────────

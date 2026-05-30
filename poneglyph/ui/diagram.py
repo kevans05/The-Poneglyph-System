@@ -115,7 +115,7 @@ TOOL_HINTS = {
 
 BUS_WIDTH  = 4
 LINE_WIDTH = 2
-SNAP_TOL   = 12
+SNAP_TOL   = 16      # pixels — generous so bus clicks register easily
 
 
 # ── Diagram canvas ────────────────────────────────────────────────────────────
@@ -625,7 +625,7 @@ class Diagram(tk.Frame):
         if self._conn_from_bus not in self._buses:
             self._conn_from_bus = None
             return
-        cid  = f"{kind.upper()}-{len(self._connections)+1}"
+        cid = f"{kind.upper()}-{len(self._connections)+1}"
         if kind == "feeder":
             conn = DiagramConnection(cid, cid, kind, self._conn_from_bus, self._conn_from_x,
                                      to_point=(wx, wy))
@@ -633,7 +633,11 @@ class Diagram(tk.Frame):
             conn = DiagramConnection(cid, cid, kind, self._conn_from_bus, self._conn_from_x,
                                      to_bus=to_bus_id, to_x=wx)
         else:
-            self._conn_from_bus = None
+            # Missed the destination bus — keep from_bus active and prompt the user
+            if self._on_status:
+                msg = ("Same bus — click a different bus." if to_bus_id
+                       else "No bus found there — click directly on a bus bar.")
+                self._on_status(f"From '{self._buses[self._conn_from_bus].name}' — {msg}")
             return
         self._connections[cid] = conn
         self._set_selection("conn", cid)
