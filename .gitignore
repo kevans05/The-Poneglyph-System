@@ -1,25 +1,3 @@
-# Python
-__pycache__/
+poneglyph/**/__pycache__
+__pycache__
 *.pyc
-*.pyo
-*.pyd
-*.egg-info/
-dist/
-build/
-.venv/
-venv/
-env/
-.env
-
-# Runtime data
-sites/
-*.db
-*.log
-
-# OS / editor artifacts
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
