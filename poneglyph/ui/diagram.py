@@ -28,16 +28,12 @@ from typing import Callable, Optional
 
 # ── Transformer world-space geometry constants ───────────────────────────────
 # All in world units so the symbol is correctly proportioned at any zoom level.
+# IEC 60617 simplified two-winding symbol: two circles, one per winding.
 
-XFMR_R    = 8.0   # winding bump radius
-XFMR_GAP  = 6.0   # gap between primary and secondary windings
-XFMR_N    = 3     # bumps per winding
-
-# Half-extent of the full symbol from its centre to the top/bottom terminal:
-#   winding span = N * 2 * R
-#   gap each side = GAP / 2
-#   total = GAP/2 + N*2*R
-XFMR_HALF = XFMR_GAP / 2 + XFMR_N * 2 * XFMR_R   # = 3 + 48 = 51 world units
+XFMR_R    = 20.0   # winding circle radius (world units)
+XFMR_LEAD = 12.0   # lead line from terminal to edge of first/last circle
+XFMR_HALF = XFMR_R * 2 + XFMR_LEAD   # = 52 world units (centre → terminal)
+XFMR_IND  = 8.0    # winding indicator symbol size (world units)
 
 
 # ── Element data models ──────────────────────────────────────────────────────
@@ -95,7 +91,7 @@ class DiagramTransformer:
     id: str
     name: str
     cx: float           # centre x (world)
-    cy: float           # centre y (world)
+    cy: float           # centre y (world) — midpoint between the two winding circles
     hv_bus: Optional[str] = None    # top terminal bus
     hv_tap_x: float = 0.0
     lv_bus: Optional[str] = None    # bottom terminal bus
@@ -103,6 +99,11 @@ class DiagramTransformer:
     r_pu: float = 0.01
     x_pu: float = 0.10
     mva: float = 0.0
+    # Winding configuration (IEC 60617)
+    hv_winding:   str  = "wye"    # "wye" | "delta" | "zigzag"
+    lv_winding:   str  = "delta"  # "wye" | "delta" | "zigzag"
+    hv_grounded:  bool = True     # neutral grounded (wye only)
+    lv_grounded:  bool = False
 
     @property
     def top_y(self) -> float:
@@ -340,82 +341,111 @@ class Diagram(tk.Frame):
     def _draw_transformer(self, xfmr: DiagramTransformer) -> None:
         sel    = self._selection == ("transformer", xfmr.id)
         colour = "#0066CC" if sel else "black"
+        r   = XFMR_R
+        rs  = r * self._scale   # circle radius in screen pixels
 
-        top_sx, top_sy = self._w2s(xfmr.cx, xfmr.top_y)
-        bot_sx, bot_sy = self._w2s(xfmr.cx, xfmr.bot_y)
+        # ── HV (top) winding circle ───────────────────────────────────────
+        hv_cy_w = xfmr.cy - r
+        hv_sx, hv_sy = self._w2s(xfmr.cx, hv_cy_w)
+        self.canvas.create_oval(hv_sx - rs, hv_sy - rs, hv_sx + rs, hv_sy + rs,
+                                outline=colour, fill="white", width=LINE_WIDTH)
 
-        # HV (top) terminal lead
+        # ── LV (bottom) winding circle ────────────────────────────────────
+        lv_cy_w = xfmr.cy + r
+        lv_sx, lv_sy = self._w2s(xfmr.cx, lv_cy_w)
+        self.canvas.create_oval(lv_sx - rs, lv_sy - rs, lv_sx + rs, lv_sy + rs,
+                                outline=colour, fill="white", width=LINE_WIDTH)
+
+        # ── HV terminal connection ────────────────────────────────────────
+        # Line runs from bus (or free terminal) down to top edge of HV circle.
+        hv_circle_top_sx, hv_circle_top_sy = self._w2s(xfmr.cx, hv_cy_w - r)
         if xfmr.hv_bus:
             bus = self._buses.get(xfmr.hv_bus)
             if bus:
                 bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
-                self.canvas.create_line(bsx, bsy, top_sx, top_sy,
+                self.canvas.create_line(bsx, bsy, hv_circle_top_sx, hv_circle_top_sy,
                                         fill=colour, width=LINE_WIDTH)
         else:
-            r = max(3, 3 * self._scale)
-            self.canvas.create_oval(top_sx - r, top_sy - r, top_sx + r, top_sy + r,
+            top_sx, top_sy = self._w2s(xfmr.cx, xfmr.top_y)
+            self.canvas.create_line(top_sx, top_sy, hv_circle_top_sx, hv_circle_top_sy,
+                                    fill=colour, width=LINE_WIDTH)
+            rd = max(3, 3 * self._scale)
+            self.canvas.create_oval(top_sx - rd, top_sy - rd, top_sx + rd, top_sy + rd,
                                     fill=colour, outline=colour)
 
-        # Winding symbol (world space)
-        self._draw_iec_winding_symbol(xfmr.cx, xfmr.cy, colour)
-
-        # LV (bottom) terminal lead
+        # ── LV terminal connection ────────────────────────────────────────
+        lv_circle_bot_sx, lv_circle_bot_sy = self._w2s(xfmr.cx, lv_cy_w + r)
         if xfmr.lv_bus:
             bus = self._buses.get(xfmr.lv_bus)
             if bus:
                 bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
-                self.canvas.create_line(bot_sx, bot_sy, bsx, bsy,
+                self.canvas.create_line(lv_circle_bot_sx, lv_circle_bot_sy, bsx, bsy,
                                         fill=colour, width=LINE_WIDTH)
         else:
-            r = max(3, 3 * self._scale)
-            self.canvas.create_oval(bot_sx - r, bot_sy - r, bot_sx + r, bot_sy + r,
+            bot_sx, bot_sy = self._w2s(xfmr.cx, xfmr.bot_y)
+            self.canvas.create_line(lv_circle_bot_sx, lv_circle_bot_sy, bot_sx, bot_sy,
+                                    fill=colour, width=LINE_WIDTH)
+            rd = max(3, 3 * self._scale)
+            self.canvas.create_oval(bot_sx - rd, bot_sy - rd, bot_sx + rd, bot_sy + rd,
                                     fill=colour, outline=colour)
 
-        # Label
-        lsx, lsy = self._w2s(xfmr.cx, xfmr.cy)
-        self.canvas.create_text(lsx + XFMR_R * self._scale + 6, lsy,
-                                text=xfmr.name, font=("TkDefaultFont", 8),
-                                fill="#444444", anchor="w")
+        # ── Winding type indicators (to the right of each circle) ─────────
+        ind_x = xfmr.cx + r + 6
+        self._draw_winding_indicator(ind_x, hv_cy_w, xfmr.hv_winding, xfmr.hv_grounded, colour)
+        self._draw_winding_indicator(ind_x, lv_cy_w, xfmr.lv_winding, xfmr.lv_grounded, colour)
 
-    def _draw_iec_winding_symbol(self, cx_w: float, cy_w: float, colour: str) -> None:
-        """Draw IEC 60617 two-winding symbol centred at world point (cx_w, cy_w), vertical."""
-        r  = XFMR_R
-        gp = XFMR_GAP
-        n  = XFMR_N
-        N  = 20  # points per arc
+        # ── Label ─────────────────────────────────────────────────────────
+        lsx, lsy = self._w2s(xfmr.cx + r + 6, xfmr.cy)
+        self.canvas.create_text(lsx, lsy, text=xfmr.name,
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
-        # Primary winding (top): 3 bumps bulging RIGHT (+x), stacked downward
-        # Centre of primary winding group (along = down from cy_w):
-        w1_centre_along = -(gp / 2 + n * r)   # negative = above centre
+    def _draw_winding_indicator(self, ax_w: float, ay_w: float,
+                                wtype: str, grounded: bool, colour: str) -> None:
+        """Draw IEC winding-connection indicator (wye/delta/zigzag) at world point."""
+        s  = XFMR_IND
+        s2 = s * self._scale
 
-        for i in range(n):
-            bump_along = w1_centre_along - n * r + r + i * 2 * r
-            b_cy = cy_w + bump_along   # world y of this bump's centre
-            pts = []
-            for j in range(N + 1):
-                t  = -math.pi / 2 + math.pi * j / N
-                wx = cx_w + r * math.cos(t)    # bulge RIGHT
-                wy = b_cy + r * math.sin(t)
+        if wtype == "wye":
+            # Y: three arms at 120° from centre; neutral side points right (outward)
+            cx_s, cy_s = self._w2s(ax_w, ay_w)
+            for angle_deg in (0, 120, 240):
+                a  = math.radians(angle_deg)
+                ex = cx_s + s2 * math.cos(a)
+                ey = cy_s + s2 * math.sin(a)
+                self.canvas.create_line(cx_s, cy_s, ex, ey, fill=colour, width=LINE_WIDTH)
+            if grounded:
+                # Stepped ground bars on the downward arm
+                gx, gy = self._w2s(ax_w, ay_w + s)
+                for i, frac in enumerate((1.0, 0.65, 0.35)):
+                    half = s2 * frac * 0.5
+                    off  = i * s2 * 0.3
+                    self.canvas.create_line(gx - half, gy + off, gx + half, gy + off,
+                                            fill=colour, width=LINE_WIDTH)
+
+        elif wtype == "delta":
+            # Equilateral triangle (point up, flat bottom)
+            h = s * 0.87
+            pts_w = [(ax_w, ay_w - h * 0.67),
+                     (ax_w - s, ay_w + h * 0.33),
+                     (ax_w + s, ay_w + h * 0.33)]
+            pts_s: list[float] = []
+            for wx, wy in pts_w:
                 sx, sy = self._w2s(wx, wy)
-                pts.extend([sx, sy])
-            if len(pts) >= 4:
-                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
+                pts_s.extend([sx, sy])
+            self.canvas.create_polygon(*pts_s, outline=colour, fill="", width=LINE_WIDTH)
 
-        # Secondary winding (bottom): 3 bumps bulging LEFT (-x)
-        w2_centre_along = +(gp / 2 + n * r)
-
-        for i in range(n):
-            bump_along = w2_centre_along - n * r + r + i * 2 * r
-            b_cy = cy_w + bump_along
-            pts = []
-            for j in range(N + 1):
-                t  = -math.pi / 2 + math.pi * j / N
-                wx = cx_w - r * math.cos(t)    # bulge LEFT
-                wy = b_cy + r * math.sin(t)
-                sx, sy = self._w2s(wx, wy)
-                pts.extend([sx, sy])
-            if len(pts) >= 4:
-                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
+        elif wtype == "zigzag":
+            # Two stacked Z-like segments representing interconnected zigzag winding
+            w = s * 0.7
+            for offset_y in (-s * 0.5, s * 0.5):
+                row_pts: list[float] = []
+                for wx, wy in [(ax_w - w, ay_w + offset_y - s * 0.25),
+                               (ax_w + w, ay_w + offset_y - s * 0.25),
+                               (ax_w - w, ay_w + offset_y + s * 0.25),
+                               (ax_w + w, ay_w + offset_y + s * 0.25)]:
+                    sx, sy = self._w2s(wx, wy)
+                    row_pts.extend([sx, sy])
+                self.canvas.create_line(*row_pts, fill=colour, width=LINE_WIDTH)
 
     # ── CT ────────────────────────────────────────────────────────────────
 
@@ -516,9 +546,11 @@ class Diagram(tk.Frame):
         return None
 
     def _snap_bus(self, wx: float, wy: float) -> Optional[str]:
-        """Wider tolerance snap used for transformer placement hover."""
+        """Snap for transformer placement: cursor must be over the bus bar (strict X)
+        but with a wide Y tolerance so the user can approach from above/below."""
+        tol_y = XFMR_SNAP / self._scale
         for bus in self._buses.values():
-            if bus.hit(wx, wy, tol=XFMR_SNAP / self._scale):
+            if bus.x1 <= wx <= bus.x2 and abs(wy - bus.y) <= tol_y:
                 return bus.id
         return None
 
@@ -625,7 +657,7 @@ class Diagram(tk.Frame):
                 xfmr = DiagramTransformer(
                     id=tid, name=tid,
                     cx=tap_x,
-                    cy=bus.y + XFMR_HALF + 10,   # place just below bus
+                    cy=bus.y + XFMR_HALF,   # top_y == bus.y: HV terminal on the bus
                     hv_bus=snap_id,
                     hv_tap_x=tap_x,
                 )

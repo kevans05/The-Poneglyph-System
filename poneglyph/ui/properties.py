@@ -97,22 +97,59 @@ class PropertiesPanel(tk.Frame):
             row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
+    _WINDING_TYPES = ("wye", "delta", "zigzag")
+
     def show_transformer(self, xfmr: DiagramTransformer) -> None:
         if xfmr is None:
             return
         self._current = xfmr
         self._clear()
+
         tk.Label(self._body, text="Power Transformer", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
         v_name = tk.StringVar(value=xfmr.name)
         v_r    = tk.StringVar(value=str(xfmr.r_pu))
         v_x    = tk.StringVar(value=str(xfmr.x_pu))
         v_mva  = tk.StringVar(value=str(xfmr.mva))
+
         self._row("ID",      tk.StringVar(value=xfmr.id), readonly=True, start_row=1)
         self._row("Name",    v_name, start_row=2)
         self._row("R (pu)",  v_r,    start_row=3)
         self._row("X (pu)",  v_x,    start_row=4)
         self._row("MVA",     v_mva,  start_row=5)
+
+        # ── Winding configuration ──────────────────────────────────────────
+        ttk.Separator(self._body).grid(row=6, column=0, columnspan=2,
+                                       sticky="ew", pady=(8, 4))
+        tk.Label(self._body, text="Winding Configuration",
+                 font=("TkDefaultFont", 9, "bold"), anchor="w").grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        v_hv_type = tk.StringVar(value=xfmr.hv_winding)
+        v_lv_type = tk.StringVar(value=xfmr.lv_winding)
+        v_hv_gnd  = tk.BooleanVar(value=xfmr.hv_grounded)
+        v_lv_gnd  = tk.BooleanVar(value=xfmr.lv_grounded)
+
+        tk.Label(self._body, text="HV side", anchor="w").grid(
+            row=8, column=0, sticky="w", pady=2, padx=(0, 8))
+        hv_cb = ttk.Combobox(self._body, textvariable=v_hv_type,
+                              values=self._WINDING_TYPES, state="readonly", width=9)
+        hv_cb.grid(row=8, column=1, sticky="ew", pady=2)
+
+        tk.Checkbutton(self._body, text="HV neutral grounded",
+                       variable=v_hv_gnd).grid(
+            row=9, column=0, columnspan=2, sticky="w", pady=2)
+
+        tk.Label(self._body, text="LV side", anchor="w").grid(
+            row=10, column=0, sticky="w", pady=2, padx=(0, 8))
+        lv_cb = ttk.Combobox(self._body, textvariable=v_lv_type,
+                              values=self._WINDING_TYPES, state="readonly", width=9)
+        lv_cb.grid(row=10, column=1, sticky="ew", pady=2)
+
+        tk.Checkbutton(self._body, text="LV neutral grounded",
+                       variable=v_lv_gnd).grid(
+            row=11, column=0, columnspan=2, sticky="w", pady=2)
 
         def apply():
             xfmr.name = v_name.get().strip() or xfmr.name
@@ -122,11 +159,15 @@ class PropertiesPanel(tk.Frame):
                 xfmr.mva  = float(v_mva.get())
             except ValueError:
                 pass
+            xfmr.hv_winding  = v_hv_type.get()
+            xfmr.lv_winding  = v_lv_type.get()
+            xfmr.hv_grounded = v_hv_gnd.get()
+            xfmr.lv_grounded = v_lv_gnd.get()
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=12, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_ct(self, ct: DiagramCT) -> None:
