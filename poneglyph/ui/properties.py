@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
 
-from poneglyph.ui.diagram import DiagramBus, DiagramConnection
+from poneglyph.ui.diagram import DiagramBus, DiagramConnection, DiagramCT, DiagramVT
 
 
 class PropertiesPanel(tk.Frame):
@@ -90,6 +90,52 @@ class PropertiesPanel(tk.Frame):
             except ValueError:
                 pass
             conn.has_breaker_from = v_bkr.get()
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_ct(self, ct: DiagramCT) -> None:
+        if ct is None:
+            return
+        self._current = ct
+        self._clear()
+        tk.Label(self._body, text="Current Transformer", font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        v_name  = tk.StringVar(value=ct.name)
+        v_ratio = tk.StringVar(value=ct.ratio)
+        self._row("ID",    tk.StringVar(value=ct.id), readonly=True, start_row=1)
+        self._row("Name",  v_name,  start_row=2)
+        self._row("Ratio", v_ratio, start_row=3)
+
+        def apply():
+            ct.name  = v_name.get().strip() or ct.name
+            ct.ratio = v_ratio.get().strip() or ct.ratio
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_vt(self, vt: DiagramVT) -> None:
+        if vt is None:
+            return
+        self._current = vt
+        self._clear()
+        tk.Label(self._body, text="Voltage Transformer", font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        v_name  = tk.StringVar(value=vt.name)
+        v_ratio = tk.StringVar(value=vt.ratio)
+        self._row("ID",    tk.StringVar(value=vt.id), readonly=True, start_row=1)
+        self._row("Name",  v_name,  start_row=2)
+        self._row("Ratio", v_ratio, start_row=3)
+
+        def apply():
+            vt.name  = v_name.get().strip() or vt.name
+            vt.ratio = v_ratio.get().strip() or vt.ratio
             if self._on_change:
                 self._on_change()
 
