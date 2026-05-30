@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
 
-from poneglyph.ui.diagram import DiagramBus, DiagramConnection, DiagramCT, DiagramVT
+from poneglyph.ui.diagram import DiagramBus, DiagramConnection, DiagramCT, DiagramVT, DiagramTransformer
 
 
 class PropertiesPanel(tk.Frame):
@@ -90,6 +90,38 @@ class PropertiesPanel(tk.Frame):
             except ValueError:
                 pass
             conn.has_breaker_from = v_bkr.get()
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_transformer(self, xfmr: DiagramTransformer) -> None:
+        if xfmr is None:
+            return
+        self._current = xfmr
+        self._clear()
+        tk.Label(self._body, text="Power Transformer", font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        v_name = tk.StringVar(value=xfmr.name)
+        v_r    = tk.StringVar(value=str(xfmr.r_pu))
+        v_x    = tk.StringVar(value=str(xfmr.x_pu))
+        v_mva  = tk.StringVar(value=str(xfmr.mva))
+        self._row("ID",      tk.StringVar(value=xfmr.id), readonly=True, start_row=1)
+        self._row("Name",    v_name, start_row=2)
+        self._row("R (pu)",  v_r,    start_row=3)
+        self._row("X (pu)",  v_x,    start_row=4)
+        self._row("MVA",     v_mva,  start_row=5)
+
+        def apply():
+            xfmr.name = v_name.get().strip() or xfmr.name
+            try:
+                xfmr.r_pu = float(v_r.get())
+                xfmr.x_pu = float(v_x.get())
+                xfmr.mva  = float(v_mva.get())
+            except ValueError:
+                pass
             if self._on_change:
                 self._on_change()
 

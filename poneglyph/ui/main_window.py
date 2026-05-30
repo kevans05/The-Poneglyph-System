@@ -176,10 +176,11 @@ class MainWindow:
             return
         kind, elem_id = sel
         dispatch = {
-            "bus":  lambda: self.props.show_bus(self.diagram.get_buses().get(elem_id)),
-            "conn": lambda: self.props.show_connection(self.diagram.get_connections().get(elem_id)),
-            "ct":   lambda: self.props.show_ct(self.diagram.get_cts().get(elem_id)),
-            "vt":   lambda: self.props.show_vt(self.diagram.get_vts().get(elem_id)),
+            "bus":         lambda: self.props.show_bus(self.diagram.get_buses().get(elem_id)),
+            "conn":        lambda: self.props.show_connection(self.diagram.get_connections().get(elem_id)),
+            "transformer": lambda: self.props.show_transformer(self.diagram.get_transformers().get(elem_id)),
+            "ct":          lambda: self.props.show_ct(self.diagram.get_cts().get(elem_id)),
+            "vt":          lambda: self.props.show_vt(self.diagram.get_vts().get(elem_id)),
         }
         fn = dispatch.get(kind)
         if fn:
