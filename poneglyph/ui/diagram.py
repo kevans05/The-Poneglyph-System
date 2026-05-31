@@ -1367,8 +1367,8 @@ class Diagram(tk.Frame):
                                 fill=colour, width=lw)
 
         # Polarity dot at the tip of the secondary lead — outside and obvious.
+        pr = max(3, 3.5 * self._scale)
         if ct.polarity_standard:
-            pr = max(3, 3.5 * self._scale)
             self.canvas.create_oval(lead_ex - pr, lead_ey - pr,
                                     lead_ex + pr, lead_ey + pr,
                                     fill=colour, outline=colour)
