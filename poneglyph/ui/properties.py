@@ -51,16 +51,14 @@ class PropertiesPanel(tk.Frame):
         self._current = bus
         self._clear()
 
-        fields: list[tuple[str, tk.Variable]] = []
-
         v_name = tk.StringVar(value=bus.name)
         v_kv   = tk.StringVar(value=str(bus.kv))
 
-        self._row("ID",      tk.StringVar(value=bus.id), readonly=True)
-        self._row("Name",    v_name)
-        self._row("Base kV", v_kv)
-
-        fields = [("name", v_name), ("kv", v_kv)]
+        self._row("ID",       tk.StringVar(value=bus.id), readonly=True)
+        self._row("Name",     v_name)
+        self._row("Base kV",  v_kv)
+        self._row("Nodes",    tk.StringVar(value=str(len(bus.nodes))),    readonly=True)
+        self._row("Segments", tk.StringVar(value=str(len(bus.edges))),    readonly=True)
 
         def apply():
             bus.name = v_name.get().strip() or bus.name

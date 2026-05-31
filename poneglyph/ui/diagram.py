@@ -2,7 +2,7 @@
 
 Tools:
   Select        — click to select, drag elements
-  Bus           — click-drag horizontally to draw a bus bar
+  Bus           — multi-click polyline with 90° snapping; right-click or double-click to finish
   T-Line        — click bus → click bus
   Feeder        — click bus → click empty point (dangling load end)
   Transformer   — click anywhere to place; near a bus = snaps top terminal to it
@@ -13,7 +13,7 @@ Tools:
   Delete        — click any element to remove it
 
 Visual conventions (IEC 60617):
-  Bus           — single thick horizontal line, name above, kV below
+  Bus           — thick polyline (horizontal/vertical segments), name above, kV below
   T-Line/Feeder — thin line; breaker shown as small filled square
   Transformer   — two coupled coil windings with an iron core between them;
                   winding-connection indicators (wye / delta / zigzag) alongside
@@ -28,6 +28,7 @@ from __future__ import annotations
 import cmath
 import math
 import tkinter as tk
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -62,20 +63,57 @@ class DiagramBus:
     id: str
     name: str
     kv: float
-    x1: float
-    y: float
-    x2: float
+    nodes: list   # list[tuple[float, float]] — world-space (x, y) for each node
+    edges: list   # list[tuple[int, int]]     — pairs of node indices forming segments
     v_solved: Optional[complex] = None   # per-unit voltage phasor after a solve
 
     @property
     def cx(self) -> float:
-        return (self.x1 + self.x2) / 2
+        if not self.nodes:
+            return 0.0
+        return sum(x for x, y in self.nodes) / len(self.nodes)
 
-    def nearest_tap(self, x: float) -> float:
-        return max(self.x1, min(self.x2, x))
+    @property
+    def cy_label(self) -> float:
+        if not self.nodes:
+            return 0.0
+        return min(y for x, y in self.nodes)
 
-    def hit(self, x: float, y: float, tol: float = 8) -> bool:
-        return self.x1 - tol <= x <= self.x2 + tol and abs(y - self.y) <= tol
+    def nearest_tap(self, wx: float, wy: float) -> tuple:
+        """Project (wx,wy) onto the nearest edge segment; return clamped world point."""
+        best_pt = self.nodes[0] if self.nodes else (wx, wy)
+        best_d  = float("inf")
+        for i, j in self.edges:
+            x1, y1 = self.nodes[i]
+            x2, y2 = self.nodes[j]
+            dx, dy  = x2 - x1, y2 - y1
+            length_sq = dx*dx + dy*dy
+            if length_sq < 1e-9:
+                px, py = x1, y1
+            else:
+                t = max(0.0, min(1.0, ((wx-x1)*dx + (wy-y1)*dy) / length_sq))
+                px, py = x1 + t*dx, y1 + t*dy
+            d = math.hypot(wx - px, wy - py)
+            if d < best_d:
+                best_d  = d
+                best_pt = (px, py)
+        return best_pt
+
+    def hit(self, wx: float, wy: float, tol: float = 8) -> bool:
+        for i, j in self.edges:
+            x1, y1 = self.nodes[i]
+            x2, y2 = self.nodes[j]
+            dx, dy  = x2 - x1, y2 - y1
+            length_sq = dx*dx + dy*dy
+            if length_sq < 1e-9:
+                if math.hypot(wx-x1, wy-y1) <= tol:
+                    return True
+            else:
+                t = max(0.0, min(1.0, ((wx-x1)*dx + (wy-y1)*dy) / length_sq))
+                px, py = x1 + t*dx, y1 + t*dy
+                if math.hypot(wx-px, wy-py) <= tol:
+                    return True
+        return False
 
 
 @dataclass
@@ -85,22 +123,27 @@ class DiagramConnection:
     name: str
     kind: str           # "tline" | "feeder"
     from_bus: str
-    from_x: float
+    from_tap: tuple = (0.0, 0.0)          # world (x, y) tap point on from_bus
     to_bus: Optional[str] = None
-    to_x: Optional[float] = None
-    to_point: Optional[tuple[float, float]] = None
+    to_tap: Optional[tuple] = None        # world (x, y) tap point on to_bus
+    to_point: Optional[tuple] = None
     has_breaker_from: bool = True
     r_pu: float = 0.01
     x_pu: float = 0.10
 
-    def start_point(self, buses: dict[str, DiagramBus]) -> Optional[tuple[float, float]]:
+    def start_point(self, buses: dict) -> Optional[tuple]:
         b = buses.get(self.from_bus)
-        return (b.nearest_tap(self.from_x), b.y) if b else None
+        if b is None:
+            return None
+        return b.nearest_tap(*self.from_tap)
 
-    def end_point(self, buses: dict[str, DiagramBus]) -> Optional[tuple[float, float]]:
+    def end_point(self, buses: dict) -> Optional[tuple]:
         if self.to_bus:
             b = buses.get(self.to_bus)
-            return (b.nearest_tap(self.to_x or b.cx), b.y) if b else None
+            if b is None:
+                return None
+            tap = self.to_tap if self.to_tap else (b.nodes[0] if b.nodes else (0.0, 0.0))
+            return b.nearest_tap(*tap)
         return self.to_point
 
 
@@ -114,8 +157,10 @@ class DiagramTransformer:
     cy: float           # centre y (world) — midpoint between the two windings
     hv_bus: Optional[str] = None    # top terminal bus
     hv_tap_x: float = 0.0
+    hv_tap_y: float = 0.0
     lv_bus: Optional[str] = None    # bottom terminal bus
     lv_tap_x: float = 0.0
+    lv_tap_y: float = 0.0
     # Ratings / electrical
     mva: float = 10.0               # power rating (MVA)
     hv_kv: float = 0.0              # nominal HV winding voltage (kV)
@@ -154,6 +199,7 @@ class DiagramSource:
     cy: float
     bus: Optional[str] = None
     tap_x: float = 0.0
+    tap_y: float = 0.0
     v_pu: float = 1.0
     angle_deg: float = 0.0
     base_kv: float = 0.0
@@ -168,6 +214,7 @@ class DiagramLoad:
     cy: float           # arrow-tip y (world)
     bus: Optional[str] = None
     tap_x: float = 0.0
+    tap_y: float = 0.0
     p_mw: float = 1.0
     q_mvar: float = 0.5
 
@@ -187,6 +234,7 @@ class DiagramVT:
     name: str
     bus_id: str
     tap_x: float
+    tap_y: float = 0.0
     ratio: str = "11000/110"
 
 
@@ -225,7 +273,7 @@ TOOL_DISCONNECT  = "disconnect"
 
 TOOL_HINTS = {
     TOOL_SELECT:      "Select: click to select; drag a bus, transformer, source or load to move it.",
-    TOOL_BUS:         "Bus: click and drag horizontally to draw a bus bar.",
+    TOOL_BUS:         "Bus: click to place nodes (90° constrained). Double-click or right-click to finish. Creates branching shapes.",
     TOOL_TLINE:       "T-Line: click a source bus, then click a destination bus.",
     TOOL_FEEDER:      "Feeder: click a bus, then click an empty point for the load end.",
     TOOL_TRANSFORMER: "Transformer: click to place. Near a bus → snaps to it automatically.",
@@ -245,7 +293,7 @@ XFMR_SNAP  = 32      # pixels of Y tolerance for transformer/source/load bus-sna
 
 # Default voltage-level colour map (kV → hex colour).
 # Keys are nominal kV values; _voltage_colour() picks the nearest one.
-DEFAULT_VOLT_COLOURS: dict[float, str] = {
+DEFAULT_VOLT_COLOURS: dict = {
     765:  "#8B008B",   # dark magenta
     500:  "#800080",   # purple
     345:  "#0000CD",   # medium blue
@@ -269,38 +317,41 @@ class Diagram(tk.Frame):
         self,
         parent: tk.Widget,
         on_select: Optional[Callable] = None,
-        on_status: Optional[Callable[[str], None]] = None,
+        on_status: Optional[Callable] = None,
     ) -> None:
         super().__init__(parent)
         self._on_select = on_select
         self._on_status = on_status
 
-        self._buses:        dict[str, DiagramBus]         = {}
-        self._connections:  dict[str, DiagramConnection]  = {}
-        self._transformers: dict[str, DiagramTransformer] = {}
-        self._sources:      dict[str, DiagramSource]      = {}
-        self._loads:        dict[str, DiagramLoad]        = {}
-        self._cts:          dict[str, DiagramCT]          = {}
-        self._vts:          dict[str, DiagramVT]          = {}
-        self._breakers:     dict[str, DiagramBreaker]     = {}
-        self._disconnects:  dict[str, DiagramDisconnect]  = {}
+        self._buses:        dict = {}
+        self._connections:  dict = {}
+        self._transformers: dict = {}
+        self._sources:      dict = {}
+        self._loads:        dict = {}
+        self._cts:          dict = {}
+        self._vts:          dict = {}
+        self._breakers:     dict = {}
+        self._disconnects:  dict = {}
 
-        self._volt_colours: dict[float, str] = dict(DEFAULT_VOLT_COLOURS)
+        self._volt_colours: dict = dict(DEFAULT_VOLT_COLOURS)
 
         self._tool = TOOL_SELECT
-        self._selection: Optional[tuple[str, str]] = None
+        self._selection = None
 
         self._scale    = 1.0
         self._offset_x = 0.0
         self._offset_y = 0.0
 
-        self._drag_id:        Optional[str]                 = None
-        self._drag_kind:      Optional[str]                 = None
-        self._drag_origin:    Optional[tuple[float, float]] = None
-        self._bus_draw_start: Optional[tuple[float, float]] = None
-        self._conn_from_bus:  Optional[str]                 = None
-        self._conn_from_x:    float                         = 0.0
-        self._pan_start_pt:   Optional[tuple[int, int]]     = None
+        self._drag_id:        Optional[str]   = None
+        self._drag_kind:      Optional[str]   = None
+        self._drag_origin:    Optional[tuple] = None
+        self._conn_from_bus:  Optional[str]   = None
+        self._conn_from_tap:  tuple           = (0.0, 0.0)
+        self._pan_start_pt:   Optional[tuple] = None
+
+        # Bus polyline drawing state
+        self._bus_draw_nodes: list = []   # accumulated world-space nodes
+        self._preview_point:  Optional[tuple] = None   # live cursor position for preview
 
         self._build()
 
@@ -315,7 +366,7 @@ class Diagram(tk.Frame):
         self.canvas.bind("<ButtonPress-2>",   self._pan_start)
         self.canvas.bind("<B2-Motion>",       self._pan_drag)
         self.canvas.bind("<ButtonRelease-2>", self._pan_end)
-        self.canvas.bind("<ButtonPress-3>",   self._pan_start)
+        self.canvas.bind("<ButtonPress-3>",   self._on_right_press)
         self.canvas.bind("<B3-Motion>",       self._pan_drag)
         self.canvas.bind("<ButtonRelease-3>", self._pan_end)
         self.canvas.bind("<MouseWheel>",      self._scroll)
@@ -323,34 +374,40 @@ class Diagram(tk.Frame):
         self.canvas.bind("<Button-5>",        self._scroll)
         self.canvas.bind("<Configure>",       lambda _e: self.redraw())
         self.canvas.bind("<Motion>",          self._on_motion)
+        self.canvas.bind("<Escape>",          self._on_escape)
 
     # ── Public API ────────────────────────────────────────────────────────
 
     def set_tool(self, tool: str) -> None:
         self._tool = tool
         self._conn_from_bus  = None
-        self._bus_draw_start = None
+        # Cancel any in-progress bus drawing
+        self._bus_draw_nodes = []
+        self._preview_point  = None
         if self._on_status:
-            self._on_status(TOOL_HINTS.get(tool, ""))
+            hint = TOOL_HINTS.get(tool, "")
+            if tool == TOOL_BUS:
+                hint = "Bus: click to place first node."
+            self._on_status(hint)
         cursor = {TOOL_SELECT: "arrow", TOOL_DELETE: "X_cursor"}.get(tool, "crosshair")
         self.canvas.configure(cursor=cursor)
         self.redraw()
 
-    def get_buses(self)        -> dict[str, DiagramBus]:         return self._buses
-    def get_connections(self)  -> dict[str, DiagramConnection]:  return self._connections
-    def get_transformers(self) -> dict[str, DiagramTransformer]: return self._transformers
-    def get_sources(self)      -> dict[str, DiagramSource]:      return self._sources
-    def get_loads(self)        -> dict[str, DiagramLoad]:        return self._loads
-    def get_cts(self)          -> dict[str, DiagramCT]:          return self._cts
-    def get_vts(self)          -> dict[str, DiagramVT]:          return self._vts
-    def get_breakers(self)     -> dict[str, DiagramBreaker]:     return self._breakers
-    def get_disconnects(self)  -> dict[str, DiagramDisconnect]:  return self._disconnects
-    def get_selection(self)    -> Optional[tuple[str, str]]:     return self._selection
+    def get_buses(self)        -> dict: return self._buses
+    def get_connections(self)  -> dict: return self._connections
+    def get_transformers(self) -> dict: return self._transformers
+    def get_sources(self)      -> dict: return self._sources
+    def get_loads(self)        -> dict: return self._loads
+    def get_cts(self)          -> dict: return self._cts
+    def get_vts(self)          -> dict: return self._vts
+    def get_breakers(self)     -> dict: return self._breakers
+    def get_disconnects(self)  -> dict: return self._disconnects
+    def get_selection(self)    -> Optional[tuple]: return self._selection
 
-    def get_volt_colours(self) -> dict[float, str]:
+    def get_volt_colours(self) -> dict:
         return self._volt_colours
 
-    def set_volt_colours(self, mapping: dict[float, str]) -> None:
+    def set_volt_colours(self, mapping: dict) -> None:
         self._volt_colours = dict(mapping)
         self.redraw()
 
@@ -378,6 +435,8 @@ class Diagram(tk.Frame):
         self._breakers.clear()
         self._disconnects.clear()
         self._selection = None
+        self._bus_draw_nodes = []
+        self._preview_point  = None
         self.redraw()
 
     def clear_results(self) -> None:
@@ -388,10 +447,10 @@ class Diagram(tk.Frame):
 
     # ── Coordinates ───────────────────────────────────────────────────────
 
-    def _w2s(self, wx: float, wy: float) -> tuple[float, float]:
+    def _w2s(self, wx: float, wy: float) -> tuple:
         return wx * self._scale + self._offset_x, wy * self._scale + self._offset_y
 
-    def _s2w(self, sx: float, sy: float) -> tuple[float, float]:
+    def _s2w(self, sx: float, sy: float) -> tuple:
         return (sx - self._offset_x) / self._scale, (sy - self._offset_y) / self._scale
 
     # ── Redraw ────────────────────────────────────────────────────────────
@@ -413,6 +472,8 @@ class Diagram(tk.Frame):
             self._draw_ct(ct)
         for vt in self._vts.values():
             self._draw_vt(vt)
+        # Draw in-progress bus preview
+        self._draw_bus_preview()
 
     def _draw_grid(self) -> None:
         w = self.canvas.winfo_width()  or 800
@@ -431,28 +492,68 @@ class Diagram(tk.Frame):
     # ── Bus ───────────────────────────────────────────────────────────────
 
     def _draw_bus(self, bus: DiagramBus) -> None:
-        sx1, sy = self._w2s(bus.x1, bus.y)
-        sx2, _  = self._w2s(bus.x2, bus.y)
         sel    = self._selection == ("bus", bus.id)
         colour = self._voltage_colour(bus.kv, selected=sel)
-        self.canvas.create_line(sx1, sy, sx2, sy,
-                                width=BUS_WIDTH, fill=colour, capstyle=tk.ROUND)
-        cx = (sx1 + sx2) / 2
-        self.canvas.create_text(cx, sy - 12, text=bus.name,
+
+        for i, j in bus.edges:
+            sx1, sy1 = self._w2s(*bus.nodes[i])
+            sx2, sy2 = self._w2s(*bus.nodes[j])
+            self.canvas.create_line(sx1, sy1, sx2, sy2,
+                                    width=BUS_WIDTH, fill=colour, capstyle=tk.ROUND)
+
+        # Branch-node dots (degree >= 3 only)
+        degree = Counter()
+        for i, j in bus.edges:
+            degree[i] += 1
+            degree[j] += 1
+        for ni, (nx, ny) in enumerate(bus.nodes):
+            if degree[ni] >= 3:
+                sx, sy = self._w2s(nx, ny)
+                r = BUS_WIDTH * self._scale
+                self.canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=colour, outline=colour)
+
+        # Name label at top-centre
+        cxs, cys = self._w2s(bus.cx, bus.cy_label)
+        self.canvas.create_text(cxs, cys - 12, text=bus.name,
                                 font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
         if bus.kv:
-            self.canvas.create_text(cx, sy + 10, text=f"{bus.kv} kV",
+            self.canvas.create_text(cxs, cys - 2, text=f"{bus.kv} kV",
                                     font=("TkDefaultFont", 8), fill=colour, anchor="n")
         if bus.v_solved is not None:
+            import cmath as _cm
             mag = abs(bus.v_solved)
-            ang = math.degrees(cmath.phase(bus.v_solved))
+            ang = math.degrees(_cm.phase(bus.v_solved))
             kv_actual = mag * bus.kv if bus.kv else 0.0
             txt = f"{mag:.3f} pu ∠{ang:.1f}°"
             if kv_actual:
                 txt += f"  ({kv_actual:.2f} kV)"
-            self.canvas.create_text(cx, sy + 24, text=txt,
-                                    font=("TkDefaultFont", 8, "bold"),
-                                    fill="#118811", anchor="n")
+            self.canvas.create_text(cxs, cys + 14, text=txt,
+                                    font=("TkDefaultFont", 8, "bold"), fill="#118811", anchor="n")
+
+    def _draw_bus_preview(self) -> None:
+        """Draw in-progress bus polyline as a dashed preview."""
+        pts = self._bus_draw_nodes
+        if not pts:
+            return
+        colour = "#888888"
+        # Draw already-placed segments
+        for k in range(len(pts) - 1):
+            sx1, sy1 = self._w2s(*pts[k])
+            sx2, sy2 = self._w2s(*pts[k+1])
+            self.canvas.create_line(sx1, sy1, sx2, sy2,
+                                    width=BUS_WIDTH, fill=colour, dash=(4, 4))
+        # Draw preview segment to current cursor position
+        if self._preview_point:
+            last = pts[-1]
+            snapped = self._snap_90(last, *self._preview_point)
+            sx1, sy1 = self._w2s(*last)
+            sx2, sy2 = self._w2s(*snapped)
+            self.canvas.create_line(sx1, sy1, sx2, sy2,
+                                    width=BUS_WIDTH, fill=colour, dash=(4, 4))
+        # Small dot at first node
+        sx, sy = self._w2s(*pts[0])
+        r = BUS_WIDTH * self._scale
+        self.canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=colour, outline=colour)
 
     # ── Connections (T-line / feeder) ─────────────────────────────────────
 
@@ -469,7 +570,7 @@ class Diagram(tk.Frame):
         colour = self._voltage_colour(kv, selected=sel)
 
         # Collect all switching devices on this connection, sorted by t.
-        devices: list[tuple[float, str, object]] = []
+        devices = []
         for br in self._breakers.values():
             if br.connection_id == conn.id:
                 devices.append((br.t, "breaker", br))
@@ -532,7 +633,7 @@ class Diagram(tk.Frame):
                                      fill=colour, outline=colour)
 
     def _draw_breaker_symbol(self, prev_sx, prev_sy, x1, y1, x2, y2,
-                             t: float, colour: str, br: "DiagramBreaker", gap: float) -> None:
+                             t: float, colour: str, br, gap: float) -> None:
         """IEC-style circuit breaker: open or filled square, gap in line when open."""
         cx = x1 + (x2 - x1) * t
         cy = y1 + (y2 - y1) * t
@@ -566,7 +667,7 @@ class Diagram(tk.Frame):
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     def _draw_disconnect_symbol(self, prev_sx, prev_sy, x1, y1, x2, y2,
-                                t: float, colour: str, dc: "DiagramDisconnect", gap: float) -> None:
+                                t: float, colour: str, dc, gap: float) -> None:
         """IEC isolator (disconnect switch): diagonal blade."""
         cx = x1 + (x2 - x1) * t
         cy = y1 + (y2 - y1) * t
@@ -634,7 +735,8 @@ class Diagram(tk.Frame):
         ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y)   # outer edge of HV coil spine
         if xfmr.hv_bus and xfmr.hv_bus in self._buses:
             bus = self._buses[xfmr.hv_bus]
-            bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
+            tap_pt = bus.nearest_tap(xfmr.hv_tap_x, xfmr.hv_tap_y)
+            bsx, bsy = self._w2s(*tap_pt)
             self.canvas.create_line(bsx, bsy, ct_sx, ct_sy,
                                     fill=hv_col, width=LINE_WIDTH)
         else:
@@ -647,7 +749,8 @@ class Diagram(tk.Frame):
         cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y)   # outer edge of LV coil spine
         if xfmr.lv_bus and xfmr.lv_bus in self._buses:
             bus = self._buses[xfmr.lv_bus]
-            bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
+            tap_pt = bus.nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
+            bsx, bsy = self._w2s(*tap_pt)
             self.canvas.create_line(cb_sx, cb_sy, bsx, bsy,
                                     fill=lv_col, width=LINE_WIDTH)
         else:
@@ -711,7 +814,7 @@ class Diagram(tk.Frame):
         sign = -1.0 if bulge_up else 1.0   # up = negative y
         for i in range(n):
             bx = x_left_w + r + i * 2 * r
-            pts: list[float] = []
+            pts = []
             for j in range(N + 1):
                 t  = -math.pi / 2 + math.pi * j / N
                 wx = bx + r * math.sin(t)
@@ -728,7 +831,7 @@ class Diagram(tk.Frame):
         sign = -1.0 if bulge_left else 1.0
         for i in range(n):
             by = y_top_w + r + i * 2 * r
-            pts: list[float] = []
+            pts = []
             for j in range(N + 1):
                 t  = -math.pi / 2 + math.pi * j / N
                 wx = cx_w + sign * r * math.cos(t)
@@ -757,7 +860,7 @@ class Diagram(tk.Frame):
             pts_w = [(ax_w, ay_w - s * 0.75),
                      (ax_w - s * 0.7, ay_w + s * 0.55),
                      (ax_w + s * 0.7, ay_w + s * 0.55)]
-            pts_s: list[float] = []
+            pts_s = []
             for wx, wy in pts_w:
                 px, py = self._w2s(wx, wy)
                 pts_s.extend([px, py])
@@ -798,7 +901,8 @@ class Diagram(tk.Frame):
         bot_sx, bot_sy = self._w2s(src.cx, src.cy + SRC_R)
         if src.bus and src.bus in self._buses:
             bus = self._buses[src.bus]
-            tsx, tsy = self._w2s(bus.nearest_tap(src.tap_x), bus.y)
+            tap_pt = bus.nearest_tap(src.tap_x, src.tap_y)
+            tsx, tsy = self._w2s(*tap_pt)
             self.canvas.create_line(bot_sx, bot_sy, tsx, tsy, fill=colour, width=LINE_WIDTH)
         else:
             self._terminal_dot(bot_sx, bot_sy, colour)
@@ -809,7 +913,7 @@ class Diagram(tk.Frame):
         # Sine wave inside the circle.
         half = SRC_R * 0.6
         amp  = SRC_R * 0.38
-        pts: list[float] = []
+        pts = []
         N = 26
         for k in range(N + 1):
             frac = k / N
@@ -837,7 +941,8 @@ class Diagram(tk.Frame):
         # Lead from bus (or free terminal) down to the arrowhead base.
         if ld.bus and ld.bus in self._buses:
             bus = self._buses[ld.bus]
-            tsx, tsy = self._w2s(bus.nearest_tap(ld.tap_x), bus.y)
+            tap_pt = bus.nearest_tap(ld.tap_x, ld.tap_y)
+            tsx, tsy = self._w2s(*tap_pt)
             self.canvas.create_line(tsx, tsy, base_sx, base_sy, fill=colour, width=LINE_WIDTH)
         else:
             top_sx, top_sy = self._w2s(ld.cx, base_w - LOAD_LEAD)
@@ -897,8 +1002,8 @@ class Diagram(tk.Frame):
         bus = self._buses.get(vt.bus_id)
         if bus is None:
             return
-        tap_x = bus.nearest_tap(vt.tap_x)
-        sx, sy = self._w2s(tap_x, bus.y)
+        tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
+        sx, sy = self._w2s(*tap_pt)
 
         sel    = self._selection == ("vt", vt.id)
         colour = "#0066CC" if sel else "black"
@@ -979,11 +1084,10 @@ class Diagram(tk.Frame):
         return None
 
     def _snap_bus(self, wx: float, wy: float) -> Optional[str]:
-        """Snap for transformer/source/load placement: cursor must be over the bus
-        bar (strict X) but with a wide Y tolerance so the user can approach it."""
-        tol_y = XFMR_SNAP / self._scale
+        """Snap for transformer/source/load placement: cursor must be near a bus segment."""
+        tol = XFMR_SNAP / self._scale
         for bus in self._buses.values():
-            if bus.x1 <= wx <= bus.x2 and abs(wy - bus.y) <= tol_y:
+            if bus.hit(wx, wy, tol=tol):
                 return bus.id
         return None
 
@@ -1044,7 +1148,8 @@ class Diagram(tk.Frame):
             bus = self._buses.get(vt.bus_id)
             if bus is None:
                 continue
-            if abs(bus.nearest_tap(vt.tap_x) - wx) < tol and abs(bus.y - wy) < tol * 2:
+            tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
+            if math.hypot(tap_pt[0] - wx, tap_pt[1] - wy) < tol * 2:
                 return vt.id
         return None
 
@@ -1084,6 +1189,38 @@ class Diagram(tk.Frame):
                 return dc.id
         return None
 
+    # ── Bus polyline tool helpers ──────────────────────────────────────────
+
+    def _snap_90(self, last: tuple, wx: float, wy: float) -> tuple:
+        """Constrain (wx, wy) to be axis-aligned (H or V) from last node."""
+        dx, dy = wx - last[0], wy - last[1]
+        if abs(dx) >= abs(dy):
+            return (wx, last[1])   # horizontal
+        else:
+            return (last[0], wy)   # vertical
+
+    def _finish_bus(self) -> None:
+        pts = self._bus_draw_nodes
+        self._bus_draw_nodes = []
+        self._preview_point  = None
+        if len(pts) < 2:
+            self.redraw()
+            return
+        bid = f"BUS-{len(self._buses) + 1}"
+        nodes = list(pts)
+        edges = [(i, i+1) for i in range(len(pts)-1)]
+        self._buses[bid] = DiagramBus(bid, bid, 0.0, nodes, edges)
+        self._selection = ("bus", bid)
+        if self._on_select:
+            self._on_select(("bus", bid))
+        if self._on_status:
+            self._on_status("Bus: click to place first node.")
+        self.redraw()
+
+    def _on_escape(self, _e=None) -> None:
+        if self._bus_draw_nodes:
+            self._finish_bus()
+
     # ── Mouse events ──────────────────────────────────────────────────────
 
     def _on_press(self, event: tk.Event) -> None:
@@ -1121,14 +1258,38 @@ class Diagram(tk.Frame):
                 self._set_selection(None, None)
 
         elif self._tool == TOOL_BUS:
-            self._bus_draw_start = (wx, wy)
+            if self._bus_draw_nodes:
+                # Already drawing — constrain to 90° from last node
+                last = self._bus_draw_nodes[-1]
+                snapped_wx, snapped_wy = self._snap_90(last, wx, wy)
+                # Double-click detection: new node very close to last node in screen space
+                sx_last, sy_last = self._w2s(*last)
+                sx_new,  sy_new  = self._w2s(snapped_wx, snapped_wy)
+                if math.hypot(sx_new - sx_last, sy_new - sy_last) < 10:
+                    # Double-click — finish the bus
+                    self._finish_bus()
+                    return
+                self._bus_draw_nodes.append((snapped_wx, snapped_wy))
+                if self._on_status:
+                    self._on_status(
+                        "Bus: click to add segment (90° snap). Double-click or right-click to finish."
+                    )
+            else:
+                # Start a new bus at the clicked position
+                self._bus_draw_nodes = [(wx, wy)]
+                self._preview_point  = (wx, wy)
+                if self._on_status:
+                    self._on_status(
+                        "Bus: click to add segment (90° snap). Double-click or right-click to finish."
+                    )
+            self.redraw()
 
         elif self._tool in (TOOL_TLINE, TOOL_FEEDER):
             bus_id = self._hit_bus(wx, wy)
             if self._conn_from_bus is None:
                 if bus_id:
                     self._conn_from_bus = bus_id
-                    self._conn_from_x   = wx
+                    self._conn_from_tap = (wx, wy)
                     if self._on_status:
                         self._on_status(
                             f"From '{self._buses[bus_id].name}' — now click the destination."
@@ -1141,12 +1302,13 @@ class Diagram(tk.Frame):
             tid = f"XFMR-{len(self._transformers) + 1}"
             if snap_id:
                 bus = self._buses[snap_id]
-                tap_x = bus.nearest_tap(wx)
+                tap_pt = bus.nearest_tap(wx, wy)
+                tap_x, tap_y = tap_pt
                 xfmr = DiagramTransformer(
                     id=tid, name=tid,
                     cx=tap_x,
-                    cy=bus.y + XFMR_HALF,   # top_y == bus.y: HV terminal on the bus
-                    hv_bus=snap_id, hv_tap_x=tap_x,
+                    cy=tap_y + XFMR_HALF,   # top_y == tap point: HV terminal on the bus
+                    hv_bus=snap_id, hv_tap_x=tap_x, hv_tap_y=tap_y,
                     hv_kv=bus.kv or 0.0,
                 )
             else:
@@ -1159,9 +1321,11 @@ class Diagram(tk.Frame):
             sid = f"SRC-{len(self._sources) + 1}"
             if snap_id:
                 bus = self._buses[snap_id]
-                tap_x = bus.nearest_tap(wx)
-                src = DiagramSource(sid, sid, cx=tap_x, cy=bus.y - SRC_OFFSET,
-                                    bus=snap_id, tap_x=tap_x, base_kv=bus.kv or 0.0)
+                tap_pt = bus.nearest_tap(wx, wy)
+                tap_x, tap_y = tap_pt
+                src = DiagramSource(sid, sid, cx=tap_x, cy=tap_y - SRC_OFFSET,
+                                    bus=snap_id, tap_x=tap_x, tap_y=tap_y,
+                                    base_kv=bus.kv or 0.0)
             else:
                 src = DiagramSource(sid, sid, cx=wx, cy=wy)
             self._sources[sid] = src
@@ -1172,10 +1336,11 @@ class Diagram(tk.Frame):
             lid = f"LOAD-{len(self._loads) + 1}"
             if snap_id:
                 bus = self._buses[snap_id]
-                tap_x = bus.nearest_tap(wx)
+                tap_pt = bus.nearest_tap(wx, wy)
+                tap_x, tap_y = tap_pt
                 ld = DiagramLoad(lid, lid, cx=tap_x,
-                                 cy=bus.y + LOAD_LEAD + LOAD_AH,
-                                 bus=snap_id, tap_x=tap_x)
+                                 cy=tap_y + LOAD_LEAD + LOAD_AH,
+                                 bus=snap_id, tap_x=tap_x, tap_y=tap_y)
             else:
                 ld = DiagramLoad(lid, lid, cx=wx, cy=wy)
             self._loads[lid] = ld
@@ -1199,8 +1364,10 @@ class Diagram(tk.Frame):
         elif self._tool == TOOL_VT:
             bus_id = self._hit_bus(wx, wy)
             if bus_id:
+                bus = self._buses[bus_id]
+                tap_pt = bus.nearest_tap(wx, wy)
                 vid = f"VT-{len(self._vts) + 1}"
-                self._vts[vid] = DiagramVT(vid, vid, bus_id, wx)
+                self._vts[vid] = DiagramVT(vid, vid, bus_id, tap_pt[0], tap_pt[1])
                 self._set_selection("vt", vid)
 
         elif self._tool == TOOL_BREAKER:
@@ -1221,6 +1388,13 @@ class Diagram(tk.Frame):
 
         elif self._tool == TOOL_DELETE:
             self._delete_at(event, wx, wy)
+
+    def _on_right_press(self, event: tk.Event) -> None:
+        """Right-click: finish bus drawing if active; otherwise pan."""
+        if self._tool == TOOL_BUS and self._bus_draw_nodes:
+            self._finish_bus()
+        else:
+            self._pan_start(event)
 
     def _begin_drag(self, kind: str, elem_id: str, wx: float, wy: float) -> None:
         self._set_selection(kind, elem_id)
@@ -1264,7 +1438,7 @@ class Diagram(tk.Frame):
             dy = wy - self._drag_origin[1]
             if self._drag_kind == "bus":
                 bus = self._buses[self._drag_id]
-                bus.x1 += dx;  bus.x2 += dx;  bus.y += dy
+                bus.nodes = [(nx + dx, ny + dy) for nx, ny in bus.nodes]
             elif self._drag_kind == "transformer":
                 xfmr = self._transformers[self._drag_id]
                 xfmr.cx += dx;  xfmr.cy += dy
@@ -1277,24 +1451,7 @@ class Diagram(tk.Frame):
             self._drag_origin = (wx, wy)
             self.redraw()
 
-        elif self._tool == TOOL_BUS and self._bus_draw_start:
-            self.redraw()
-            sx1, sy1 = self._w2s(*self._bus_draw_start)
-            self.canvas.create_line(sx1, sy1, event.x, sy1,
-                                    width=BUS_WIDTH, fill="#888888", dash=(4, 4))
-
     def _on_release(self, event: tk.Event) -> None:
-        if self._tool == TOOL_BUS and self._bus_draw_start:
-            wx, wy = self._s2w(event.x, event.y)
-            x1, y0 = self._bus_draw_start
-            x2 = wx
-            if abs(x2 - x1) > 10 / self._scale:
-                bid = f"BUS-{len(self._buses) + 1}"
-                self._buses[bid] = DiagramBus(bid, bid, 0.0,
-                                              min(x1, x2), y0, max(x1, x2))
-                self._set_selection("bus", bid)
-            self._bus_draw_start = None
-            self.redraw()
         self._drag_id     = None
         self._drag_kind   = None
         self._drag_origin = None
@@ -1302,11 +1459,17 @@ class Diagram(tk.Frame):
     def _on_motion(self, event: tk.Event) -> None:
         wx, wy = self._s2w(event.x, event.y)
 
+        if self._tool == TOOL_BUS and self._bus_draw_nodes:
+            self._preview_point = (wx, wy)
+            self.redraw()
+            return
+
         if self._tool in (TOOL_TLINE, TOOL_FEEDER) and self._conn_from_bus:
             self.redraw()
             bus = self._buses.get(self._conn_from_bus)
             if bus:
-                sx, sy = self._w2s(bus.nearest_tap(self._conn_from_x), bus.y)
+                tap_pt = bus.nearest_tap(*self._conn_from_tap)
+                sx, sy = self._w2s(*tap_pt)
                 self.canvas.create_line(sx, sy, event.x, event.y,
                                         width=LINE_WIDTH, fill="#888888", dash=(4, 4))
 
@@ -1315,7 +1478,8 @@ class Diagram(tk.Frame):
             if snap_id:
                 self.redraw()
                 bus = self._buses[snap_id]
-                tap_sx, tap_sy = self._w2s(bus.nearest_tap(wx), bus.y)
+                tap_pt = bus.nearest_tap(wx, wy)
+                tap_sx, tap_sy = self._w2s(*tap_pt)
                 r = 6
                 self.canvas.create_oval(tap_sx - r, tap_sy - r,
                                         tap_sx + r, tap_sy + r,
@@ -1327,12 +1491,13 @@ class Diagram(tk.Frame):
             self._conn_from_bus = None
             return
         cid = f"{kind.upper()}-{len(self._connections) + 1}"
+        from_tap = self._conn_from_tap
         if kind == "feeder":
-            conn = DiagramConnection(cid, cid, kind, self._conn_from_bus, self._conn_from_x,
-                                     to_point=(wx, wy))
+            conn = DiagramConnection(cid, cid, kind, self._conn_from_bus,
+                                     from_tap=from_tap, to_point=(wx, wy))
         elif to_bus_id and to_bus_id != self._conn_from_bus:
-            conn = DiagramConnection(cid, cid, kind, self._conn_from_bus, self._conn_from_x,
-                                     to_bus=to_bus_id, to_x=wx)
+            conn = DiagramConnection(cid, cid, kind, self._conn_from_bus,
+                                     from_tap=from_tap, to_bus=to_bus_id, to_tap=(wx, wy))
         else:
             if self._on_status:
                 msg = ("Same bus — click a different bus." if to_bus_id
