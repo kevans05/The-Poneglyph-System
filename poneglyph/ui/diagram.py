@@ -354,9 +354,28 @@ class DiagramCT:
     name: str
     connection_id: str       # DiagramConnection id, or "" when on a transformer lead
     t: float = 0.5
-    ratio: str = "100/1"
+    # ── Nameplate / protection data ───────────────────────────────────────
+    ratio_primary:   int   = 1200     # primary amps (e.g. 1200 in 1200:5)
+    ratio_secondary: int   = 5        # secondary amps (e.g. 5 in 1200:5)
+    accuracy_class_relay:   str = "C200"  # IEEE C-class for relaying (C50/C100/C200/C400/C800)
+    accuracy_class_metering: str = "0.3"  # ANSI metering class (0.1/0.3/0.6/1.2)
+    burden_va: float = 20.0           # secondary burden (VA)
+    rating_factor: float = 1.0        # continuous current rating factor (RF)
+    num_taps: int = 1                 # 1 = single ratio; >1 = multi-ratio taps
+    tap_ratios: str = ""              # comma-sep list of tap ratios e.g. "600:5,900:5,1200:5"
+    polarity_standard: bool = True    # True = standard dot polarity (IEC/IEEE)
+    # ── Winding configurations ────────────────────────────────────────────
+    primary_config:   str = "Series"          # Series | Parallel | Window (core-balance)
+    secondary_config: str = "Wye"             # Wye | Delta | Open-Delta | Zero-Sequence
+    # ── Placement ─────────────────────────────────────────────────────────
     xfmr_id: str = ""        # transformer id when placed on a lead (else "")
     xfmr_lead: str = ""      # "hv" or "lv"
+    label_ox: float = 0.0
+    label_oy: float = 0.0
+
+    @property
+    def ratio_str(self) -> str:
+        return f"{self.ratio_primary}:{self.ratio_secondary}A"
 
 
 @dataclass
@@ -1267,61 +1286,73 @@ class Diagram(tk.Frame):
         sel    = self._selection == ("ct", ct.id)
         colour = "#0066CC" if sel else "black"
 
-        # Wire direction unit vector and perpendicular
+        # Wire direction unit vector and perpendicular (screen space)
         dx, dy = wx2 - wx1, wy2 - wy1
         length = math.hypot(dx, dy) or 1
-        # along-wire unit (screen scale)
-        ax_s = (self._w2s(wx1 + dx/length, wy1 + dy/length)[0] - self._w2s(wx1, wy1)[0],
-                self._w2s(wx1 + dx/length, wy1 + dy/length)[1] - self._w2s(wx1, wy1)[1])
-        aln = math.hypot(*ax_s) or 1
-        alx, aly = ax_s[0]/aln, ax_s[1]/aln   # along-wire unit (screen)
-        pxn, pyn = -aly, alx                    # perpendicular unit (screen)
+        s1 = self._w2s(wx1, wy1)
+        s2 = self._w2s(wx1 + dx/length, wy1 + dy/length)
+        raw = (s2[0]-s1[0], s2[1]-s1[1])
+        aln = math.hypot(*raw) or 1
+        alx, aly = raw[0]/aln, raw[1]/aln   # along-wire unit (screen)
+        pxn, pyn = -aly, alx                 # perpendicular (90° CCW)
 
-        R  = 9 * self._scale   # semicircle radius
-        sp = 4 * self._scale   # gap between the two cores (along wire)
-        tk_len = 6 * self._scale  # secondary terminal tick length
+        R      = 9 * self._scale    # ring radius
+        sp     = 3 * self._scale    # gap between rings (along wire)
+        tk_len = 7 * self._scale    # secondary terminal tick
+        lw     = LINE_WIDTH
 
-        # Two CT core semicircles stacked along the wire direction.
-        # Each arc is drawn as a semicircle opening to the right of the wire
-        # (perpendicular direction). The wire line passes between the flat sides.
-        # arc start/end angle in tkinter is measured from 3-o'clock CCW in degrees.
-        # We want the arc to open in the +perp direction (right of wire as drawn).
-        # Wire goes in direction (alx, aly). Perp is (pxn, pyn).
-        # The arc flat side faces the wire; arc bulge goes +perp.
-        # Compute start angle from wire direction:
-        # tkinter angles: 0=right, 90=up (y flipped), so angle = atan2(-aly, alx) in degrees
+        # Two toroidal rings: white-filled circles centered ON the wire.
+        # After drawing each ring, redraw the wire through it so the primary
+        # appears to thread through the core.
         wire_angle_deg = math.degrees(math.atan2(-aly, alx))
-        # Open arc faces +perp direction → arc from (wire_angle+90) to (wire_angle+270)
-        arc_start = wire_angle_deg   # flat chord along wire, bulge opens perpendicular
-        arc_extent = 180  # semicircle
+        # Semicircle arc: opens in +perp direction (one side only per ring)
+        arc_start = wire_angle_deg   # flat chord coincides with wire; arc opens perpendicular
 
-        for sign in (-1, +1):   # upper core, lower core (along wire)
+        for sign in (-1, +1):
             cx = sx + alx * sign * (R + sp / 2)
             cy = sy + aly * sign * (R + sp / 2)
-            # Bounding box of the semicircle's full circle
-            x0, y0 = cx - R, cy - R
-            x1_, y1_ = cx + R, cy + R
-            self.canvas.create_arc(x0, y0, x1_, y1_,
-                                   start=arc_start, extent=arc_extent,
-                                   outline=colour, style="arc", width=LINE_WIDTH)
-            # Secondary terminal tick on the perpendicular side (flat side of arc)
-            tx = cx - pxn * R
-            ty = cy - pyn * R
-            self.canvas.create_line(tx - alx * tk_len/2, ty - aly * tk_len/2,
-                                    tx + alx * tk_len/2, ty + aly * tk_len/2,
-                                    fill=colour, width=LINE_WIDTH)
 
-        # Secondary lead from midpoint (between the two cores) outward (+perp)
-        lead_len = R + 14 * self._scale
-        ex = sx + pxn * lead_len
-        ey = sy + pyn * lead_len
-        self.canvas.create_line(sx, sy, ex, ey, fill=colour, width=LINE_WIDTH)
-        # Terminal crossbar
-        self.canvas.create_line(ex - alx * tk_len/2, ey - aly * tk_len/2,
-                                ex + alx * tk_len/2, ey + aly * tk_len/2,
-                                fill=colour, width=LINE_WIDTH)
-        self.canvas.create_text(ex + pxn * 5, ey + pyn * 5,
-                                text=ct.name, font=("TkDefaultFont", 8),
+            # White-filled ring so the canvas background is masked inside the circle
+            self.canvas.create_oval(cx-R, cy-R, cx+R, cy+R,
+                                    outline=colour, fill="white", width=lw)
+            # Redraw primary wire through the ring (appears to thread through)
+            ex0, ey0 = cx - alx*R, cy - aly*R
+            ex1_, ey1_ = cx + alx*R, cy + aly*R
+            self.canvas.create_line(ex0, ey0, ex1_, ey1_, fill=colour, width=lw)
+            # Polarity dot (top of ring, +perp side)
+            if ct.polarity_standard:
+                dr = max(2, 2.5 * self._scale)
+                dx_ = cx + pxn * (R - 3*self._scale)
+                dy_ = cy + pyn * (R - 3*self._scale)
+                self.canvas.create_oval(dx_-dr, dy_-dr, dx_+dr, dy_+dr,
+                                        fill=colour, outline=colour)
+            # Secondary terminal stub (perpendicular from ring centre)
+            tx0, ty0 = cx + pxn * R, cy + pyn * R
+            tx1_, ty1_ = cx + pxn * (R + tk_len), cy + pyn * (R + tk_len)
+            self.canvas.create_line(tx0, ty0, tx1_, ty1_, fill=colour, width=lw)
+
+        # Connecting bus between the two secondary stubs → runs to terminal
+        stub_top = (sx + alx*(-R - sp/2) + pxn*(R + tk_len),
+                    sy + aly*(-R - sp/2) + pyn*(R + tk_len))
+        stub_bot = (sx + alx*(R + sp/2)  + pxn*(R + tk_len),
+                    sy + aly*(R + sp/2)  + pyn*(R + tk_len))
+        self.canvas.create_line(*stub_top, *stub_bot, fill=colour, width=lw)
+
+        # Secondary lead from midpoint out to terminal crossbar
+        mid_stub = ((stub_top[0]+stub_bot[0])/2, (stub_top[1]+stub_bot[1])/2)
+        lead_len = 14 * self._scale
+        ex = mid_stub[0] + pxn * lead_len
+        ey = mid_stub[1] + pyn * lead_len
+        self.canvas.create_line(*mid_stub, ex, ey, fill=colour, width=lw)
+        self.canvas.create_line(ex - alx*tk_len/2, ey - aly*tk_len/2,
+                                ex + alx*tk_len/2, ey + aly*tk_len/2,
+                                fill=colour, width=lw)
+
+        # Label: ratio + name
+        label = f"{ct.ratio_str}\n{ct.name}"
+        self.canvas.create_text(ex + pxn*5 + ct.label_ox*self._scale,
+                                ey + pyn*5 + ct.label_oy*self._scale,
+                                text=label, font=("TkDefaultFont", 8),
                                 fill="#444444",
                                 anchor=("w" if pxn >= 0 else "e"))
 

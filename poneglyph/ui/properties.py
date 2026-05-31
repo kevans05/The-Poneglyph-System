@@ -467,22 +467,103 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = ct
         self._clear()
-        tk.Label(self._body, text="Current Transformer", font=("TkDefaultFont", 9, "italic"),
-                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        v_name  = tk.StringVar(value=ct.name)
-        v_ratio = tk.StringVar(value=ct.ratio)
-        self._row("ID",    tk.StringVar(value=ct.id), readonly=True, start_row=1)
-        self._row("Name",  v_name,  start_row=2)
-        self._row("Ratio", v_ratio, start_row=3)
+
+        RELAY_CLASSES   = ["C50", "C100", "C200", "C400", "C800"]
+        METER_CLASSES   = ["0.1", "0.3", "0.6", "1.2"]
+        PRI_CONFIGS     = ["Series", "Parallel", "Window (core-balance)"]
+        SEC_CONFIGS     = ["Wye", "Delta", "Open-Delta", "Zero-Sequence"]
+
+        tk.Label(self._body, text="Current Transformer",
+                 font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        # ── Identity ──────────────────────────────────────────────────────
+        v_name = tk.StringVar(value=ct.name)
+        self._row("ID",   tk.StringVar(value=ct.id), readonly=True, start_row=1)
+        self._row("Name", v_name, start_row=2)
+
+        # ── Ratio ─────────────────────────────────────────────────────────
+        tk.Label(self._body, text="Ratio", font=("TkDefaultFont", 8, "bold"),
+                 fg="#333").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        v_pri = tk.StringVar(value=str(ct.ratio_primary))
+        v_sec = tk.StringVar(value=str(ct.ratio_secondary))
+        self._row("Primary A",   v_pri, start_row=4)
+        self._row("Secondary A", v_sec, start_row=5)
+
+        # ── Multi-tap ─────────────────────────────────────────────────────
+        v_taps     = tk.StringVar(value=str(ct.num_taps))
+        v_tap_list = tk.StringVar(value=ct.tap_ratios)
+        self._row("# Taps",     v_taps,     start_row=6)
+        self._row("Tap ratios", v_tap_list, start_row=7)
+
+        # ── Accuracy & burden ─────────────────────────────────────────────
+        tk.Label(self._body, text="Accuracy & Burden",
+                 font=("TkDefaultFont", 8, "bold"),
+                 fg="#333").grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        tk.Label(self._body, text="Relay class", anchor="e").grid(
+            row=9, column=0, sticky="e", padx=(0, 4))
+        v_relay = tk.StringVar(value=ct.accuracy_class_relay)
+        ttk.Combobox(self._body, textvariable=v_relay, values=RELAY_CLASSES,
+                     state="readonly", width=8).grid(row=9, column=1, sticky="w")
+
+        tk.Label(self._body, text="Metering class", anchor="e").grid(
+            row=10, column=0, sticky="e", padx=(0, 4))
+        v_meter = tk.StringVar(value=ct.accuracy_class_metering)
+        ttk.Combobox(self._body, textvariable=v_meter, values=METER_CLASSES,
+                     state="readonly", width=8).grid(row=10, column=1, sticky="w")
+
+        v_burden = tk.StringVar(value=str(ct.burden_va))
+        v_rf     = tk.StringVar(value=str(ct.rating_factor))
+        self._row("Burden (VA)", v_burden, start_row=11)
+        self._row("Rating factor", v_rf,   start_row=12)
+
+        # ── Winding configuration ─────────────────────────────────────────
+        tk.Label(self._body, text="Winding configuration",
+                 font=("TkDefaultFont", 8, "bold"),
+                 fg="#333").grid(row=13, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        tk.Label(self._body, text="Primary", anchor="e").grid(
+            row=14, column=0, sticky="e", padx=(0, 4))
+        v_pri_cfg = tk.StringVar(value=ct.primary_config)
+        ttk.Combobox(self._body, textvariable=v_pri_cfg, values=PRI_CONFIGS,
+                     state="readonly", width=20).grid(row=14, column=1, sticky="w")
+
+        tk.Label(self._body, text="Secondary", anchor="e").grid(
+            row=15, column=0, sticky="e", padx=(0, 4))
+        v_sec_cfg = tk.StringVar(value=ct.secondary_config)
+        ttk.Combobox(self._body, textvariable=v_sec_cfg, values=SEC_CONFIGS,
+                     state="readonly", width=20).grid(row=15, column=1, sticky="w")
+
+        # ── Polarity ──────────────────────────────────────────────────────
+        v_polarity = tk.BooleanVar(value=ct.polarity_standard)
+        tk.Checkbutton(self._body, text="Standard dot polarity (IEEE/IEC)",
+                       variable=v_polarity).grid(
+            row=16, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         def apply():
             ct.name  = v_name.get().strip() or ct.name
-            ct.ratio = v_ratio.get().strip() or ct.ratio
+            try: ct.ratio_primary   = int(v_pri.get())
+            except ValueError: pass
+            try: ct.ratio_secondary = int(v_sec.get())
+            except ValueError: pass
+            try: ct.num_taps        = int(v_taps.get())
+            except ValueError: pass
+            ct.tap_ratios              = v_tap_list.get().strip()
+            ct.accuracy_class_relay    = v_relay.get()
+            ct.accuracy_class_metering = v_meter.get()
+            try: ct.burden_va      = float(v_burden.get())
+            except ValueError: pass
+            try: ct.rating_factor  = float(v_rf.get())
+            except ValueError: pass
+            ct.primary_config   = v_pri_cfg.get()
+            ct.secondary_config = v_sec_cfg.get()
+            ct.polarity_standard = v_polarity.get()
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=17, column=0, columnspan=2, sticky="w", pady=(10, 0)
         )
 
     def show_vt(self, vt: DiagramVT) -> None:
