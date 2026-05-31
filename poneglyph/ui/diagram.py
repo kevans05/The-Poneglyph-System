@@ -34,17 +34,18 @@ from typing import Callable, Optional
 
 # ── Transformer world-space geometry constants ───────────────────────────────
 # All in world units so the symbol is correctly proportioned at any zoom level.
-# IEC 60617 coupled-coil symbol: two side-by-side coil windings, iron-core
-# vertical lines between them, centre conductor runs top-to-bottom through the gap.
+# IEC 60617 coupled-coil symbol: two horizontal coil rows (HV above, LV below),
+# bumps facing outward (up/down), iron-core horizontal lines between them,
+# centre conductor runs vertically top-to-bottom connecting the buses.
 
 XFMR_BR   = 7.0    # winding bump radius (world units)
 XFMR_NB   = 3      # bumps per winding
-XFMR_CORE = 12.0   # gap between inner coil spines (iron-core region)
-XFMR_LEAD = 14.0   # straight lead from terminal to the coil column
+XFMR_CORE = 12.0   # gap between the two coil rows (iron-core region)
+XFMR_LEAD = 14.0   # straight lead from terminal to the first coil row
 XFMR_IND  = 9.0    # winding-connection indicator glyph size (world units)
 
-_WIND_SPAN = XFMR_NB * 2 * XFMR_BR          # 42 world units — height of each coil
-XFMR_HALF  = XFMR_LEAD + _WIND_SPAN / 2     # centre → terminal (= 35)
+_WIND_SPAN = XFMR_NB * 2 * XFMR_BR                    # 42 — horizontal span of each coil
+XFMR_HALF  = XFMR_LEAD + XFMR_BR + XFMR_CORE / 2     # centre → terminal (= 27)
 
 # ── Source / Load geometry ────────────────────────────────────────────────────
 SRC_R       = 16.0   # AC source circle radius (world units)
@@ -430,23 +431,18 @@ class Diagram(tk.Frame):
         colour = "#0066CC" if sel else "black"
         r    = XFMR_BR
         n    = XFMR_NB
-        span = _WIND_SPAN   # height of each coil column
+        span = _WIND_SPAN   # horizontal span of each coil row
 
-        # Side-by-side coil layout:
-        #   lx = left coil spine (bumps extend further left)
-        #   rx = right coil spine (bumps extend further right)
-        #   Center conductor runs vertically at xfmr.cx through the gap
-        lx = xfmr.cx - XFMR_CORE / 2   # left coil spine x
-        rx = xfmr.cx + XFMR_CORE / 2   # right coil spine x
+        # Horizontal coil layout (symbol rotated so bumps face up/down):
+        #   HV row above centre: bumps face UP (away from core)
+        #   LV row below centre: bumps face DOWN (away from core)
+        #   Centre conductor runs vertically at xfmr.cx through both rows
+        hv_y = xfmr.cy - XFMR_CORE / 2   # HV coil row y (world)
+        lv_y = xfmr.cy + XFMR_CORE / 2   # LV coil row y (world)
+        x_left = xfmr.cx - span / 2       # leftmost point of coil rows
 
-        coil_top = xfmr.cy - span / 2   # y where coil columns start (world)
-        coil_bot = xfmr.cy + span / 2   # y where coil columns end (world)
-
-        # Screen coords for key points on the center conductor
-        ct_sx, ct_sy = self._w2s(xfmr.cx, coil_top)
-        cb_sx, cb_sy = self._w2s(xfmr.cx, coil_bot)
-
-        # ── HV terminal lead (top → center conductor) ─────────────────────
+        # ── HV terminal lead (bus → top of centre conductor) ─────────────
+        ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y - r)   # top of HV bump apexes
         if xfmr.hv_bus and xfmr.hv_bus in self._buses:
             bus = self._buses[xfmr.hv_bus]
             bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
@@ -458,11 +454,12 @@ class Diagram(tk.Frame):
                                     fill=colour, width=LINE_WIDTH)
             self._terminal_dot(t_sx, t_sy, colour)
 
-        # ── Center conductor through the coil region ──────────────────────
+        # ── Centre conductor through both coil rows ────────────────────────
+        cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y + r)   # bottom of LV bump apexes
         self.canvas.create_line(ct_sx, ct_sy, cb_sx, cb_sy,
                                 fill=colour, width=LINE_WIDTH)
 
-        # ── LV terminal lead (center conductor → bottom) ──────────────────
+        # ── LV terminal lead (bottom of centre conductor → bus) ────────────
         if xfmr.lv_bus and xfmr.lv_bus in self._buses:
             bus = self._buses[xfmr.lv_bus]
             bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
@@ -474,36 +471,56 @@ class Diagram(tk.Frame):
                                     fill=colour, width=LINE_WIDTH)
             self._terminal_dot(b_sx, b_sy, colour)
 
-        # ── HV coil (left of center, bumps bulge left / outward) ──────────
-        self._draw_coil(lx, coil_top, n, r, bulge_left=True, colour=colour)
+        # ── HV coil row (bumps face UP, above core gap) ───────────────────
+        self._draw_coil_h(x_left, hv_y, n, r, bulge_up=True, colour=colour)
 
-        # ── LV coil (right of center, bumps bulge right / outward) ────────
-        self._draw_coil(rx, coil_top, n, r, bulge_left=False, colour=colour)
+        # ── LV coil row (bumps face DOWN, below core gap) ─────────────────
+        self._draw_coil_h(x_left, lv_y, n, r, bulge_up=False, colour=colour)
 
-        # ── Iron core: two vertical lines in the gap between the coils ────
+        # ── Iron core: two horizontal lines in the gap between the rows ───
         for off in (-2.5, 2.5):
-            ic_top_sx, ic_top_sy = self._w2s(xfmr.cx + off, coil_top)
-            ic_bot_sx, ic_bot_sy = self._w2s(xfmr.cx + off, coil_bot)
-            self.canvas.create_line(ic_top_sx, ic_top_sy, ic_bot_sx, ic_bot_sy,
+            ic_l_sx, ic_l_sy = self._w2s(xfmr.cx - span / 2, xfmr.cy + off)
+            ic_r_sx, ic_r_sy = self._w2s(xfmr.cx + span / 2, xfmr.cy + off)
+            self.canvas.create_line(ic_l_sx, ic_l_sy, ic_r_sx, ic_r_sy,
                                     fill=colour, width=LINE_WIDTH + 1)
 
-        # ── Winding indicators below each respective coil ─────────────────
-        ind_y = coil_bot + XFMR_IND + 4
-        self._draw_winding_indicator(lx - r / 2, ind_y, xfmr.hv_winding, xfmr.hv_grounded, colour)
-        self._draw_winding_indicator(rx + r / 2, ind_y, xfmr.lv_winding, xfmr.lv_grounded, colour)
+        # ── Winding indicators to the right of each coil row ──────────────
+        ind_x = xfmr.cx + span / 2 + XFMR_IND + 4
+        self._draw_winding_indicator(ind_x, hv_y, xfmr.hv_winding, xfmr.hv_grounded, colour)
+        self._draw_winding_indicator(ind_x, lv_y, xfmr.lv_winding, xfmr.lv_grounded, colour)
 
-        # ── Label (centered below everything) ────────────────────────────
+        # ── Label (to the left) ───────────────────────────────────────────
         label = xfmr.name
         if xfmr.mva:
             label += f"\n{xfmr.mva:g} MVA"
-        l_sx, l_sy = self._w2s(xfmr.cx, ind_y + XFMR_IND * 2 + 4)
-        self.canvas.create_text(l_sx, l_sy, text=label, justify="center",
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="n")
+        l_sx, l_sy = self._w2s(xfmr.cx - span / 2 - 6, xfmr.cy)
+        self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="e")
 
     def _terminal_dot(self, sx: float, sy: float, colour: str) -> None:
         rd = max(3, 3 * self._scale)
         self.canvas.create_oval(sx - rd, sy - rd, sx + rd, sy + rd,
                                 fill=colour, outline=colour)
+
+    def _draw_coil_h(self, x_left_w: float, cy_w: float, n: int, r: float,
+                     bulge_up: bool, colour: str) -> None:
+        """Draw a horizontal coil of n half-loop bumps centred on cy_w.
+
+        Bumps face upward (bulge_up=True) or downward, starting at x_left_w.
+        """
+        N = 18
+        sign = -1.0 if bulge_up else 1.0   # up = negative y
+        for i in range(n):
+            bx = x_left_w + r + i * 2 * r
+            pts: list[float] = []
+            for j in range(N + 1):
+                t  = -math.pi / 2 + math.pi * j / N
+                wx = bx + r * math.sin(t)
+                wy = cy_w + sign * r * math.cos(t)
+                sx, sy = self._w2s(wx, wy)
+                pts.extend([sx, sy])
+            if len(pts) >= 4:
+                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
 
     def _draw_coil(self, cx_w: float, y_top_w: float, n: int, r: float,
                    bulge_left: bool, colour: str) -> None:
