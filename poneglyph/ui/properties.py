@@ -240,9 +240,9 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = ld
         self._clear()
+        import math
 
         MODES = ["P+Q", "P+PF", "kVAR+PF", "kVA+PF", "V+I+PF"]
-        # Fields shown per mode: list of (label, attr, unit_hint)
         MODE_FIELDS = {
             "P+Q":     [("P",   "p_kw",   "kW"),   ("Q",   "q_kvar", "kVAR")],
             "P+PF":    [("P",   "p_kw",   "kW"),   ("PF",  "pf",     "0–1")],
@@ -251,6 +251,8 @@ class PropertiesPanel(tk.Frame):
             "V+I+PF":  [("V",   "v_kv",   "kV"),   ("I",   "i_amps", "A"),
                         ("PF",  "pf",     "0–1")],
         }
+        # per-phase attr suffixes
+        PH_SUFFIX = {"A": "_a", "B": "_b", "C": "_c"}
 
         tk.Label(self._body, text="Load", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
@@ -259,89 +261,205 @@ class PropertiesPanel(tk.Frame):
         self._row("ID",   tk.StringVar(value=ld.id), readonly=True, start_row=1)
         self._row("Name", v_name, start_row=2)
 
-        # Mode selector
-        tk.Label(self._body, text="Spec mode", anchor="e").grid(
+        # Phase mode toggle
+        tk.Label(self._body, text="Phase mode", anchor="e").grid(
             row=3, column=0, sticky="e", padx=(0, 4))
-        v_mode = tk.StringVar(value=ld.spec_mode)
-        mode_cb = ttk.Combobox(self._body, textvariable=v_mode,
-                               values=MODES, state="readonly", width=12)
-        mode_cb.grid(row=3, column=1, sticky="w")
+        v_phase = tk.StringVar(value=ld.phase_mode)
+        ttk.Combobox(self._body, textvariable=v_phase,
+                     values=["balanced", "individual"],
+                     state="readonly", width=11).grid(row=3, column=1, sticky="w")
 
-        # Lagging/leading
-        tk.Label(self._body, text="Q sign", anchor="e").grid(
-            row=4, column=0, sticky="e", padx=(0, 4))
-        v_lag = tk.StringVar(value="Lagging (ind)" if ld.lagging else "Leading (cap)")
-        lag_cb = ttk.Combobox(self._body, textvariable=v_lag,
-                              values=["Lagging (ind)", "Leading (cap)"],
-                              state="readonly", width=14)
-        lag_cb.grid(row=4, column=1, sticky="w")
+        # Container for either balanced fields or per-phase notebook
+        _spec_frame = tk.Frame(self._body)
+        _spec_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
+        _spec_frame.columnconfigure(1, weight=1)
 
-        # Dynamic input rows — rebuilt when mode changes
-        _input_frame = tk.Frame(self._body)
-        _input_frame.grid(row=5, column=0, columnspan=2, sticky="ew")
-        _input_frame.columnconfigure(1, weight=1)
-
-        # Solved summary (read-only)
+        # Solved summary
         tk.Label(self._body, text="Solved", font=("TkDefaultFont", 8, "bold"),
-                 fg="#444").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+                 fg="#444").grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
         v_solved = tk.StringVar()
         tk.Label(self._body, textvariable=v_solved, justify="left",
                  font=("TkFixedFont", 8), fg="#0044AA").grid(
-            row=7, column=0, columnspan=2, sticky="w")
+            row=6, column=0, columnspan=2, sticky="w")
 
         bus_txt = ld.bus if ld.bus else "(not attached)"
-        self._row("Bus", tk.StringVar(value=bus_txt), readonly=True, start_row=8)
+        self._row("Bus", tk.StringVar(value=bus_txt), readonly=True, start_row=7)
 
-        # Store input var widgets so apply() can read them
-        _input_vars: dict = {}
+        # Tracks vars for apply()
+        _bal_vars: dict = {}            # balanced mode: attr → StringVar
+        _bal_lag_var: tk.StringVar | None = None
+        _bal_mode_var: tk.StringVar | None = None
+        _ph_vars: dict = {}             # individual: (phase, attr) → StringVar
+        _ph_lag_vars: dict = {}         # phase → StringVar
+        _ph_mode_vars: dict = {}        # phase → StringVar
 
-        def _refresh_solved():
-            import math
+        def _refresh_solved(*_):
+            # Apply current widget values to a scratch object for live preview
+            _apply_to_load(ld, preview=True)
             p, q = ld._resolved()
             s = math.sqrt(p**2 + q**2)
             pf_val = p / s if s > 0 else 0.0
             lag = "lag" if q >= 0 else "lead"
-            v_solved.set(
-                f"P  = {p:>9.1f} kW\n"
-                f"Q  = {q:>9.1f} kVAR\n"
-                f"S  = {s:>9.1f} kVA\n"
-                f"PF = {pf_val:>9.3f} {lag}"
-            )
+            if ld.phase_mode == "individual":
+                phases = ld._resolved_phases()
+                lines = []
+                for ph, (pp, pq) in zip("ABC", phases):
+                    ps = math.sqrt(pp**2 + pq**2)
+                    ppf = pp / ps if ps > 0 else 0.0
+                    lines.append(f"Ph{ph}: {pp:.0f} kW  {pq:.0f} kVAR  PF={ppf:.3f}")
+                lines.append(f"Tot : {p:.0f} kW  {q:.0f} kVAR")
+                v_solved.set("\n".join(lines))
+            else:
+                v_solved.set(
+                    f"P  = {p:>9.1f} kW\n"
+                    f"Q  = {q:>9.1f} kVAR\n"
+                    f"S  = {s:>9.1f} kVA\n"
+                    f"PF = {pf_val:>9.3f} {lag}"
+                )
 
-        def _rebuild_inputs(*_):
-            for w in _input_frame.winfo_children():
+        def _apply_to_load(target, preview=False):
+            """Write current widget state into target DiagramLoad."""
+            target.phase_mode = v_phase.get()
+            if target.phase_mode == "balanced":
+                if _bal_mode_var:
+                    target.spec_mode = _bal_mode_var.get()
+                if _bal_lag_var:
+                    target.lagging = _bal_lag_var.get().startswith("Lagging")
+                for attr, var in _bal_vars.items():
+                    try: setattr(target, attr, float(var.get()))
+                    except ValueError: pass
+            else:
+                for (ph, attr), var in _ph_vars.items():
+                    suffix = PH_SUFFIX[ph]
+                    try: setattr(target, attr + suffix, float(var.get()))
+                    except ValueError: pass
+                for ph, var in _ph_lag_vars.items():
+                    suffix = PH_SUFFIX[ph]
+                    setattr(target, "lagging" + suffix, var.get().startswith("Lagging"))
+                for ph, var in _ph_mode_vars.items():
+                    suffix = PH_SUFFIX[ph]
+                    setattr(target, "spec_mode" + suffix, var.get())
+
+        def _build_balanced_fields(parent):
+            _bal_vars.clear()
+            nonlocal _bal_lag_var, _bal_mode_var
+            for w in parent.winfo_children():
                 w.destroy()
-            _input_vars.clear()
-            mode = v_mode.get()
-            fields = MODE_FIELDS.get(mode, [])
-            for r, (lbl, attr, hint) in enumerate(fields):
-                tk.Label(_input_frame, text=f"{lbl} ({hint})", anchor="e").grid(
-                    row=r, column=0, sticky="e", padx=(0, 4), pady=1)
-                var = tk.StringVar(value=str(getattr(ld, attr)))
-                tk.Entry(_input_frame, textvariable=var, width=12).grid(
-                    row=r, column=1, sticky="w", pady=1)
-                _input_vars[attr] = var
+
+            _bal_mode_var = tk.StringVar(value=ld.spec_mode)
+            tk.Label(parent, text="Spec mode", anchor="e").grid(
+                row=0, column=0, sticky="e", padx=(0, 4))
+            mode_cb = ttk.Combobox(parent, textvariable=_bal_mode_var,
+                                   values=MODES, state="readonly", width=12)
+            mode_cb.grid(row=0, column=1, sticky="w")
+
+            tk.Label(parent, text="Q sign", anchor="e").grid(
+                row=1, column=0, sticky="e", padx=(0, 4))
+            _bal_lag_var = tk.StringVar(
+                value="Lagging (ind)" if ld.lagging else "Leading (cap)")
+            ttk.Combobox(parent, textvariable=_bal_lag_var,
+                         values=["Lagging (ind)", "Leading (cap)"],
+                         state="readonly", width=14).grid(row=1, column=1, sticky="w")
+
+            input_f = tk.Frame(parent)
+            input_f.grid(row=2, column=0, columnspan=2, sticky="ew")
+            input_f.columnconfigure(1, weight=1)
+
+            def _rebuild_bal_inputs(*_):
+                for w in input_f.winfo_children():
+                    w.destroy()
+                _bal_vars.clear()
+                for r, (lbl, attr, hint) in enumerate(MODE_FIELDS.get(_bal_mode_var.get(), [])):
+                    tk.Label(input_f, text=f"{lbl} ({hint})", anchor="e").grid(
+                        row=r, column=0, sticky="e", padx=(0, 4), pady=1)
+                    var = tk.StringVar(value=str(getattr(ld, attr)))
+                    tk.Entry(input_f, textvariable=var, width=12).grid(
+                        row=r, column=1, sticky="w", pady=1)
+                    var.trace_add("write", _refresh_solved)
+                    _bal_vars[attr] = var
+
+            _bal_mode_var.trace_add("write", _rebuild_bal_inputs)
+            _bal_lag_var.trace_add("write", _refresh_solved)
+            _rebuild_bal_inputs()
+
+        def _build_individual_fields(parent):
+            _ph_vars.clear(); _ph_lag_vars.clear(); _ph_mode_vars.clear()
+            for w in parent.winfo_children():
+                w.destroy()
+
+            nb = ttk.Notebook(parent)
+            nb.pack(fill="both", expand=True)
+
+            for ph in ("A", "B", "C"):
+                suffix = PH_SUFFIX[ph]
+                tab = tk.Frame(nb)
+                nb.add(tab, text=f" Phase {ph} ")
+                tab.columnconfigure(1, weight=1)
+
+                ph_mode_var = tk.StringVar(value=getattr(ld, "spec_mode" + suffix))
+                _ph_mode_vars[ph] = ph_mode_var
+                tk.Label(tab, text="Spec mode", anchor="e").grid(
+                    row=0, column=0, sticky="e", padx=(0, 4), pady=2)
+                ttk.Combobox(tab, textvariable=ph_mode_var, values=MODES,
+                             state="readonly", width=12).grid(row=0, column=1, sticky="w")
+
+                lag_var = tk.StringVar(
+                    value="Lagging (ind)" if getattr(ld, "lagging" + suffix)
+                    else "Leading (cap)")
+                _ph_lag_vars[ph] = lag_var
+                tk.Label(tab, text="Q sign", anchor="e").grid(
+                    row=1, column=0, sticky="e", padx=(0, 4), pady=2)
+                ttk.Combobox(tab, textvariable=lag_var,
+                             values=["Lagging (ind)", "Leading (cap)"],
+                             state="readonly", width=14).grid(row=1, column=1, sticky="w")
+                lag_var.trace_add("write", _refresh_solved)
+
+                input_f = tk.Frame(tab)
+                input_f.grid(row=2, column=0, columnspan=2, sticky="ew")
+                input_f.columnconfigure(1, weight=1)
+
+                def _rebuild_ph_inputs(*_, _ph=ph, _suffix=suffix, _frm=input_f,
+                                       _mvar=ph_mode_var):
+                    for w in _frm.winfo_children():
+                        w.destroy()
+                    for key in list(_ph_vars.keys()):
+                        if key[0] == _ph:
+                            del _ph_vars[key]
+                    for r, (lbl, base_attr, hint) in enumerate(
+                            MODE_FIELDS.get(_mvar.get(), [])):
+                        tk.Label(_frm, text=f"{lbl} ({hint})", anchor="e").grid(
+                            row=r, column=0, sticky="e", padx=(0, 4), pady=1)
+                        full_attr = base_attr + _suffix
+                        var = tk.StringVar(value=str(getattr(ld, full_attr)))
+                        tk.Entry(_frm, textvariable=var, width=12).grid(
+                            row=r, column=1, sticky="w", pady=1)
+                        var.trace_add("write", _refresh_solved)
+                        _ph_vars[(_ph, base_attr)] = var
+
+                ph_mode_var.trace_add("write", _rebuild_ph_inputs)
+                _rebuild_ph_inputs()
+
+        def _rebuild_spec_area(*_):
+            for w in _spec_frame.winfo_children():
+                w.destroy()
+            if v_phase.get() == "balanced":
+                _build_balanced_fields(_spec_frame)
+            else:
+                _build_individual_fields(_spec_frame)
             _refresh_solved()
 
-        v_mode.trace_add("write", _rebuild_inputs)
-        _rebuild_inputs()  # initial build
+        v_phase.trace_add("write", _rebuild_spec_area)
+        _rebuild_spec_area()
 
         def apply():
-            ld.name     = v_name.get().strip() or ld.name
-            ld.spec_mode = v_mode.get()
-            ld.lagging  = v_lag.get().startswith("Lagging")
-            for attr, var in _input_vars.items():
-                try:
-                    val = float(var.get())
-                    setattr(ld, attr, val)
-                except ValueError:
-                    pass
+            ld.name = v_name.get().strip() or ld.name
+            _apply_to_load(ld)
             _refresh_solved()
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(10, 0)
+            row=8, column=0, columnspan=2, sticky="w", pady=(10, 0)
         )
 
     def show_ct(self, ct: DiagramCT) -> None:

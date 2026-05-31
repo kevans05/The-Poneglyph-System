@@ -233,51 +233,97 @@ class DiagramSource:
 
 @dataclass
 class DiagramLoad:
-    """Constant-power (PQ) load."""
+    """Constant-power (PQ) load — balanced 3-phase or individual phases."""
     id: str
     name: str
-    cx: float           # arrow-tip x (world)
-    cy: float           # arrow-tip y (world)
+    cx: float
+    cy: float
     bus: Optional[str] = None
     tap_x: float = 0.0
     tap_y: float = 0.0
-    # ── Spec mode and raw inputs ──────────────────────────────────────────
-    spec_mode: str = "P+Q"     # "P+Q" | "P+PF" | "kVA+PF" | "V+I+PF" | "kVAR+PF"
-    p_kw:   float = 1000.0     # real power kW
-    q_kvar: float = 500.0      # reactive power kVAR
-    s_kva:  float = 0.0        # apparent power kVA  (used by kVA+PF)
-    pf:     float = 0.9        # power factor 0–1    (used by *+PF modes)
-    v_kv:   float = 13.8       # voltage kV          (used by V+I+PF)
-    i_amps: float = 50.0       # current amps        (used by V+I+PF)
-    lagging: bool = True       # True = inductive (lagging Q > 0)
+    # ── Phase mode ────────────────────────────────────────────────────────
+    phase_mode: str = "balanced"   # "balanced" | "individual"
+    # ── Balanced-mode spec ────────────────────────────────────────────────
+    spec_mode: str = "P+Q"
+    p_kw:   float = 1000.0
+    q_kvar: float = 500.0
+    s_kva:  float = 0.0
+    pf:     float = 0.9
+    v_kv:   float = 13.8
+    i_amps: float = 50.0
+    lagging: bool = True
+    # ── Per-phase spec (individual mode) ─────────────────────────────────
+    spec_mode_a: str = "P+Q"; p_kw_a: float = 333.0; q_kvar_a: float = 167.0
+    s_kva_a: float = 0.0; pf_a: float = 0.9; v_kv_a: float = 13.8
+    i_amps_a: float = 17.0; lagging_a: bool = True
+    spec_mode_b: str = "P+Q"; p_kw_b: float = 333.0; q_kvar_b: float = 167.0
+    s_kva_b: float = 0.0; pf_b: float = 0.9; v_kv_b: float = 13.8
+    i_amps_b: float = 17.0; lagging_b: bool = True
+    spec_mode_c: str = "P+Q"; p_kw_c: float = 333.0; q_kvar_c: float = 167.0
+    s_kva_c: float = 0.0; pf_c: float = 0.9; v_kv_c: float = 13.8
+    i_amps_c: float = 17.0; lagging_c: bool = True
+    # ─────────────────────────────────────────────────────────────────────
     label_ox: float = 0.0
     label_oy: float = 0.0
 
-    # ── Derived values ────────────────────────────────────────────────────
-    def _resolved(self) -> tuple:
-        """Return (p_kw, q_kvar) from current spec_mode and inputs."""
-        pf = max(1e-4, min(1.0, self.pf))
-        sign = 1.0 if self.lagging else -1.0
-        m = self.spec_mode
+    # ── Helpers ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _resolve_spec(spec_mode: str, p_kw: float, q_kvar: float, s_kva: float,
+                      pf: float, v_kv: float, i_amps: float, lagging: bool) -> tuple:
+        """Return (p_kw, q_kvar) for one set of spec inputs."""
+        pf = max(1e-4, min(1.0, pf))
+        sign = 1.0 if lagging else -1.0
+        m = spec_mode
         if m == "P+Q":
-            return self.p_kw, self.q_kvar
+            return p_kw, q_kvar
         if m == "P+PF":
-            q = self.p_kw * math.sqrt(1 - pf**2) / pf
-            return self.p_kw, sign * abs(q)
+            q = p_kw * math.sqrt(1 - pf**2) / pf
+            return p_kw, sign * abs(q)
         if m == "kVAR+PF":
-            p = abs(self.q_kvar) * pf / math.sqrt(max(1e-9, 1 - pf**2))
-            return p, sign * abs(self.q_kvar)
+            p = abs(q_kvar) * pf / math.sqrt(max(1e-9, 1 - pf**2))
+            return p, sign * abs(q_kvar)
         if m == "kVA+PF":
-            p = self.s_kva * pf
-            q = self.s_kva * math.sqrt(1 - pf**2)
+            p = s_kva * pf; q = s_kva * math.sqrt(1 - pf**2)
             return p, sign * q
         if m == "V+I+PF":
-            # 3-phase: S(kVA) = √3 × V_LL(kV) × I(A)
-            s = math.sqrt(3) * self.v_kv * self.i_amps
-            p = s * pf
-            q = s * math.sqrt(1 - pf**2)
+            s = math.sqrt(3) * v_kv * i_amps
+            p = s * pf; q = s * math.sqrt(1 - pf**2)
             return p, sign * q
-        return self.p_kw, self.q_kvar
+        return p_kw, q_kvar
+
+    def _resolved(self) -> tuple:
+        """Return total 3-phase (p_kw, q_kvar)."""
+        if self.phase_mode == "individual":
+            pa, qa = self._resolve_spec(self.spec_mode_a, self.p_kw_a, self.q_kvar_a,
+                                        self.s_kva_a, self.pf_a, self.v_kv_a,
+                                        self.i_amps_a, self.lagging_a)
+            pb, qb = self._resolve_spec(self.spec_mode_b, self.p_kw_b, self.q_kvar_b,
+                                        self.s_kva_b, self.pf_b, self.v_kv_b,
+                                        self.i_amps_b, self.lagging_b)
+            pc, qc = self._resolve_spec(self.spec_mode_c, self.p_kw_c, self.q_kvar_c,
+                                        self.s_kva_c, self.pf_c, self.v_kv_c,
+                                        self.i_amps_c, self.lagging_c)
+            return pa + pb + pc, qa + qb + qc
+        return self._resolve_spec(self.spec_mode, self.p_kw, self.q_kvar,
+                                  self.s_kva, self.pf, self.v_kv,
+                                  self.i_amps, self.lagging)
+
+    def _resolved_phases(self) -> list:
+        """Return [(p_kw, q_kvar)] × 3 phases."""
+        if self.phase_mode == "individual":
+            return [
+                self._resolve_spec(self.spec_mode_a, self.p_kw_a, self.q_kvar_a,
+                                   self.s_kva_a, self.pf_a, self.v_kv_a,
+                                   self.i_amps_a, self.lagging_a),
+                self._resolve_spec(self.spec_mode_b, self.p_kw_b, self.q_kvar_b,
+                                   self.s_kva_b, self.pf_b, self.v_kv_b,
+                                   self.i_amps_b, self.lagging_b),
+                self._resolve_spec(self.spec_mode_c, self.p_kw_c, self.q_kvar_c,
+                                   self.s_kva_c, self.pf_c, self.v_kv_c,
+                                   self.i_amps_c, self.lagging_c),
+            ]
+        p, q = self._resolved()
+        return [(p/3, q/3)] * 3
 
     @property
     def p_mw(self) -> float:
@@ -288,11 +334,17 @@ class DiagramLoad:
         return self._resolved()[1] / 1000.0
 
     def summary_str(self) -> str:
-        """Short label for the canvas."""
         p, q = self._resolved()
         s = math.sqrt(p**2 + q**2)
         pf = p / s if s > 0 else 0.0
         lag = "lag" if q >= 0 else "lead"
+        if self.phase_mode == "individual":
+            phases = self._resolved_phases()
+            lines = []
+            for ph, (pp, pq) in zip("ABC", phases):
+                lines.append(f"Ph{ph}: {pp:g} kW  {pq:g} kVAR")
+            lines.append(f"Tot: {p:g} kW  PF={pf:.3f} {lag}")
+            return "\n".join(lines)
         return f"{p:g} kW  {q:g} kVAR\n{s:.0f} kVA  PF={pf:.3f} {lag}"
 
 
