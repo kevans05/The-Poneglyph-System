@@ -471,11 +471,11 @@ class Diagram(tk.Frame):
                                     fill=colour, width=LINE_WIDTH)
             self._terminal_dot(b_sx, b_sy, colour)
 
-        # ── HV coil row (bumps face UP, above core gap) ───────────────────
-        self._draw_coil_h(x_left, hv_y, n, r, bulge_up=True, colour=colour)
+        # ── HV coil row (bumps face DOWN / inward toward core gap) ──────────
+        self._draw_coil_h(x_left, hv_y, n, r, bulge_up=False, colour=colour)
 
-        # ── LV coil row (bumps face DOWN, below core gap) ─────────────────
-        self._draw_coil_h(x_left, lv_y, n, r, bulge_up=False, colour=colour)
+        # ── LV coil row (bumps face UP / inward toward core gap) ──────────
+        self._draw_coil_h(x_left, lv_y, n, r, bulge_up=True, colour=colour)
 
         # ── Iron core: two horizontal lines in the gap between the rows ───
         for off in (-2.5, 2.5):
