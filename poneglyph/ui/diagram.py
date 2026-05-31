@@ -40,7 +40,7 @@ from typing import Callable, Optional
 
 XFMR_BR   = 7.0    # winding bump radius (world units)
 XFMR_NB   = 3      # bumps per winding
-XFMR_CORE = 22.0   # gap between the two coil rows (iron-core region)
+XFMR_CORE = 30.0   # gap between the two coil rows (iron-core region)
 XFMR_LEAD = 14.0   # straight lead from terminal to the first coil row
 XFMR_IND  = 9.0    # winding-connection indicator glyph size (world units)
 
