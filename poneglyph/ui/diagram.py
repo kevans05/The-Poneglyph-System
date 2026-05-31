@@ -1368,22 +1368,11 @@ class Diagram(tk.Frame):
                                     px + pxn*tk*0.6, py + pyn*tk*0.6,
                                     fill=colour, width=lw)
 
-        # Secondary lead from arc tips out in +pxn direction, with crossbar
-        # Both arc tips are at cx+pxn*R for each arc; connect them and lead out
-        tip_top_x = sx - alx*R + pxn*R;  tip_top_y = sy - aly*R + pyn*R
-        tip_bot_x = sx + alx*R + pxn*R;  tip_bot_y = sy + aly*R + pyn*R
-        # Vertical connecting line between the two tips
-        self.canvas.create_line(tip_top_x, tip_top_y, tip_bot_x, tip_bot_y,
-                                fill=colour, width=lw)
-        # Lead from midpoint of that line outward
-        mid_x = (tip_top_x + tip_bot_x) / 2
-        mid_y = (tip_top_y + tip_bot_y) / 2
-        lead_ex = mid_x + pxn * tk * 2
-        lead_ey = mid_y + pyn * tk * 2
-        self.canvas.create_line(mid_x, mid_y, lead_ex, lead_ey,
-                                fill=colour, width=lw)
-        self.canvas.create_line(lead_ex - alx*tk/2, lead_ey - aly*tk/2,
-                                lead_ex + alx*tk/2, lead_ey + aly*tk/2,
+        # Secondary lead from the tip of the upper arc (top outer end of the C),
+        # going perpendicular — no crossbar, just a clean open end.
+        lead_ex = top_x + pxn * tk * 2.5
+        lead_ey = top_y + pyn * tk * 2.5
+        self.canvas.create_line(top_x, top_y, lead_ex, lead_ey,
                                 fill=colour, width=lw)
 
         label = f"{ct.ratio_str}\n{ct.name}"
@@ -1392,20 +1381,6 @@ class Diagram(tk.Frame):
                                 text=label, font=("TkDefaultFont", 8),
                                 fill="#444444",
                                 anchor="w" if pxn >= 0 else "e")
-        end_x = tip_x + pxn * tk_len * 2
-        end_y = tip_y + pyn * tk_len * 2
-        self.canvas.create_line(tip_x, tip_y, end_x, end_y, fill=colour, width=lw)
-        self.canvas.create_line(end_x - alx*tk_len/2, end_y - aly*tk_len/2,
-                                end_x + alx*tk_len/2, end_y + aly*tk_len/2,
-                                fill=colour, width=lw)
-
-        # Label: ratio + name
-        label = f"{ct.ratio_str}\n{ct.name}"
-        lbl_anchor = "w" if pxn >= 0 else "e"
-        self.canvas.create_text(end_x + pxn*4 + ct.label_ox*self._scale,
-                                end_y + pyn*4 + ct.label_oy*self._scale,
-                                text=label, font=("TkDefaultFont", 8),
-                                fill="#444444", anchor=lbl_anchor)
 
     # ── VT ────────────────────────────────────────────────────────────────
 
