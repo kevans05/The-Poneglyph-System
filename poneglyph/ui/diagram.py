@@ -430,6 +430,31 @@ class DiagramTestBlock:
 
 
 @dataclass
+class DiagramRelay:
+    id: str
+    name: str
+    cx: float       # world x centre
+    cy: float       # world y centre
+    relay_type: str = "OC"         # "OC" | "DIFF" | "DIST" | "GEN" | "VOLT" | "FREQ"
+    function_code: str = "51"      # ANSI function number string e.g. "21", "50/51", "87T"
+    num_windings: int = 1          # 1 or 2
+
+@dataclass
+class DiagramRelayWire:
+    """Dashed orthogonal wire connecting a secondary device to a relay winding."""
+    id: str
+    source_id: str      # ct, vt, cttb, or testblock id
+    source_type: str    # "ct" | "vt" | "cttb" | "testblock"
+    relay_id: str
+    winding: int = 1    # 1 or 2
+    waypoints: list = None   # extra world-coord (x,y) waypoints between source tip and relay
+
+    def __post_init__(self):
+        if self.waypoints is None:
+            self.waypoints = []
+
+
+@dataclass
 class DiagramBreaker:
     id: str
     name: str
@@ -463,6 +488,8 @@ TOOL_TESTBLOCK   = "testblock"
 TOOL_DELETE      = "delete"
 TOOL_BREAKER     = "breaker"
 TOOL_DISCONNECT  = "disconnect"
+TOOL_RELAY       = "relay"
+TOOL_RELAY_WIRE  = "relay_wire"
 
 TOOL_HINTS = {
     TOOL_SELECT:      "Select: click to select; drag a bus, transformer, source or load to move it.",
@@ -479,6 +506,8 @@ TOOL_HINTS = {
     TOOL_DELETE:      "Delete: click any element to remove it.",
     TOOL_BREAKER:     "Circuit Breaker: click on an existing connection line to place a breaker.",
     TOOL_DISCONNECT:  "Disconnect Switch: click on an existing connection line to place a disconnect switch.",
+    TOOL_RELAY:       "Relay: click anywhere to place a protection relay.",
+    TOOL_RELAY_WIRE:  "Relay Wire: click a CT/VT/CTTB/FT source, then click a relay winding.",
 }
 
 BUS_WIDTH  = 4
@@ -529,6 +558,9 @@ class Diagram(tk.Frame):
         self._testblocks:   dict = {}
         self._breakers:     dict = {}
         self._disconnects:  dict = {}
+        self._relays:       dict = {}
+        self._relay_wires:  dict = {}
+        self._relay_wire_from: Optional[tuple] = None  # (source_type, source_id) during relay wire placement
 
         self._volt_colours: dict = dict(DEFAULT_VOLT_COLOURS)
 
@@ -615,6 +647,8 @@ class Diagram(tk.Frame):
     def get_testblocks(self)   -> dict: return self._testblocks
     def get_breakers(self)     -> dict: return self._breakers
     def get_disconnects(self)  -> dict: return self._disconnects
+    def get_relays(self)       -> dict: return self._relays
+    def get_relay_wires(self)  -> dict: return self._relay_wires
     def get_selection(self)    -> Optional[tuple]: return self._selection
 
     def get_volt_colours(self) -> dict:
@@ -649,6 +683,8 @@ class Diagram(tk.Frame):
         self._testblocks.clear()
         self._breakers.clear()
         self._disconnects.clear()
+        self._relays.clear()
+        self._relay_wires.clear()
         self._selection = None
         self._bus_draw_nodes = []
         self._preview_point  = None
@@ -1479,7 +1515,7 @@ class Diagram(tk.Frame):
         canvas = self.canvas
 
         R    = 11 * self._scale   # bump radius
-        drop = 8  * self._scale   # primary lead from bus to first bump top
+        drop = 30 * self._scale   # primary lead from bus to first bump top
         gap  = 10 * self._scale   # vertical gap between primary and secondary windings
 
         # ── CVT capacitor stack on the primary lead ──────────────────────
@@ -1527,8 +1563,7 @@ class Diagram(tk.Frame):
                 canvas.create_arc(cx - R, sec2_y - R, cx + R, sec2_y + R,
                                   start=0, extent=180,
                                   outline=colour, style="arc", width=LINE_WIDTH)
-                canvas.create_line(sx, sec_y, sx, sec2_y - R,
-                                   fill=colour, width=LINE_WIDTH)
+            # Gap alone provides visual separation — no inter-winding connecting line
             bottom_y = sec2_y + R
         else:
             bottom_y = sec_y + R
