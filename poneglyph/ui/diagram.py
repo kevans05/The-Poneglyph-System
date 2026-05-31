@@ -386,13 +386,19 @@ class DiagramVT:
     bus_id: str
     tap_x: float
     tap_y: float = 0.0
-    # Voltage ratio — enter as "11000:110" or "11000/110" or "100:1"
     ratio_primary: float = 11000.0
     ratio_secondary: float = 110.0
     vt_type: str = "VT"           # "VT" | "CVT"
-    accuracy_class: str = "0.3"   # e.g. "0.1", "0.2", "0.5", "1.0", "3P"
+    accuracy_class: str = "0.3"
     burden_va: float = 25.0
-    num_secondaries: int = 1      # 1 or 2 (dual-secondary)
+    num_secondaries: int = 1
+    # Orthogonal secondary wire waypoints in world coords.
+    # First point is auto-computed from the symbol bottom; user adds more.
+    sec_waypoints: list = None     # list of (x, y) world tuples
+
+    def __post_init__(self):
+        if self.sec_waypoints is None:
+            self.sec_waypoints = []
 
     @property
     def ratio_str(self) -> str:
@@ -536,7 +542,7 @@ class Diagram(tk.Frame):
         self._drag_id:        Optional[str]   = None
         self._drag_kind:      Optional[str]   = None
         self._drag_origin:    Optional[tuple] = None
-        self._drag_node_idx:  Optional[int]   = None   # bus-node being dragged
+        self._drag_node_idx:  Optional[int]   = None   # bus-node or vt-waypoint being dragged
         self._drag_axis:      Optional[str]   = None   # "h" | "v" | "free" — locked at drag start
         self._term_anchor:    Optional[tuple] = None   # screen (sx,sy) of the fixed terminal end
         self._snap_grid_on:   bool            = True   # snap all placements/drags to grid
@@ -1472,62 +1478,168 @@ class Diagram(tk.Frame):
         colour = "#0066CC" if sel else "black"
         canvas = self.canvas
 
-        R    = 10 * self._scale   # winding circle radius
-        gap  = 2  * self._scale   # gap between primary and secondary circles
-        drop = 10 * self._scale   # wire from bus to top of primary circle
+        R    = 11 * self._scale   # bump radius
+        drop = 8  * self._scale   # primary lead from bus to first bump top
+        gap  = 10 * self._scale   # vertical gap between primary and secondary windings
 
-        # Lead from bus tap down to top of primary winding
-        pri_cy = sy + drop + R
-        canvas.create_line(sx, sy, sx, pri_cy - R, fill=colour, width=LINE_WIDTH)
-
-        # Primary winding — full circle
-        canvas.create_oval(sx - R, pri_cy - R, sx + R, pri_cy + R,
-                           outline=colour, width=LINE_WIDTH)
-
-        # CVT gets a capacitor stack above the primary circle
+        # ── CVT capacitor stack on the primary lead ──────────────────────
         if vt.vt_type == "CVT":
-            cap_w = R * 1.2
-            plate_gap = 3 * self._scale
+            cap_y   = sy + drop * 0.45
+            cap_w   = R * 1.3
+            p_gap   = 3 * self._scale
             for k in (-1, 1):
-                py = sy + drop / 2 + k * plate_gap / 2
+                py = cap_y + k * p_gap / 2
                 canvas.create_line(sx - cap_w, py, sx + cap_w, py,
                                    fill=colour, width=LINE_WIDTH + 1)
-
-        # Short inter-winding wire
-        sec_cy = pri_cy + R + gap + R
-        canvas.create_line(sx, pri_cy + R, sx, sec_cy - R, fill=colour, width=LINE_WIDTH)
-
-        # Secondary winding — full circle (slightly smaller)
-        Rs = R * 0.85
-        sec_cy2 = pri_cy + R + gap + Rs   # recompute with smaller radius
-        canvas.create_line(sx, pri_cy + R, sx, sec_cy2 - Rs, fill=colour, width=LINE_WIDTH)
-        canvas.create_oval(sx - Rs, sec_cy2 - Rs, sx + Rs, sec_cy2 + Rs,
-                           outline=colour, width=LINE_WIDTH)
-
-        # Second secondary winding for dual-secondary VTs
-        if vt.num_secondaries >= 2:
-            sec2_cy = sec_cy2 + Rs + gap + Rs
-            canvas.create_line(sx, sec_cy2 + Rs, sx, sec2_cy - Rs,
-                               fill=colour, width=LINE_WIDTH)
-            canvas.create_oval(sx - Rs, sec2_cy - Rs, sx + Rs, sec2_cy + Rs,
-                               outline=colour, width=LINE_WIDTH)
-            bottom_y = sec2_cy + Rs
+            canvas.create_line(sx, sy,       sx, cap_y - p_gap, fill=colour, width=LINE_WIDTH)
+            canvas.create_line(sx, cap_y + p_gap, sx, sy + drop, fill=colour, width=LINE_WIDTH)
         else:
-            bottom_y = sec_cy2 + Rs
+            canvas.create_line(sx, sy, sx, sy + drop, fill=colour, width=LINE_WIDTH)
 
-        # Ground symbol
-        gy = bottom_y + 4 * self._scale
-        canvas.create_line(sx, bottom_y, sx, gy, fill=colour, width=LINE_WIDTH)
-        for k, w in enumerate([10, 6, 3]):
-            ws = w * self._scale
-            yy = gy + k * 4 * self._scale
-            canvas.create_line(sx - ws, yy, sx + ws, yy, fill=colour, width=LINE_WIDTH)
+        # ── Primary winding: n_pri bumps opening DOWNWARD (∩ shapes) ────
+        # Bumps arranged horizontally; wire enters from top centre.
+        n_pri   = 3
+        pri_y   = sy + drop           # y of bump tops (flat chord at top)
+        total_w = n_pri * 2 * R
+        for i in range(n_pri):
+            cx = sx - total_w/2 + R + i * 2 * R
+            # extent=-180 from start=0 → bottom half of circle (opens downward)
+            canvas.create_arc(cx - R, pri_y - R, cx + R, pri_y + R,
+                              start=0, extent=-180,
+                              outline=colour, style="arc", width=LINE_WIDTH)
 
-        # Label
+        # ── Secondary winding: n_sec bumps opening UPWARD (∪ shapes) ────
+        n_sec   = 2 if vt.num_secondaries < 2 else 3
+        sec_y   = pri_y + 2 * R + gap   # y of bump bottoms (flat chord at bottom)
+        sec_w   = n_sec * 2 * R
+        for i in range(n_sec):
+            cx = sx - sec_w/2 + R + i * 2 * R
+            # extent=180 from start=0 → top half (opens upward)
+            canvas.create_arc(cx - R, sec_y - R, cx + R, sec_y + R,
+                              start=0, extent=180,
+                              outline=colour, style="arc", width=LINE_WIDTH)
+
+        # ── Second secondary for dual-winding VTs ────────────────────────
+        if vt.num_secondaries >= 2:
+            sec2_y = sec_y + 2 * R + gap / 2
+            for i in range(2):
+                cx = sx - 2*R + R + i * 2 * R
+                canvas.create_arc(cx - R, sec2_y - R, cx + R, sec2_y + R,
+                                  start=0, extent=180,
+                                  outline=colour, style="arc", width=LINE_WIDTH)
+                canvas.create_line(sx, sec_y, sx, sec2_y - R,
+                                   fill=colour, width=LINE_WIDTH)
+            bottom_y = sec2_y + R
+        else:
+            bottom_y = sec_y + R
+
+        # ── Dashed secondary wire (orthogonal, with crossover hops) ──────
+        self._draw_vt_secondary(vt, sx, bottom_y, colour, sel)
+
+        # ── Label ────────────────────────────────────────────────────────
         label = f"{vt.vt_type}  {vt.ratio_str}\n{vt.name}"
-        canvas.create_text(sx + Rs + 6 * self._scale, pri_cy,
+        canvas.create_text(sx + total_w/2 + 6*self._scale,
+                           pri_y + R,
                            text=label, font=("TkDefaultFont", 8),
                            fill="#444444", anchor="w")
+
+    def _draw_vt_secondary(self, vt: DiagramVT,
+                           sym_sx: float, sym_bottom_sy: float,
+                           colour: str, sel: bool) -> None:
+        """Draw the dashed secondary wire from the VT symbol downward.
+
+        The wire is orthogonal (90° bends only).  Where it crosses a bus
+        segment a small hop arc is drawn so the crossing reads clearly.
+        If no waypoints are stored the wire just hangs straight down a
+        default amount.
+        """
+        canvas = self.canvas
+        # Convert symbol bottom from screen → world, then build waypoint list
+        wx0, wy0 = self._s2w(sym_sx, sym_bottom_sy)
+        wpts = [(wx0, wy0)] + list(vt.sec_waypoints)
+        if len(wpts) == 1:
+            # Default: drop straight down 60 world units
+            wpts.append((wx0, wy0 + 60))
+
+        # Screen-space polyline
+        spts = [self._w2s(wx, wy) for wx, wy in wpts]
+
+        # Collect all bus segments for hop detection
+        bus_segs = []
+        for b in self._buses.values():
+            for ei, ej in b.edges:
+                bx1, by1 = self._w2s(*b.nodes[ei])
+                bx2, by2 = self._w2s(*b.nodes[ej])
+                bus_segs.append((bx1, by1, bx2, by2))
+
+        hop_r = 5 * self._scale
+        dash  = (6, 4)
+        lw    = LINE_WIDTH
+
+        for k in range(len(spts) - 1):
+            ax, ay = spts[k]
+            bx, by = spts[k + 1]
+
+            # Find all bus-crossing t values along this segment
+            hops = self._segment_bus_crossings(ax, ay, bx, by, bus_segs, hop_r)
+
+            # Draw sub-segments between hops
+            prev_pt = (ax, ay)
+            for t, nx, ny in hops:
+                # Approach point (just before cross)
+                tx = ax + (bx - ax) * t
+                ty = ay + (by - ay) * t
+                # Direction unit vector
+                seg_len = math.hypot(bx - ax, by - ay) or 1
+                udx = (bx - ax) / seg_len
+                udy = (by - ay) / seg_len
+                # Draw dashed segment up to hop
+                p1x = tx - udx * hop_r
+                p1y = ty - udy * hop_r
+                if math.hypot(p1x - prev_pt[0], p1y - prev_pt[1]) > 1:
+                    canvas.create_line(prev_pt[0], prev_pt[1], p1x, p1y,
+                                       fill=colour, width=lw, dash=dash)
+                # Hop arc: semicircle over the crossing, bulging left of travel dir
+                p2x = tx + udx * hop_r
+                p2y = ty + udy * hop_r
+                # Arc bounding box centred on crossing point
+                canvas.create_arc(tx - hop_r, ty - hop_r, tx + hop_r, ty + hop_r,
+                                  start=math.degrees(math.atan2(-udy, udx)),
+                                  extent=180,
+                                  outline=colour, style="arc", width=lw)
+                prev_pt = (p2x, p2y)
+
+            # Final sub-segment after last hop
+            if math.hypot(bx - prev_pt[0], by - prev_pt[1]) > 1:
+                canvas.create_line(prev_pt[0], prev_pt[1], bx, by,
+                                   fill=colour, width=lw, dash=dash)
+
+        # If selected, show draggable node handles on the waypoints
+        if sel:
+            hr = max(4, 4 * self._scale)
+            for sx2, sy2 in spts[1:]:
+                canvas.create_rectangle(sx2 - hr, sy2 - hr, sx2 + hr, sy2 + hr,
+                                        outline="#0066CC", fill="white", width=2)
+
+    @staticmethod
+    def _segment_bus_crossings(ax, ay, bx, by, bus_segs, hop_r):
+        """Return sorted list of (t, cx, cy) where the segment AB crosses a bus seg."""
+        hits = []
+        dx1, dy1 = bx - ax, by - ay
+        for bsx1, bsy1, bsx2, bsy2 in bus_segs:
+            dx2, dy2 = bsx2 - bsx1, bsy2 - bsy1
+            denom = dx1 * dy2 - dy1 * dx2
+            if abs(denom) < 1e-6:
+                continue   # parallel
+            dx3, dy3 = bsx1 - ax, bsy1 - ay
+            t = (dx3 * dy2 - dy3 * dx2) / denom
+            u = (dx3 * dy1 - dy3 * dx1) / denom
+            if hop_r / max(math.hypot(dx1, dy1), 1) < t < 1 - hop_r / max(math.hypot(dx1, dy1), 1) and 0 <= u <= 1:
+                cx = ax + t * dx1
+                cy = ay + t * dy1
+                hits.append((t, cx, cy))
+        hits.sort(key=lambda h: h[0])
+        return hits
 
     # ── Test block position helpers ───────────────────────────────────────
 
@@ -1556,24 +1668,22 @@ class Diagram(tk.Frame):
         return self._s2w(tip_sx, tip_sy)
 
     def _vt_secondary_bottom_world(self, vt: "DiagramVT"):
-        """Return world (x, y) just below the VT's lowest winding (secondary lead start)."""
+        """Return world (x, y) at the bottom of the VT secondary wire start."""
         bus = self._buses.get(vt.bus_id)
         if bus is None:
             return None
         tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
-        # Replicate the geometry from _draw_vt to find bottom_y in world coords
+        # Mirror geometry from _draw_vt (bump style)
         sx, sy = self._w2s(*tap_pt)
-        R    = 10 * self._scale
-        gap  = 2  * self._scale
-        Rs   = R  * 0.85
-        drop = 10 * self._scale
-        pri_cy  = sy + drop + R
-        sec_cy2 = pri_cy + R + gap + Rs
+        R    = 11 * self._scale
+        drop = 8  * self._scale
+        gap  = 10 * self._scale
+        pri_y  = sy + drop
+        sec_y  = pri_y + 2 * R + gap
         if vt.num_secondaries >= 2:
-            sec2_cy = sec_cy2 + Rs + gap + Rs
-            bottom_sy = sec2_cy + Rs
+            bottom_sy = sec_y + 2 * R + gap / 2 + R
         else:
-            bottom_sy = sec_cy2 + Rs
+            bottom_sy = sec_y + R
         return self._s2w(sx, bottom_sy)
 
     # ── CTTB draw ─────────────────────────────────────────────────────────
@@ -2093,6 +2203,48 @@ class Diagram(tk.Frame):
                                 self._bus_insert_node(bus, idx)
                                 return
 
+            # ── VT secondary waypoint editing (when a VT is selected) ───────
+            if self._selection and self._selection[0] == "vt":
+                vt = self._vts.get(self._selection[1])
+                if vt:
+                    wpt_tol = max(7, 7 * self._scale)
+                    # Drag existing waypoint
+                    for wi, (wptx, wpty) in enumerate(vt.sec_waypoints):
+                        wsx, wsy = self._w2s(wptx, wpty)
+                        if math.hypot(event.x - wsx, event.y - wsy) <= wpt_tol:
+                            if shift:
+                                vt.sec_waypoints.pop(wi)
+                                self.redraw()
+                            else:
+                                self._drag_id       = vt.id
+                                self._drag_kind     = "vt_waypoint"
+                                self._drag_node_idx = wi
+                                self._drag_origin   = (wx, wy)
+                            return
+                    # Shift-click near secondary wire → insert new waypoint
+                    if shift:
+                        bottom = self._vt_secondary_bottom_world(vt)
+                        if bottom:
+                            wpts_w = [bottom] + list(vt.sec_waypoints)
+                            if len(wpts_w) < 2:
+                                wpts_w.append((bottom[0], bottom[1] + 60))
+                            seg_tol = max(10, 10 * self._scale)
+                            for si in range(len(wpts_w) - 1):
+                                p1x, p1y = self._w2s(*wpts_w[si])
+                                p2x, p2y = self._w2s(*wpts_w[si + 1])
+                                # Project click onto segment
+                                sdx, sdy = p2x - p1x, p2y - p1y
+                                slen2 = sdx*sdx + sdy*sdy
+                                if slen2 < 1:
+                                    continue
+                                t = max(0.0, min(1.0, ((event.x - p1x)*sdx + (event.y - p1y)*sdy) / slen2))
+                                px = p1x + t*sdx; py = p1y + t*sdy
+                                if math.hypot(event.x - px, event.y - py) <= seg_tol:
+                                    nwx, nwy = self._sg(*self._s2w(px, py))
+                                    vt.sec_waypoints.insert(si, (nwx, nwy))
+                                    self.redraw()
+                                    return
+
             # ── Label drag ───────────────────────────────────────────────────
             lbl_hit = self._hit_label(event.x, event.y)
             if lbl_hit:
@@ -2142,6 +2294,20 @@ class Diagram(tk.Frame):
                 self._begin_drag("ct", ct_id, wx, wy)
             elif vt_id:
                 self._set_selection("vt", vt_id)
+                # Check if clicking on an existing waypoint handle → drag it
+                vt = self._vts[vt_id]
+                wpt_tol = max(6, 6 * self._scale)
+                hit_wpt = None
+                for wi, (wptx, wpty) in enumerate(vt.sec_waypoints):
+                    wsx, wsy = self._w2s(wptx, wpty)
+                    if math.hypot(event.x - wsx, event.y - wsy) <= wpt_tol:
+                        hit_wpt = wi
+                        break
+                if hit_wpt is not None:
+                    self._drag_id       = vt_id
+                    self._drag_kind     = "vt_waypoint"
+                    self._drag_node_idx = hit_wpt
+                    self._drag_origin   = (wx, wy)
             elif cttb_id:
                 self._set_selection("cttb", cttb_id)
                 self._begin_drag("cttb", cttb_id, wx, wy)
@@ -2512,6 +2678,15 @@ class Diagram(tk.Frame):
                 if tb:
                     tb.offset_x += dx
                     tb.offset_y += dy
+            elif self._drag_kind == "vt_waypoint":
+                vt = self._vts.get(self._drag_id)
+                if vt and self._drag_node_idx is not None:
+                    wi = self._drag_node_idx
+                    if 0 <= wi < len(vt.sec_waypoints):
+                        ox, oy = vt.sec_waypoints[wi]
+                        # Snap to grid and constrain to 90° from neighbours
+                        nwx, nwy = self._sg(ox + dx, oy + dy)
+                        vt.sec_waypoints[wi] = (nwx, nwy)
             self._drag_origin = (gx, gy)
             self.redraw()
 
