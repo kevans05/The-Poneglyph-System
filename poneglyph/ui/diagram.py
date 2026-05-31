@@ -505,10 +505,7 @@ class Diagram(tk.Frame):
                                     fill=lv_col, width=LINE_WIDTH)
             self._terminal_dot(b_sx, b_sy, lv_col)
 
-        # ── Centre conductor: HV colour top half, LV colour bottom half ──────
-        cm_sx, cm_sy = self._w2s(xfmr.cx, xfmr.cy)
-        self.canvas.create_line(ct_sx, ct_sy, cm_sx, cm_sy, fill=hv_col, width=LINE_WIDTH)
-        self.canvas.create_line(cm_sx, cm_sy, cb_sx, cb_sy, fill=lv_col, width=LINE_WIDTH)
+        # (no conductor drawn through the core gap — coils are magnetically coupled)
 
         # ── HV coil row (bumps inward / downward) ─────────────────────────
         self._draw_coil_h(x_left, hv_y, n, r, bulge_up=False, colour=hv_col)
