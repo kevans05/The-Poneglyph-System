@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, colorchooser
 
 from poneglyph.ui.diagram import (
     Diagram,
@@ -47,6 +47,10 @@ class MainWindow:
         sm = tk.Menu(mb, tearoff=0)
         sm.add_command(label="Run Power Flow", command=self._run_power_flow)
         mb.add_cascade(label="Simulation", menu=sm)
+
+        vm = tk.Menu(mb, tearoff=0)
+        vm.add_command(label="Voltage Colours…", command=self._edit_volt_colours)
+        mb.add_cascade(label="View", menu=vm)
 
         self.root.config(menu=mb)
 
@@ -210,6 +214,9 @@ class MainWindow:
 
     # ── Actions ───────────────────────────────────────────────────────────
 
+    def _edit_volt_colours(self) -> None:
+        VoltageColourDialog(self.root, self.diagram)
+
     def _new(self) -> None:
         self.diagram.clear()
         self.props.clear()
@@ -261,3 +268,97 @@ class MainWindow:
 
     def _set_status(self, msg: str) -> None:
         self._status_var.set(msg)
+
+
+class VoltageColourDialog(tk.Toplevel):
+    """Editable table of voltage-level → colour mappings."""
+
+    def __init__(self, parent: tk.Tk, diagram: Diagram) -> None:
+        super().__init__(parent)
+        self.title("Voltage Colours")
+        self.resizable(False, False)
+        self.grab_set()
+        self._diagram = diagram
+        self._rows: list[tuple[tk.StringVar, tk.StringVar, tk.Label]] = []
+
+        self._build(diagram.get_volt_colours())
+
+    def _build(self, mapping: dict) -> None:
+        hdr = tk.Frame(self)
+        hdr.pack(fill=tk.X, padx=8, pady=(8, 0))
+        tk.Label(hdr, text="kV", width=8, font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT)
+        tk.Label(hdr, text="Colour", width=12, font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT)
+
+        self._list_frame = tk.Frame(self)
+        self._list_frame.pack(fill=tk.BOTH, padx=8, pady=4)
+
+        for kv, colour in sorted(mapping.items()):
+            self._add_row(kv, colour)
+
+        btn_row = tk.Frame(self)
+        btn_row.pack(fill=tk.X, padx=8, pady=8)
+        tk.Button(btn_row, text="Add Row", command=self._add_blank_row).pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_row, text="Apply", command=self._apply).pack(side=tk.RIGHT, padx=2)
+        tk.Button(btn_row, text="OK", command=self._ok).pack(side=tk.RIGHT, padx=2)
+
+    def _add_row(self, kv: float = 0.0, colour: str = "#000000") -> None:
+        row = tk.Frame(self._list_frame)
+        row.pack(fill=tk.X, pady=1)
+
+        kv_var  = tk.StringVar(value=str(kv) if kv else "")
+        col_var = tk.StringVar(value=colour)
+
+        tk.Entry(row, textvariable=kv_var, width=8).pack(side=tk.LEFT, padx=2)
+
+        swatch = tk.Label(row, bg=colour, width=4, relief="sunken", cursor="hand2")
+        swatch.pack(side=tk.LEFT, padx=2)
+
+        col_entry = tk.Entry(row, textvariable=col_var, width=10)
+        col_entry.pack(side=tk.LEFT, padx=2)
+
+        def pick_colour(sv=col_var, sw=swatch):
+            result = colorchooser.askcolor(color=sv.get(), parent=self, title="Pick colour")
+            if result and result[1]:
+                sv.set(result[1])
+                try:
+                    sw.config(bg=result[1])
+                except tk.TclError:
+                    pass
+
+        def on_entry_change(*_, sv=col_var, sw=swatch):
+            try:
+                sw.config(bg=sv.get())
+            except tk.TclError:
+                pass
+
+        swatch.bind("<Button-1>", lambda _e: pick_colour())
+        col_var.trace_add("write", on_entry_change)
+
+        def remove(r=row, entry=(kv_var, col_var, swatch)):
+            r.destroy()
+            self._rows = [t for t in self._rows if t is not entry]
+
+        tk.Button(row, text="✕", width=2, command=remove).pack(side=tk.LEFT, padx=2)
+        self._rows.append((kv_var, col_var, swatch))
+
+    def _add_blank_row(self) -> None:
+        self._add_row(0.0, "#000000")
+
+    def _collect(self) -> dict[float, str]:
+        result: dict[float, str] = {}
+        for kv_var, col_var, _ in self._rows:
+            try:
+                kv = float(kv_var.get())
+                col = col_var.get().strip()
+                if kv > 0 and col:
+                    result[kv] = col
+            except ValueError:
+                pass
+        return result
+
+    def _apply(self) -> None:
+        self._diagram.set_volt_colours(self._collect())
+
+    def _ok(self) -> None:
+        self._apply()
+        self.destroy()

@@ -221,6 +221,22 @@ LINE_WIDTH = 2
 SNAP_TOL   = 16      # pixels for bus hit-tests
 XFMR_SNAP  = 32      # pixels of Y tolerance for transformer/source/load bus-snap
 
+# Default voltage-level colour map (kV → hex colour).
+# Keys are nominal kV values; _voltage_colour() picks the nearest one.
+DEFAULT_VOLT_COLOURS: dict[float, str] = {
+    765:  "#8B008B",   # dark magenta
+    500:  "#800080",   # purple
+    345:  "#0000CD",   # medium blue
+    230:  "#008080",   # teal
+    138:  "#FF8C00",   # dark orange
+    115:  "#FFA500",   # orange
+    69:   "#DAA520",   # goldenrod
+    34.5: "#8B4513",   # saddle brown
+    13.8: "#228B22",   # forest green
+    4.16: "#90EE90",   # light green
+    0.48: "#808080",   # gray
+}
+
 
 # ── Diagram canvas ────────────────────────────────────────────────────────────
 
@@ -244,6 +260,8 @@ class Diagram(tk.Frame):
         self._loads:        dict[str, DiagramLoad]        = {}
         self._cts:          dict[str, DiagramCT]          = {}
         self._vts:          dict[str, DiagramVT]          = {}
+
+        self._volt_colours: dict[float, str] = dict(DEFAULT_VOLT_COLOURS)
 
         self._tool = TOOL_SELECT
         self._selection: Optional[tuple[str, str]] = None
@@ -302,6 +320,24 @@ class Diagram(tk.Frame):
     def get_cts(self)          -> dict[str, DiagramCT]:          return self._cts
     def get_vts(self)          -> dict[str, DiagramVT]:          return self._vts
     def get_selection(self)    -> Optional[tuple[str, str]]:     return self._selection
+
+    def get_volt_colours(self) -> dict[float, str]:
+        return self._volt_colours
+
+    def set_volt_colours(self, mapping: dict[float, str]) -> None:
+        self._volt_colours = dict(mapping)
+        self.redraw()
+
+    def _voltage_colour(self, kv: float, selected: bool = False) -> str:
+        """Return the colour for a given voltage level (kV), or black if unset."""
+        if selected:
+            return "#0066CC"
+        if not self._volt_colours or kv <= 0:
+            return "black"
+        nearest = min(self._volt_colours, key=lambda v: abs(v - kv))
+        if abs(nearest - kv) / max(nearest, 1) > 0.25:
+            return "black"   # no close match — don't mis-colour
+        return self._volt_colours[nearest]
 
     def clear(self) -> None:
         self._buses.clear()
@@ -368,7 +404,7 @@ class Diagram(tk.Frame):
         sx1, sy = self._w2s(bus.x1, bus.y)
         sx2, _  = self._w2s(bus.x2, bus.y)
         sel    = self._selection == ("bus", bus.id)
-        colour = "#0066CC" if sel else "black"
+        colour = self._voltage_colour(bus.kv, selected=sel)
         self.canvas.create_line(sx1, sy, sx2, sy,
                                 width=BUS_WIDTH, fill=colour, capstyle=tk.ROUND)
         cx = (sx1 + sx2) / 2
@@ -376,7 +412,7 @@ class Diagram(tk.Frame):
                                 font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
         if bus.kv:
             self.canvas.create_text(cx, sy + 10, text=f"{bus.kv} kV",
-                                    font=("TkDefaultFont", 8), fill="#555555", anchor="n")
+                                    font=("TkDefaultFont", 8), fill=colour, anchor="n")
         if bus.v_solved is not None:
             mag = abs(bus.v_solved)
             ang = math.degrees(cmath.phase(bus.v_solved))
@@ -398,7 +434,9 @@ class Diagram(tk.Frame):
         x1, y1 = self._w2s(*start)
         x2, y2 = self._w2s(*end)
         sel    = self._selection == ("conn", conn.id)
-        colour = "#0066CC" if sel else "black"
+        from_bus = self._buses.get(conn.from_bus)
+        kv = from_bus.kv if from_bus else 0.0
+        colour = self._voltage_colour(kv, selected=sel)
 
         self.canvas.create_line(x1, y1, x2, y2, width=LINE_WIDTH, fill=colour)
 
@@ -427,73 +465,83 @@ class Diagram(tk.Frame):
     # ── Transformer (standalone, world-space IEC coupled-coil symbol) ─────
 
     def _draw_transformer(self, xfmr: DiagramTransformer) -> None:
-        sel    = self._selection == ("transformer", xfmr.id)
-        colour = "#0066CC" if sel else "black"
+        sel     = self._selection == ("transformer", xfmr.id)
+        hv_col  = self._voltage_colour(xfmr.hv_kv, selected=sel)
+        lv_col  = self._voltage_colour(xfmr.lv_kv, selected=sel)
+        core_col = "#0066CC" if sel else "black"
         r    = XFMR_BR
         n    = XFMR_NB
         span = _WIND_SPAN   # horizontal span of each coil row
 
-        # Horizontal coil layout (symbol rotated so bumps face up/down):
-        #   HV row above centre: bumps face UP (away from core)
-        #   LV row below centre: bumps face DOWN (away from core)
-        #   Centre conductor runs vertically at xfmr.cx through both rows
-        hv_y = xfmr.cy - XFMR_CORE / 2   # HV coil row y (world)
-        lv_y = xfmr.cy + XFMR_CORE / 2   # LV coil row y (world)
-        x_left = xfmr.cx - span / 2       # leftmost point of coil rows
+        hv_y   = xfmr.cy - XFMR_CORE / 2
+        lv_y   = xfmr.cy + XFMR_CORE / 2
+        x_left = xfmr.cx - span / 2
 
         # ── HV terminal lead (bus → top of centre conductor) ─────────────
-        ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y - r)   # top of HV bump apexes
+        ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y - r)
         if xfmr.hv_bus and xfmr.hv_bus in self._buses:
             bus = self._buses[xfmr.hv_bus]
             bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
             self.canvas.create_line(bsx, bsy, ct_sx, ct_sy,
-                                    fill=colour, width=LINE_WIDTH)
+                                    fill=hv_col, width=LINE_WIDTH)
         else:
             t_sx, t_sy = self._w2s(xfmr.cx, xfmr.top_y)
             self.canvas.create_line(t_sx, t_sy, ct_sx, ct_sy,
-                                    fill=colour, width=LINE_WIDTH)
-            self._terminal_dot(t_sx, t_sy, colour)
-
-        # ── Centre conductor through both coil rows ────────────────────────
-        cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y + r)   # bottom of LV bump apexes
-        self.canvas.create_line(ct_sx, ct_sy, cb_sx, cb_sy,
-                                fill=colour, width=LINE_WIDTH)
+                                    fill=hv_col, width=LINE_WIDTH)
+            self._terminal_dot(t_sx, t_sy, hv_col)
 
         # ── LV terminal lead (bottom of centre conductor → bus) ────────────
+        cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y + r)
         if xfmr.lv_bus and xfmr.lv_bus in self._buses:
             bus = self._buses[xfmr.lv_bus]
             bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
             self.canvas.create_line(cb_sx, cb_sy, bsx, bsy,
-                                    fill=colour, width=LINE_WIDTH)
+                                    fill=lv_col, width=LINE_WIDTH)
         else:
             b_sx, b_sy = self._w2s(xfmr.cx, xfmr.bot_y)
             self.canvas.create_line(cb_sx, cb_sy, b_sx, b_sy,
-                                    fill=colour, width=LINE_WIDTH)
-            self._terminal_dot(b_sx, b_sy, colour)
+                                    fill=lv_col, width=LINE_WIDTH)
+            self._terminal_dot(b_sx, b_sy, lv_col)
 
-        # ── HV coil row (bumps face DOWN / inward toward core gap) ──────────
-        self._draw_coil_h(x_left, hv_y, n, r, bulge_up=False, colour=colour)
+        # ── Centre conductor through both coil rows ────────────────────────
+        self.canvas.create_line(ct_sx, ct_sy, cb_sx, cb_sy,
+                                fill=core_col, width=LINE_WIDTH)
 
-        # ── LV coil row (bumps face UP / inward toward core gap) ──────────
-        self._draw_coil_h(x_left, lv_y, n, r, bulge_up=True, colour=colour)
+        # ── HV coil row (bumps inward / downward) ─────────────────────────
+        self._draw_coil_h(x_left, hv_y, n, r, bulge_up=False, colour=hv_col)
 
-        # ── Iron core: two horizontal lines in the gap between the rows ───
+        # ── LV coil row (bumps inward / upward) ───────────────────────────
+        self._draw_coil_h(x_left, lv_y, n, r, bulge_up=True, colour=lv_col)
+
+        # ── Iron core: two horizontal lines in the gap ────────────────────
         for off in (-2.5, 2.5):
             ic_l_sx, ic_l_sy = self._w2s(xfmr.cx - span / 2, xfmr.cy + off)
             ic_r_sx, ic_r_sy = self._w2s(xfmr.cx + span / 2, xfmr.cy + off)
             self.canvas.create_line(ic_l_sx, ic_l_sy, ic_r_sx, ic_r_sy,
-                                    fill=colour, width=LINE_WIDTH + 1)
+                                    fill=core_col, width=LINE_WIDTH + 1)
 
-        # ── Winding indicators to the right of each coil row ──────────────
+        # ── Winding indicators + kV labels to the right of each coil row ──
         ind_x = xfmr.cx + span / 2 + XFMR_IND + 16
-        self._draw_winding_indicator(ind_x, hv_y, xfmr.hv_winding, xfmr.hv_grounded, colour)
-        self._draw_winding_indicator(ind_x, lv_y, xfmr.lv_winding, xfmr.lv_grounded, colour)
+        self._draw_winding_indicator(ind_x, hv_y, xfmr.hv_winding, xfmr.hv_grounded, hv_col)
+        self._draw_winding_indicator(ind_x, lv_y, xfmr.lv_winding, xfmr.lv_grounded, lv_col)
 
-        # ── Label (to the left) ───────────────────────────────────────────
+        kv_x = xfmr.cx - span / 2 - 6   # kV labels on the left side
+        if xfmr.hv_kv:
+            kv_sx, kv_sy = self._w2s(kv_x, hv_y)
+            self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.hv_kv:g} kV",
+                                    font=("TkDefaultFont", 8, "bold"),
+                                    fill=hv_col, anchor="e")
+        if xfmr.lv_kv:
+            kv_sx, kv_sy = self._w2s(kv_x, lv_y)
+            self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.lv_kv:g} kV",
+                                    font=("TkDefaultFont", 8, "bold"),
+                                    fill=lv_col, anchor="e")
+
+        # ── Label (name + MVA, centred to the left) ───────────────────────
         label = xfmr.name
         if xfmr.mva:
             label += f"\n{xfmr.mva:g} MVA"
-        l_sx, l_sy = self._w2s(xfmr.cx - span / 2 - 6, xfmr.cy)
+        l_sx, l_sy = self._w2s(kv_x, xfmr.cy)
         self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="e")
 
