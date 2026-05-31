@@ -137,8 +137,8 @@ class MainWindow:
         protect_menu.add_command(label="Relay",      command=lambda: self._set_protect_tool(TOOL_RELAY))
         protect_menu.add_command(label="Relay Wire", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE))
         protect_menu.add_separator()
-        protect_menu.add_command(label="Current Relay Wire (CT/CTTB)", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_I))
-        protect_menu.add_command(label="Voltage Relay Wire (VT/FT)",   command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_V))
+        protect_menu.add_command(label="CT Wire (CT/CTTB)", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_I))
+        protect_menu.add_command(label="VT Wire (VT/FT)",   command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_V))
         self._btn_protect["menu"] = protect_menu
         self._btn_protect.pack(side=tk.LEFT, padx=2, pady=2)
 
@@ -205,6 +205,7 @@ class MainWindow:
         pane.add(self.diagram, minsize=400, stretch="always")
 
         self.props = PropertiesPanel(pane, on_change=self.diagram.redraw)
+        self.props.set_diagram(self.diagram)
         pane.add(self.props, minsize=180, width=220)
 
     # ── Status bar ────────────────────────────────────────────────────────

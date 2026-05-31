@@ -429,10 +429,10 @@ class DiagramCTTB:
     """Current Transformer Test Block."""
     id: str
     name: str
-    source_id: str              # parent CT or CTTB id
+    source_id: str = ""         # parent CT or CTTB id (empty = free-placed)
     source_type: str = "ct"     # "ct" | "cttb"
-    offset_x: float = 0.0
-    offset_y: float = 40.0
+    cx: float = 0.0             # world-space box centre X
+    cy: float = 0.0             # world-space box centre Y
     mode: str = "Pass"          # "Pass" | "Sum" | "Subtract"
     num_circuits: int = 1
     # ── Extended device fields ────────────────────────────────────────────
@@ -447,11 +447,11 @@ class DiagramTestBlock:
     """FT (Fuse-Test) or ISO block."""
     id: str
     name: str
-    source_id: str              # parent VT or TestBlock id
+    source_id: str = ""         # parent VT or TestBlock id (empty = free-placed)
     source_type: str = "vt"     # "vt" | "testblock"
+    cx: float = 0.0             # world-space box centre X
+    cy: float = 0.0             # world-space box centre Y
     block_type: str = "FT"      # "FT" | "ISO"
-    offset_x: float = 0.0
-    offset_y: float = 50.0
     fused: bool = True
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
@@ -490,6 +490,7 @@ class DiagramRelayWire:
     winding: int = 1    # index into relay.windings
     waypoints: list = None
     wire_type: str = "current"   # "current" | "voltage"
+    dest_type: str = "relay"     # "relay" | "cttb" | "testblock"
 
     def __post_init__(self):
         if self.waypoints is None:
@@ -572,15 +573,15 @@ TOOL_HINTS = {
     TOOL_LOAD:        "Load: click to place. Near a bus → snaps to it.",
     TOOL_CT:          "Current Transformer: click on an existing line.",
     TOOL_VT:          "Voltage Transformer: click on a bus.",
-    TOOL_CTTB:        "CT Test Block: click on a placed CT to attach a test block to its secondary.",
-    TOOL_TESTBLOCK:   "FT / ISO Block: click on a placed VT/CVT to attach a test block to its secondary.",
+    TOOL_CTTB:        "CT Test Block: click anywhere to place a CTTB, then use CT Wire to connect.",
+    TOOL_TESTBLOCK:   "FT/ISO Block: click anywhere to place an FT block, then use VT Wire to connect.",
     TOOL_DELETE:      "Delete: click any element to remove it.",
     TOOL_BREAKER:     "Circuit Breaker: click on an existing connection line to place a breaker.",
     TOOL_DISCONNECT:  "Disconnect Switch: click on an existing connection line to place a disconnect switch.",
     TOOL_RELAY:       "Relay: click anywhere to place a protection relay.",
     TOOL_RELAY_WIRE:  "Relay Wire: click a CT/VT/CTTB/FT source, then click a relay winding.",
-    TOOL_RELAY_WIRE_I: "Current Relay Wire: click a CT or CTTB, then click a relay winding.",
-    TOOL_RELAY_WIRE_V: "Voltage Relay Wire: click a VT or FT/ISO block, then click a relay winding.",
+    TOOL_RELAY_WIRE_I: "CT Wire: click a CT or CTTB, then click a relay or another CTTB.",
+    TOOL_RELAY_WIRE_V: "VT Wire: click a VT or FT/ISO block, then click a relay or another FT block.",
 }
 
 BUS_WIDTH  = 4
@@ -1971,43 +1972,26 @@ class Diagram(tk.Frame):
             cttb = self._cttbs.get(source_id)
             if cttb is None:
                 return None
-            src = self._device_output_world(cttb.source_type, cttb.source_id)
-            if src is None:
-                return None
-            # Right edge of CTTB box (W_world = 20)
-            return (src[0] + cttb.offset_x + 20, src[1] + cttb.offset_y)
+            # Right edge of CTTB box (box centred on cx,cy; half-width = 20)
+            return (cttb.cx + 20, cttb.cy)
         elif source_type == "testblock":
             tb = self._testblocks.get(source_id)
             if tb is None:
                 return None
-            src = self._device_output_world(tb.source_type, tb.source_id)
-            if src is None:
-                return None
-            # Bottom edge of TestBlock box (H_world half = 11)
-            return (src[0] + tb.offset_x, src[1] + tb.offset_y + 11)
+            # Bottom edge of TestBlock box (box centred on cx,cy; half-height = 11)
+            return (tb.cx, tb.cy + 11)
         return None
 
     # ── CTTB draw ─────────────────────────────────────────────────────────
 
     def _draw_cttb(self, cttb: "DiagramCTTB") -> None:
-        tip = self._device_output_world(cttb.source_type, cttb.source_id)
-        if tip is None:
-            return
-        # Block position = tip + offset
-        bwx = tip[0] + cttb.offset_x
-        bwy = tip[1] + cttb.offset_y
-        bsx, bsy = self._w2s(bwx, bwy)
-        tip_sx, tip_sy = self._w2s(*tip)
+        bsx, bsy = self._w2s(cttb.cx, cttb.cy)
 
         sel    = self._selection == ("cttb", cttb.id)
         colour = "#0066CC" if sel else "#333333"
         canvas = self.canvas
 
-        # Dashed connector wire from CT secondary tip to box
-        canvas.create_line(tip_sx, tip_sy, bsx, bsy,
-                           fill=colour, width=LINE_WIDTH, dash=(4, 3))
-
-        # Plain rectangle box
+        # Plain rectangle box centred on (cx, cy)
         W = 20 * self._scale
         H = 26 * self._scale
         canvas.create_rectangle(bsx - W, bsy - H/2, bsx + W, bsy + H/2,
@@ -2025,23 +2009,13 @@ class Diagram(tk.Frame):
     # ── FT / ISO block draw ───────────────────────────────────────────────
 
     def _draw_testblock(self, tb: "DiagramTestBlock") -> None:
-        bottom = self._device_output_world(tb.source_type, tb.source_id)
-        if bottom is None:
-            return
-        bwx = bottom[0] + tb.offset_x
-        bwy = bottom[1] + tb.offset_y
-        bsx, bsy = self._w2s(bwx, bwy)
-        bot_sx, bot_sy = self._w2s(*bottom)
+        bsx, bsy = self._w2s(tb.cx, tb.cy)
 
         sel    = self._selection == ("testblock", tb.id)
         colour = "#0066CC" if sel else "#555500" if tb.block_type == "FT" else "#005555"
         canvas = self.canvas
 
-        # Dashed connector wire from VT secondary bottom to box
-        canvas.create_line(bot_sx, bot_sy, bsx, bsy,
-                           fill=colour, width=LINE_WIDTH, dash=(4, 3))
-
-        # Plain rectangle box
+        # Plain rectangle box centred on (cx, cy)
         W = 18 * self._scale
         H = 22 * self._scale
         canvas.create_rectangle(bsx - W, bsy - H/2, bsx + W, bsy + H/2,
@@ -2093,19 +2067,31 @@ class Diagram(tk.Frame):
         if tip_w is None:
             return
 
-        relay = self._relays.get(rw.relay_id)
-        if relay is None:
-            return
-        # Winding terminal: spread evenly around the top half of the relay circle
-        R_world = 18
-        nw = len(relay.windings)
-        wi = max(0, min(rw.winding - 1, nw - 1))
-        if nw == 1:
-            angle = math.pi / 2   # top centre
+        dest_type = getattr(rw, "dest_type", "relay")
+        if dest_type == "cttb":
+            cttb_dest = self._cttbs.get(rw.relay_id)
+            if cttb_dest is None:
+                return
+            term_w = (cttb_dest.cx - 20, cttb_dest.cy)   # left edge = input
+        elif dest_type == "testblock":
+            tb_dest = self._testblocks.get(rw.relay_id)
+            if tb_dest is None:
+                return
+            term_w = (tb_dest.cx, tb_dest.cy - 11)   # top edge = input
         else:
-            angle = math.pi - (math.pi / (nw - 1)) * wi if nw > 1 else math.pi / 2
-        term_w = (relay.cx + R_world * math.cos(angle),
-                  relay.cy - R_world * math.sin(angle))
+            relay = self._relays.get(rw.relay_id)
+            if relay is None:
+                return
+            # Winding terminal: spread evenly around the top half of the relay circle
+            R_world = 18
+            nw = len(relay.windings)
+            wi = max(0, min(rw.winding - 1, nw - 1))
+            if nw == 1:
+                angle = math.pi / 2   # top centre
+            else:
+                angle = math.pi - (math.pi / (nw - 1)) * wi if nw > 1 else math.pi / 2
+            term_w = (relay.cx + R_world * math.cos(angle),
+                      relay.cy - R_world * math.sin(angle))
 
         # Build waypoint list with orthogonal elbows
         wpts_raw = [tip_w] + list(rw.waypoints) + [term_w]
@@ -2326,20 +2312,14 @@ class Diagram(tk.Frame):
 
     def _hit_cttb(self, sx: float, sy: float) -> Optional[str]:
         for cttb in self._cttbs.values():
-            tip = self._device_output_world(cttb.source_type, cttb.source_id)
-            if tip is None:
-                continue
-            bsx, bsy = self._w2s(tip[0] + cttb.offset_x, tip[1] + cttb.offset_y)
+            bsx, bsy = self._w2s(cttb.cx, cttb.cy)
             if math.hypot(sx - bsx, sy - bsy) < 22 * self._scale:
                 return cttb.id
         return None
 
     def _hit_testblock(self, sx: float, sy: float) -> Optional[str]:
         for tb in self._testblocks.values():
-            src = self._device_output_world(tb.source_type, tb.source_id)
-            if src is None:
-                continue
-            bsx, bsy = self._w2s(src[0] + tb.offset_x, src[1] + tb.offset_y)
+            bsx, bsy = self._w2s(tb.cx, tb.cy)
             if math.hypot(sx - bsx, sy - bsy) < 18 * self._scale:
                 return tb.id
         return None
@@ -2394,15 +2374,27 @@ class Diagram(tk.Frame):
             tip_w = self._device_output_world(rw.source_type, rw.source_id)
             if tip_w is None:
                 continue
-            relay = self._relays.get(rw.relay_id)
-            if relay is None:
-                continue
-            R_world = 18
-            nw  = len(relay.windings)
-            wi  = max(0, min(rw.winding - 1, nw - 1))
-            angle = (math.pi / 2) if nw == 1 else math.pi - (math.pi / (nw - 1)) * wi
-            term_w = (relay.cx + R_world * math.cos(angle),
-                      relay.cy - R_world * math.sin(angle))
+            dest_type = getattr(rw, "dest_type", "relay")
+            if dest_type == "cttb":
+                cttb_dest = self._cttbs.get(rw.relay_id)
+                if cttb_dest is None:
+                    continue
+                term_w = (cttb_dest.cx - 20, cttb_dest.cy)
+            elif dest_type == "testblock":
+                tb_dest = self._testblocks.get(rw.relay_id)
+                if tb_dest is None:
+                    continue
+                term_w = (tb_dest.cx, tb_dest.cy - 11)
+            else:
+                relay = self._relays.get(rw.relay_id)
+                if relay is None:
+                    continue
+                R_world = 18
+                nw  = len(relay.windings)
+                wi  = max(0, min(rw.winding - 1, nw - 1))
+                angle = (math.pi / 2) if nw == 1 else math.pi - (math.pi / (nw - 1)) * wi
+                term_w = (relay.cx + R_world * math.cos(angle),
+                          relay.cy - R_world * math.sin(angle))
             wpts_raw = [tip_w] + list(rw.waypoints) + [term_w]
             wpts = [wpts_raw[0]]
             for i in range(1, len(wpts_raw)):
@@ -2868,36 +2860,20 @@ class Diagram(tk.Frame):
                 self._revert_to_select(event)
 
         elif self._tool == TOOL_CTTB:
-            # Click on CT or existing CTTB to chain a new test block
-            ct_id   = self._hit_ct(event.x, event.y)
-            cttb_id = self._hit_cttb(event.x, event.y) if not ct_id else None
+            # Free-place at clicked world coordinate
+            wx, wy = self._sg(wx, wy)
             cid = f"CTTB-{len(self._cttbs) + 1}"
-            if ct_id:
-                self._cttbs[cid] = DiagramCTTB(cid, cid, ct_id, source_type="ct")
-                self._set_selection("cttb", cid)
-                self._revert_to_select(event)
-            elif cttb_id:
-                self._cttbs[cid] = DiagramCTTB(cid, cid, cttb_id, source_type="cttb")
-                self._set_selection("cttb", cid)
-                self._revert_to_select(event)
-            elif self._on_status:
-                self._on_status("CTTB: click on a CT or another CTTB to chain.")
+            self._cttbs[cid] = DiagramCTTB(cid, cid, cx=wx, cy=wy)
+            self._set_selection("cttb", cid)
+            self._revert_to_select(event)
 
         elif self._tool == TOOL_TESTBLOCK:
-            # Click on VT or existing TestBlock to chain
-            vt_id = self._hit_vt(wx, wy)
-            tb_id = self._hit_testblock(event.x, event.y) if not vt_id else None
+            # Free-place at clicked world coordinate
+            wx, wy = self._sg(wx, wy)
             tid = f"TB-{len(self._testblocks) + 1}"
-            if vt_id:
-                self._testblocks[tid] = DiagramTestBlock(tid, tid, vt_id, source_type="vt")
-                self._set_selection("testblock", tid)
-                self._revert_to_select(event)
-            elif tb_id:
-                self._testblocks[tid] = DiagramTestBlock(tid, tid, tb_id, source_type="testblock")
-                self._set_selection("testblock", tid)
-                self._revert_to_select(event)
-            elif self._on_status:
-                self._on_status("Test Block: click on a VT/CVT symbol to attach.")
+            self._testblocks[tid] = DiagramTestBlock(tid, tid, cx=wx, cy=wy)
+            self._set_selection("testblock", tid)
+            self._revert_to_select(event)
 
         elif self._tool == TOOL_BREAKER:
             result = self._nearest_connection(event.x, event.y)
@@ -2973,33 +2949,37 @@ class Diagram(tk.Frame):
                     ct_id   = self._hit_ct(event.x, event.y)
                     cttb_id = self._hit_cttb(event.x, event.y) if not ct_id else None
                     src = ("ct", ct_id) if ct_id else (("cttb", cttb_id) if cttb_id else None)
-                    hint = "Current wire: click a CT or CTTB first."
+                    hint = "CT Wire: click a CT or CTTB first."
                 else:
                     vt_id = self._hit_vt(wx, wy)
                     tb_id = self._hit_testblock(event.x, event.y) if not vt_id else None
                     src = ("vt", vt_id) if vt_id else (("testblock", tb_id) if tb_id else None)
-                    hint = "Voltage wire: click a VT or FT/ISO block first."
+                    hint = "VT Wire: click a VT or FT/ISO block first."
                 if src:
                     self._relay_wire_from = src
                     if self._on_status:
                         self._on_status(
-                            f"{'Current' if is_current else 'Voltage'} wire: source selected — click a relay."
+                            f"{'CT' if is_current else 'VT'} Wire: source selected — click a relay or CTTB/FT block."
                         )
                 elif self._on_status:
                     self._on_status(hint)
             else:
                 relay_id = self._hit_relay(wx, wy)
-                if relay_id:
+                cttb_id  = self._hit_cttb(event.x, event.y) if is_current and not relay_id else None
+                tb_id    = self._hit_testblock(event.x, event.y) if not is_current and not relay_id else None
+                dest_id   = relay_id or cttb_id or tb_id
+                dest_type = "relay" if relay_id else ("cttb" if cttb_id else "testblock")
+                if dest_id:
                     src_type, src_id = self._relay_wire_from
                     wtype = "current" if is_current else "voltage"
                     rwid = f"RW-{len(self._relay_wires) + 1}"
                     self._relay_wires[rwid] = DiagramRelayWire(
-                        rwid, src_id, src_type, relay_id, wire_type=wtype)
+                        rwid, src_id, src_type, dest_id, wire_type=wtype, dest_type=dest_type)
                     self._relay_wire_from = None
                     self._set_selection("relay_wire", rwid)
                     self._revert_to_select(event)
                 elif self._on_status:
-                    self._on_status("Click on a relay symbol to connect.")
+                    self._on_status("Click on a relay, CTTB, or FT block to connect.")
 
         elif self._tool == TOOL_DELETE:
             self._delete_at(event, wx, wy)
@@ -3189,13 +3169,13 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "cttb":
                 cttb = self._cttbs.get(self._drag_id)
                 if cttb:
-                    cttb.offset_x += dx
-                    cttb.offset_y += dy
+                    cttb.cx += dx
+                    cttb.cy += dy
             elif self._drag_kind == "testblock":
                 tb = self._testblocks.get(self._drag_id)
                 if tb:
-                    tb.offset_x += dx
-                    tb.offset_y += dy
+                    tb.cx += dx
+                    tb.cy += dy
             elif self._drag_kind == "vt_waypoint":
                 vt = self._vts.get(self._drag_id)
                 if vt and self._drag_node_idx is not None:

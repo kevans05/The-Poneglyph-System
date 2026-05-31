@@ -37,6 +37,7 @@ class PropertiesPanel(tk.Frame):
         super().__init__(parent, relief="groove", bd=1)
         self._on_change = on_change
         self._current: Optional[object] = None
+        self._diagram = None
 
         tk.Label(self, text="Properties", font=("TkDefaultFont", 10, "bold"),
                  anchor="w").pack(fill=tk.X, padx=8, pady=(8, 4))
@@ -60,6 +61,10 @@ class PropertiesPanel(tk.Frame):
         self._show_empty()
 
     # ── Public ────────────────────────────────────────────────────────────
+
+    def set_diagram(self, diagram) -> None:
+        """Store a reference to the diagram for accessing the drawings registry."""
+        self._diagram = diagram
 
     def show_bus(self, bus: DiagramBus) -> None:
         self._current = bus
@@ -935,6 +940,34 @@ class PropertiesPanel(tk.Frame):
             vars_[attr] = v
             self._row(label, v, start_row=row)
             row += 1
+        # Drawings registry listbox
+        if fields:
+            tk.Label(self._body, text="Drawings Registry",
+                     font=("TkDefaultFont", 8, "bold"), fg="#333").grid(
+                row=row, column=0, columnspan=2, sticky="w")
+            row += 1
+            lb_frame = tk.Frame(self._body)
+            lb_frame.grid(row=row, column=0, columnspan=2, sticky="ew")
+            lb_frame.columnconfigure(0, weight=1)
+            lb = tk.Listbox(lb_frame, height=5, selectmode=tk.SINGLE)
+            lb.grid(row=0, column=0, sticky="ew")
+            sb = ttk.Scrollbar(lb_frame, orient="vertical", command=lb.yview)
+            sb.grid(row=0, column=1, sticky="ns")
+            lb.configure(yscrollcommand=sb.set)
+            drawings = {}
+            if self._diagram is not None:
+                drawings = getattr(self._diagram, "_drawings", {})
+            for dname in sorted(drawings.keys()):
+                lb.insert(tk.END, dname)
+            row += 1
+            if "drawing" in vars_:
+                def _use_sel(lb=lb, v=vars_["drawing"]):
+                    sel = lb.curselection()
+                    if sel:
+                        v.set(lb.get(sel[0]))
+                tk.Button(self._body, text="Use selected drawing",
+                          command=_use_sel).grid(row=row, column=0, columnspan=2, sticky="w")
+                row += 1
         return row, vars_
 
     # ── Internal ──────────────────────────────────────────────────────────
