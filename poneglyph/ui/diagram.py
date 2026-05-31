@@ -1335,7 +1335,9 @@ class Diagram(tk.Frame):
         #        |          ← wire below symbol
 
         wire_angle_deg = math.degrees(math.atan2(-aly, alx))
-        arc_start = wire_angle_deg - 90   # opens toward +pxn
+        # Flat diameter along wire, arc bulge opens perpendicular (+pxn).
+        # arc_start = wire_angle_deg gives exactly this orientation.
+        arc_start = wire_angle_deg
 
         for sign in (-1, +1):             # sign=-1 → upper arc, +1 → lower arc
             cx = sx + alx * sign * R
@@ -1348,7 +1350,7 @@ class Diagram(tk.Frame):
                                     cx + alx*R, cy + aly*R,
                                     fill=colour, width=lw)
 
-        # Polarity dot near tip of upper arc
+        # Polarity dot near tip of upper arc (+pxn side)
         if ct.polarity_standard:
             pr = max(2, 2.5 * self._scale)
             uc_x = sx - alx*R + pxn*R*0.85
@@ -1356,19 +1358,29 @@ class Diagram(tk.Frame):
             self.canvas.create_oval(uc_x-pr, uc_y-pr, uc_x+pr, uc_y+pr,
                                     fill=colour, outline=colour)
 
-        # Three terminal ticks: top outer, shared middle, bottom outer
+        # Terminal ticks at ends of each flat diameter (along wire):
+        # outer top, shared centre, outer bottom
         top_x = sx - alx*2*R;  top_y = sy - aly*2*R
         bot_x = sx + alx*2*R;  bot_y = sy + aly*2*R
 
         for px, py in [(top_x, top_y), (sx, sy), (bot_x, bot_y)]:
             self.canvas.create_line(px, py,
-                                    px + pxn*tk*0.7, py + pyn*tk*0.7,
+                                    px + pxn*tk*0.6, py + pyn*tk*0.6,
                                     fill=colour, width=lw)
 
-        # Secondary lead: from bottom outer end, out in +pxn direction
-        lead_ex = bot_x + pxn * tk * 2.5
-        lead_ey = bot_y + pyn * tk * 2.5
-        self.canvas.create_line(bot_x, bot_y, lead_ex, lead_ey,
+        # Secondary lead from arc tips out in +pxn direction, with crossbar
+        # Both arc tips are at cx+pxn*R for each arc; connect them and lead out
+        tip_top_x = sx - alx*R + pxn*R;  tip_top_y = sy - aly*R + pyn*R
+        tip_bot_x = sx + alx*R + pxn*R;  tip_bot_y = sy + aly*R + pyn*R
+        # Vertical connecting line between the two tips
+        self.canvas.create_line(tip_top_x, tip_top_y, tip_bot_x, tip_bot_y,
+                                fill=colour, width=lw)
+        # Lead from midpoint of that line outward
+        mid_x = (tip_top_x + tip_bot_x) / 2
+        mid_y = (tip_top_y + tip_bot_y) / 2
+        lead_ex = mid_x + pxn * tk * 2
+        lead_ey = mid_y + pyn * tk * 2
+        self.canvas.create_line(mid_x, mid_y, lead_ex, lead_ey,
                                 fill=colour, width=lw)
         self.canvas.create_line(lead_ex - alx*tk/2, lead_ey - aly*tk/2,
                                 lead_ex + alx*tk/2, lead_ey + aly*tk/2,
