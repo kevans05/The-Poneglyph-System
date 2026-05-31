@@ -970,6 +970,11 @@ class Diagram(tk.Frame):
         self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="e")
 
+    def _terminal_dot(self, sx: float, sy: float, colour: str) -> None:
+        rd = max(3, 3 * self._scale)
+        self.canvas.create_oval(sx - rd, sy - rd, sx + rd, sy + rd,
+                                fill=colour, outline=colour)
+
     def _draw_coil(self, cx_w: float, y_top_w: float, n: int, r: float,
                    bulge_left: bool, colour: str) -> None:
         """Draw a vertical coil of n half-loop bumps starting at y_top_w."""
