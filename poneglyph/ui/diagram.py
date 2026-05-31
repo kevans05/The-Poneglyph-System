@@ -774,6 +774,10 @@ class Diagram(tk.Frame):
             self._draw_cttb(cttb)
         for tb in self._testblocks.values():
             self._draw_testblock(tb)
+        for relay in self._relays.values():
+            self._draw_relay(relay)
+        for rw in self._relay_wires.values():
+            self._draw_relay_wire(rw)
         # Draw in-progress bus preview
         self._draw_bus_preview()
 
@@ -1515,7 +1519,7 @@ class Diagram(tk.Frame):
         canvas = self.canvas
 
         R    = 11 * self._scale   # bump radius
-        drop = 30 * self._scale   # primary lead from bus to first bump top
+        drop = 30 * self._scale   # primary lead from bus to first bump top (increased from 8)
         gap  = 10 * self._scale   # vertical gap between primary and secondary windings
 
         # ── CVT capacitor stack on the primary lead ──────────────────────
@@ -1559,8 +1563,8 @@ class Diagram(tk.Frame):
         if vt.num_secondaries >= 2:
             sec2_y = sec_y + 2 * R + gap / 2
             for i in range(2):
-                cx = sx - 2*R + R + i * 2 * R
-                canvas.create_arc(cx - R, sec2_y - R, cx + R, sec2_y + R,
+                cx2 = sx - 2*R + R + i * 2 * R
+                canvas.create_arc(cx2 - R, sec2_y - R, cx2 + R, sec2_y + R,
                                   start=0, extent=180,
                                   outline=colour, style="arc", width=LINE_WIDTH)
             # Gap alone provides visual separation — no inter-winding connecting line
@@ -1583,29 +1587,35 @@ class Diagram(tk.Frame):
                            colour: str, sel: bool) -> None:
         """Draw the dashed secondary wire from the VT symbol downward.
 
-        The wire is orthogonal (90° bends only).  Where it crosses a bus
+        The wire is orthogonal (90° bends only).  Where it crosses a primary
         segment a small hop arc is drawn so the crossing reads clearly.
         If no waypoints are stored the wire just hangs straight down a
-        default amount.
+        short stub (30 world units).
         """
         canvas = self.canvas
         # Convert symbol bottom from screen → world, then build waypoint list
         wx0, wy0 = self._s2w(sym_sx, sym_bottom_sy)
-        wpts = [(wx0, wy0)] + list(vt.sec_waypoints)
-        if len(wpts) == 1:
-            # Default: drop straight down 60 world units
-            wpts.append((wx0, wy0 + 60))
+        if not vt.sec_waypoints:
+            # Default: short stub straight down 30 world units — no further drawing
+            wpts = [(wx0, wy0), (wx0, wy0 + 30)]
+        else:
+            wpts = [(wx0, wy0)] + list(vt.sec_waypoints)
+
+        # Insert orthogonal elbows between non-axis-aligned consecutive waypoints
+        ortho_wpts = [wpts[0]]
+        for i in range(1, len(wpts)):
+            ax, ay = ortho_wpts[-1]
+            bx, by = wpts[i]
+            if abs(ax - bx) > 0.5 and abs(ay - by) > 0.5:
+                # Neither H nor V — insert H-then-V elbow
+                ortho_wpts.append((bx, ay))
+            ortho_wpts.append((bx, by))
 
         # Screen-space polyline
-        spts = [self._w2s(wx, wy) for wx, wy in wpts]
+        spts = [self._w2s(wx, wy) for wx, wy in ortho_wpts]
 
-        # Collect all bus segments for hop detection
-        bus_segs = []
-        for b in self._buses.values():
-            for ei, ej in b.edges:
-                bx1, by1 = self._w2s(*b.nodes[ei])
-                bx2, by2 = self._w2s(*b.nodes[ej])
-                bus_segs.append((bx1, by1, bx2, by2))
+        # Collect all primary segments for hop detection
+        primary_segs = self._all_primary_segments()
 
         hop_r = 5 * self._scale
         dash  = (6, 4)
@@ -1615,8 +1625,8 @@ class Diagram(tk.Frame):
             ax, ay = spts[k]
             bx, by = spts[k + 1]
 
-            # Find all bus-crossing t values along this segment
-            hops = self._segment_bus_crossings(ax, ay, bx, by, bus_segs, hop_r)
+            # Find all primary-crossing t values along this segment
+            hops = self._segment_bus_crossings(ax, ay, bx, by, primary_segs, hop_r)
 
             # Draw sub-segments between hops
             prev_pt = (ax, ay)
@@ -1649,10 +1659,11 @@ class Diagram(tk.Frame):
                 canvas.create_line(prev_pt[0], prev_pt[1], bx, by,
                                    fill=colour, width=lw, dash=dash)
 
-        # If selected, show draggable node handles on the waypoints
+        # If selected, show draggable node handles on the user waypoints
         if sel:
             hr = max(4, 4 * self._scale)
-            for sx2, sy2 in spts[1:]:
+            for wx2, wy2 in vt.sec_waypoints:
+                sx2, sy2 = self._w2s(wx2, wy2)
                 canvas.create_rectangle(sx2 - hr, sy2 - hr, sx2 + hr, sy2 + hr,
                                         outline="#0066CC", fill="white", width=2)
 
@@ -1675,6 +1686,31 @@ class Diagram(tk.Frame):
                 hits.append((t, cx, cy))
         hits.sort(key=lambda h: h[0])
         return hits
+
+    def _all_primary_segments(self):
+        """Return all screen-space (x1,y1,x2,y2) tuples for buses, connections, and xfmr leads."""
+        segs = []
+        # Bus segments
+        for b in self._buses.values():
+            for ei, ej in b.edges:
+                bx1, by1 = self._w2s(*b.nodes[ei])
+                bx2, by2 = self._w2s(*b.nodes[ej])
+                segs.append((bx1, by1, bx2, by2))
+        # Connection lines
+        for conn in self._connections.values():
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start and end:
+                x1, y1 = self._w2s(*start)
+                x2, y2 = self._w2s(*end)
+                segs.append((x1, y1, x2, y2))
+        # Transformer leads
+        for xfmr in self._transformers.values():
+            for (lead, ax, ay, bx, by) in self._xfmr_lead_segments(xfmr):
+                x1, y1 = self._w2s(ax, ay)
+                x2, y2 = self._w2s(bx, by)
+                segs.append((x1, y1, x2, y2))
+        return segs
 
     # ── Test block position helpers ───────────────────────────────────────
 
@@ -1708,10 +1744,10 @@ class Diagram(tk.Frame):
         if bus is None:
             return None
         tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
-        # Mirror geometry from _draw_vt (bump style)
+        # Mirror geometry from _draw_vt (bump style) — drop=30 world units
         sx, sy = self._w2s(*tap_pt)
         R    = 11 * self._scale
-        drop = 8  * self._scale
+        drop = 30 * self._scale
         gap  = 10 * self._scale
         pri_y  = sy + drop
         sec_y  = pri_y + 2 * R + gap
@@ -1740,30 +1776,23 @@ class Diagram(tk.Frame):
         colour = "#0066CC" if sel else "#333333"
         canvas = self.canvas
 
-        # Wire from CT secondary tip to block
+        # Dashed connector wire from CT secondary tip to box
         canvas.create_line(tip_sx, tip_sy, bsx, bsy,
                            fill=colour, width=LINE_WIDTH, dash=(4, 3))
 
-        # Block body: rectangle
-        W = 18 * self._scale
-        H = 28 * self._scale
+        # Plain rectangle box
+        W = 20 * self._scale
+        H = 26 * self._scale
         canvas.create_rectangle(bsx - W, bsy - H/2, bsx + W, bsy + H/2,
-                                 outline=colour, fill="#F8F8F8", width=LINE_WIDTH)
+                                 outline=colour, fill="#F8F8F8", width=LINE_WIDTH + 1)
 
-        # Terminal lines across the block (4 horizontal stripes)
-        for k in range(4):
-            ty = bsy - H/2 + H * (k + 0.5) / 4
-            canvas.create_line(bsx - W, ty, bsx + W, ty,
-                               fill=colour, width=1)
-
-        # Mode symbol centred in block
-        mode_sym = {"Pass": "→", "Sum": "Σ", "Subtract": "−"}.get(cttb.mode, "?")
-        canvas.create_text(bsx, bsy, text=mode_sym,
+        # Bold "CTTB" text centred inside
+        canvas.create_text(bsx, bsy, text="CTTB",
                            font=("TkDefaultFont", 9, "bold"), fill=colour)
 
-        # Label
+        # Device name as small label outside (to the right)
         canvas.create_text(bsx + W + 4 * self._scale, bsy,
-                           text=f"CTTB\n{cttb.name}",
+                           text=cttb.name,
                            font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── FT / ISO block draw ───────────────────────────────────────────────
@@ -1784,38 +1813,145 @@ class Diagram(tk.Frame):
         colour = "#0066CC" if sel else "#555500" if tb.block_type == "FT" else "#005555"
         canvas = self.canvas
 
-        # Wire from VT secondary bottom to block
+        # Dashed connector wire from VT secondary bottom to box
         canvas.create_line(bot_sx, bot_sy, bsx, bsy,
                            fill=colour, width=LINE_WIDTH, dash=(4, 3))
 
-        W = 14 * self._scale
-        H = 20 * self._scale
+        # Plain rectangle box
+        W = 18 * self._scale
+        H = 22 * self._scale
         canvas.create_rectangle(bsx - W, bsy - H/2, bsx + W, bsy + H/2,
-                                 outline=colour, fill="#F8F8F8", width=LINE_WIDTH)
+                                 outline=colour, fill="#F8F8F8", width=LINE_WIDTH + 1)
 
-        if tb.block_type == "FT":
-            # Fuse symbol: two arcs (oval ends) inside box
-            fr = 4 * self._scale
-            canvas.create_oval(bsx - fr, bsy - H/4 - fr,
-                               bsx + fr, bsy - H/4 + fr,
-                               outline=colour, width=1)
-            canvas.create_oval(bsx - fr, bsy + H/4 - fr,
-                               bsx + fr, bsy + H/4 + fr,
-                               outline=colour, width=1)
-            canvas.create_line(bsx, bsy - H/4 + fr, bsx, bsy + H/4 - fr,
-                               fill=colour, width=1)
-        else:
-            # ISO symbol: gap (two short lines with break in middle)
-            canvas.create_line(bsx, bsy - H/2, bsx, bsy - 4*self._scale,
-                               fill=colour, width=LINE_WIDTH)
-            canvas.create_line(bsx, bsy + 4*self._scale, bsx, bsy + H/2,
-                               fill=colour, width=LINE_WIDTH)
-            canvas.create_text(bsx, bsy, text="○", font=("TkDefaultFont", 7), fill=colour)
+        # Bold "FT" or "ISO" text centred inside
+        canvas.create_text(bsx, bsy, text=tb.block_type,
+                           font=("TkDefaultFont", 9, "bold"), fill=colour)
 
-        # Label
+        # Device name as small label outside (to the right)
         canvas.create_text(bsx + W + 4*self._scale, bsy,
-                           text=f"{tb.block_type}\n{tb.name}",
+                           text=tb.name,
                            font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+
+    # ── Relay draw ────────────────────────────────────────────────────────
+
+    def _draw_relay(self, relay: "DiagramRelay") -> None:
+        sx, sy = self._w2s(relay.cx, relay.cy)
+        sel = self._selection == ("relay", relay.id)
+        colour = "#0066CC" if sel else "#880000"   # dark red for protection devices
+        R = 18 * self._scale
+        self.canvas.create_oval(sx-R, sy-R, sx+R, sy+R, outline=colour,
+                                width=LINE_WIDTH+1, fill="#FFF8F8")
+        # Function code inside circle
+        self.canvas.create_text(sx, sy, text=relay.function_code,
+                                font=("TkDefaultFont", 9, "bold"), fill=colour)
+        # Name label below
+        self.canvas.create_text(sx, sy + R + 4*self._scale, text=relay.name,
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="n")
+        # Winding terminal dots: W1 on left side, W2 on right side
+        tw = 4 * self._scale
+        for wn in range(relay.num_windings):
+            wx_dot = sx - R if wn == 0 else sx + R
+            self.canvas.create_oval(wx_dot-tw, sy-tw, wx_dot+tw, sy+tw,
+                                   fill=colour, outline=colour)
+            label = f"W{wn+1}"
+            anchor = "e" if wn == 0 else "w"
+            offset = -tw-2 if wn == 0 else tw+2
+            self.canvas.create_text(wx_dot+offset, sy, text=label,
+                                   font=("TkDefaultFont", 7), fill=colour, anchor=anchor)
+
+    def _draw_relay_wire(self, rw: "DiagramRelayWire") -> None:
+        """Draw dashed orthogonal wire from source secondary output to relay winding."""
+        # Resolve source tip
+        tip_w = None
+        if rw.source_type == "ct":
+            ct = self._cts.get(rw.source_id)
+            if ct:
+                tip_w = self._ct_secondary_tip_world(ct)
+        elif rw.source_type == "vt":
+            vt = self._vts.get(rw.source_id)
+            if vt:
+                tip_w = self._vt_secondary_bottom_world(vt)
+                if tip_w and vt.sec_waypoints:
+                    tip_w = vt.sec_waypoints[-1]
+        elif rw.source_type == "cttb":
+            cttb = self._cttbs.get(rw.source_id)
+            if cttb:
+                ct = self._cts.get(cttb.ct_id)
+                if ct:
+                    ct_tip = self._ct_secondary_tip_world(ct)
+                    if ct_tip:
+                        tip_w = (ct_tip[0] + cttb.offset_x, ct_tip[1] + cttb.offset_y)
+        elif rw.source_type == "testblock":
+            tb = self._testblocks.get(rw.source_id)
+            if tb:
+                vt = self._vts.get(tb.vt_id)
+                if vt:
+                    bot = self._vt_secondary_bottom_world(vt)
+                    if bot:
+                        tip_w = (bot[0] + tb.offset_x, bot[1] + tb.offset_y)
+        if tip_w is None:
+            return
+
+        # Relay terminal position
+        relay = self._relays.get(rw.relay_id)
+        if relay is None:
+            return
+        R_world = 18
+        if rw.winding == 2:
+            term_w = (relay.cx + R_world, relay.cy)
+        else:
+            term_w = (relay.cx - R_world, relay.cy)
+
+        # Build waypoint list with orthogonal elbows
+        wpts_raw = [tip_w] + list(rw.waypoints) + [term_w]
+        wpts = [wpts_raw[0]]
+        for i in range(1, len(wpts_raw)):
+            ax, ay = wpts[-1]
+            bx, by = wpts_raw[i]
+            if abs(ax - bx) > 0.5 and abs(ay - by) > 0.5:
+                wpts.append((bx, ay))
+            wpts.append((bx, by))
+
+        spts = [self._w2s(wx, wy) for wx, wy in wpts]
+        primary_segs = self._all_primary_segments()
+        hop_r = 5 * self._scale
+        dash  = (6, 4)
+        lw    = LINE_WIDTH
+        colour = "#0066CC" if self._selection == ("relay_wire", rw.id) else "#880000"
+
+        for k in range(len(spts) - 1):
+            ax, ay = spts[k]
+            bx, by = spts[k + 1]
+            hops = self._segment_bus_crossings(ax, ay, bx, by, primary_segs, hop_r)
+            prev_pt = (ax, ay)
+            for t, nx, ny in hops:
+                tx = ax + (bx - ax) * t
+                ty = ay + (by - ay) * t
+                seg_len = math.hypot(bx - ax, by - ay) or 1
+                udx = (bx - ax) / seg_len
+                udy = (by - ay) / seg_len
+                p1x = tx - udx * hop_r
+                p1y = ty - udy * hop_r
+                if math.hypot(p1x - prev_pt[0], p1y - prev_pt[1]) > 1:
+                    self.canvas.create_line(prev_pt[0], prev_pt[1], p1x, p1y,
+                                           fill=colour, width=lw, dash=dash)
+                p2x = tx + udx * hop_r
+                p2y = ty + udy * hop_r
+                self.canvas.create_arc(tx - hop_r, ty - hop_r, tx + hop_r, ty + hop_r,
+                                      start=math.degrees(math.atan2(-udy, udx)),
+                                      extent=180, outline=colour, style="arc", width=lw)
+                prev_pt = (p2x, p2y)
+            if math.hypot(bx - prev_pt[0], by - prev_pt[1]) > 1:
+                self.canvas.create_line(prev_pt[0], prev_pt[1], bx, by,
+                                       fill=colour, width=lw, dash=dash)
+
+        # Waypoint handles when selected
+        if self._selection == ("relay_wire", rw.id):
+            hr = max(4, 4 * self._scale)
+            for wx2, wy2 in rw.waypoints:
+                sx2, sy2 = self._w2s(wx2, wy2)
+                self.canvas.create_rectangle(sx2 - hr, sy2 - hr, sx2 + hr, sy2 + hr,
+                                             outline="#0066CC", fill="white", width=2)
 
     # ── Helper: nearest connection ────────────────────────────────────────
 
@@ -2042,6 +2178,66 @@ class Diagram(tk.Frame):
             cy = y1 + (y2 - y1) * dc.t
             if math.hypot(sx - cx, sy - cy) < 10:
                 return dc.id
+        return None
+
+    def _hit_relay(self, wx: float, wy: float) -> Optional[str]:
+        R_world = 18
+        for r in self._relays.values():
+            if math.hypot(wx - r.cx, wy - r.cy) < R_world + 4:
+                return r.id
+        return None
+
+    def _hit_relay_wire(self, sx: float, sy: float) -> Optional[str]:
+        """Return relay_wire id if screen point is near any relay wire segment."""
+        tol = 8
+        for rw in self._relay_wires.values():
+            # Resolve tip world
+            tip_w = None
+            if rw.source_type == "ct":
+                ct = self._cts.get(rw.source_id)
+                if ct:
+                    tip_w = self._ct_secondary_tip_world(ct)
+            elif rw.source_type == "vt":
+                vt = self._vts.get(rw.source_id)
+                if vt:
+                    tip_w = self._vt_secondary_bottom_world(vt)
+            elif rw.source_type == "cttb":
+                cttb = self._cttbs.get(rw.source_id)
+                if cttb:
+                    ct = self._cts.get(cttb.ct_id)
+                    if ct:
+                        ct_tip = self._ct_secondary_tip_world(ct)
+                        if ct_tip:
+                            tip_w = (ct_tip[0] + cttb.offset_x, ct_tip[1] + cttb.offset_y)
+            elif rw.source_type == "testblock":
+                tb = self._testblocks.get(rw.source_id)
+                if tb:
+                    vt = self._vts.get(tb.vt_id)
+                    if vt:
+                        bot = self._vt_secondary_bottom_world(vt)
+                        if bot:
+                            tip_w = (bot[0] + tb.offset_x, bot[1] + tb.offset_y)
+            if tip_w is None:
+                continue
+            relay = self._relays.get(rw.relay_id)
+            if relay is None:
+                continue
+            R_world = 18
+            term_w = (relay.cx - R_world if rw.winding == 1 else relay.cx + R_world, relay.cy)
+            wpts_raw = [tip_w] + list(rw.waypoints) + [term_w]
+            wpts = [wpts_raw[0]]
+            for i in range(1, len(wpts_raw)):
+                ax, ay = wpts[-1]
+                bx, by = wpts_raw[i]
+                if abs(ax - bx) > 0.5 and abs(ay - by) > 0.5:
+                    wpts.append((bx, ay))
+                wpts.append((bx, by))
+            spts = [self._w2s(wx2, wy2) for wx2, wy2 in wpts]
+            for k in range(len(spts) - 1):
+                x1, y1 = spts[k]
+                x2, y2 = spts[k + 1]
+                if _point_to_segment_dist(sx, sy, x1, y1, x2, y2) < tol:
+                    return rw.id
         return None
 
     def _hit_label(self, sx: float, sy: float):
@@ -2307,17 +2503,19 @@ class Diagram(tk.Frame):
                     self._set_selection("load", elem_id)
                 return
 
-            xfmr_id  = self._hit_transformer(wx, wy)
-            src_id   = self._hit_source(wx, wy)
-            load_id  = self._hit_load(wx, wy)
-            ct_id    = self._hit_ct(event.x, event.y)
-            vt_id    = self._hit_vt(wx, wy)
-            cttb_id  = self._hit_cttb(event.x, event.y)
-            tb_id    = self._hit_testblock(event.x, event.y)
-            br_id    = self._hit_breaker(event.x, event.y)
-            dc_id    = self._hit_disconnect(event.x, event.y)
-            bus_id   = self._hit_bus(wx, wy)
-            conn_id  = self._hit_connection(event.x, event.y)
+            xfmr_id    = self._hit_transformer(wx, wy)
+            src_id     = self._hit_source(wx, wy)
+            load_id    = self._hit_load(wx, wy)
+            ct_id      = self._hit_ct(event.x, event.y)
+            vt_id      = self._hit_vt(wx, wy)
+            cttb_id    = self._hit_cttb(event.x, event.y)
+            tb_id      = self._hit_testblock(event.x, event.y)
+            br_id      = self._hit_breaker(event.x, event.y)
+            dc_id      = self._hit_disconnect(event.x, event.y)
+            relay_id   = self._hit_relay(wx, wy)
+            rw_id      = self._hit_relay_wire(event.x, event.y)
+            bus_id     = self._hit_bus(wx, wy)
+            conn_id    = self._hit_connection(event.x, event.y)
             if xfmr_id:
                 self._begin_drag("transformer", xfmr_id, wx, wy)
             elif src_id:
@@ -2343,6 +2541,10 @@ class Diagram(tk.Frame):
                     self._drag_kind     = "vt_waypoint"
                     self._drag_node_idx = hit_wpt
                     self._drag_origin   = (wx, wy)
+            elif relay_id:
+                self._begin_drag("relay", relay_id, wx, wy)
+            elif rw_id:
+                self._set_selection("relay_wire", rw_id)
             elif cttb_id:
                 self._set_selection("cttb", cttb_id)
                 self._begin_drag("cttb", cttb_id, wx, wy)
@@ -2526,6 +2728,55 @@ class Diagram(tk.Frame):
                 self._set_selection("disconnect", did)
                 self._revert_to_select(event)
 
+        elif self._tool == TOOL_RELAY:
+            wx, wy = self._sg(wx, wy)
+            rid = f"RELAY-{len(self._relays) + 1}"
+            self._relays[rid] = DiagramRelay(rid, rid, wx, wy)
+            self._set_selection("relay", rid)
+            self._revert_to_select(event)
+
+        elif self._tool == TOOL_RELAY_WIRE:
+            # First click: select source; second click: select relay → create wire
+            if self._relay_wire_from is None:
+                # Try hitting a secondary device
+                ct_id   = self._hit_ct(event.x, event.y)
+                vt_id   = self._hit_vt(wx, wy)
+                cttb_id = self._hit_cttb(event.x, event.y)
+                tb_id   = self._hit_testblock(event.x, event.y)
+                if ct_id:
+                    self._relay_wire_from = ("ct", ct_id)
+                    if self._on_status:
+                        self._on_status("Relay Wire: source CT selected — now click a relay.")
+                elif vt_id:
+                    self._relay_wire_from = ("vt", vt_id)
+                    if self._on_status:
+                        self._on_status("Relay Wire: source VT selected — now click a relay.")
+                elif cttb_id:
+                    self._relay_wire_from = ("cttb", cttb_id)
+                    if self._on_status:
+                        self._on_status("Relay Wire: source CTTB selected — now click a relay.")
+                elif tb_id:
+                    self._relay_wire_from = ("testblock", tb_id)
+                    if self._on_status:
+                        self._on_status("Relay Wire: source FT/ISO block selected — now click a relay.")
+                else:
+                    if self._on_status:
+                        self._on_status("Relay Wire: click a CT, VT, CTTB, or FT block first.")
+            else:
+                # Second click: hit a relay
+                relay_id = self._hit_relay(wx, wy)
+                if relay_id:
+                    src_type, src_id = self._relay_wire_from
+                    rwid = f"RW-{len(self._relay_wires) + 1}"
+                    self._relay_wires[rwid] = DiagramRelayWire(
+                        rwid, src_id, src_type, relay_id)
+                    self._relay_wire_from = None
+                    self._set_selection("relay_wire", rwid)
+                    self._revert_to_select(event)
+                else:
+                    if self._on_status:
+                        self._on_status("Relay Wire: click on a relay symbol to connect.")
+
         elif self._tool == TOOL_DELETE:
             self._delete_at(event, wx, wy)
 
@@ -2543,15 +2794,17 @@ class Diagram(tk.Frame):
         self._drag_origin = (wx, wy)
 
     def _delete_at(self, event: tk.Event, wx: float, wy: float) -> None:
-        xfmr_id = self._hit_transformer(wx, wy)
-        src_id  = self._hit_source(wx, wy)
-        load_id = self._hit_load(wx, wy)
-        ct_id   = self._hit_ct(event.x, event.y)
-        vt_id   = self._hit_vt(wx, wy)
-        cttb_id = self._hit_cttb(event.x, event.y)
-        tb_id   = self._hit_testblock(event.x, event.y)
-        bus_id  = self._hit_bus(wx, wy)
-        conn_id = self._hit_connection(event.x, event.y)
+        xfmr_id   = self._hit_transformer(wx, wy)
+        src_id    = self._hit_source(wx, wy)
+        load_id   = self._hit_load(wx, wy)
+        ct_id     = self._hit_ct(event.x, event.y)
+        vt_id     = self._hit_vt(wx, wy)
+        cttb_id   = self._hit_cttb(event.x, event.y)
+        tb_id     = self._hit_testblock(event.x, event.y)
+        relay_id  = self._hit_relay(wx, wy)
+        rw_id     = self._hit_relay_wire(event.x, event.y)
+        bus_id    = self._hit_bus(wx, wy)
+        conn_id   = self._hit_connection(event.x, event.y)
         if xfmr_id:
             self._transformers.pop(xfmr_id, None)
             self._set_selection(None, None); self.redraw()
@@ -2572,6 +2825,12 @@ class Diagram(tk.Frame):
             self._set_selection(None, None); self.redraw()
         elif vt_id:
             self._vts.pop(vt_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif relay_id:
+            self._relays.pop(relay_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif rw_id:
+            self._relay_wires.pop(rw_id, None)
             self._set_selection(None, None); self.redraw()
         elif bus_id:
             self._delete_bus(bus_id)
@@ -2722,6 +2981,11 @@ class Diagram(tk.Frame):
                         # Snap to grid and constrain to 90° from neighbours
                         nwx, nwy = self._sg(ox + dx, oy + dy)
                         vt.sec_waypoints[wi] = (nwx, nwy)
+            elif self._drag_kind == "relay":
+                relay = self._relays.get(self._drag_id)
+                if relay:
+                    relay.cx += dx
+                    relay.cy += dy
             self._drag_origin = (gx, gy)
             self.redraw()
 

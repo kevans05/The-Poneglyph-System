@@ -15,6 +15,7 @@ from poneglyph.ui.diagram import (
     DiagramTransformer, DiagramSource, DiagramLoad,
     DiagramBreaker, DiagramDisconnect,
     DiagramCTTB, DiagramTestBlock,
+    DiagramRelay, DiagramRelayWire,
 )
 
 
@@ -41,8 +42,20 @@ class PropertiesPanel(tk.Frame):
                  anchor="w").pack(fill=tk.X, padx=8, pady=(8, 4))
         ttk.Separator(self).pack(fill=tk.X)
 
-        self._body = tk.Frame(self)
-        self._body.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        # Scrollable body
+        self._canvas_frame = tk.Canvas(self, highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(self, orient="vertical",
+                                        command=self._canvas_frame.yview)
+        self._canvas_frame.configure(yscrollcommand=self._scrollbar.set)
+        self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas_frame.pack(fill=tk.BOTH, expand=True)
+        self._body = tk.Frame(self._canvas_frame)
+        self._body_win = self._canvas_frame.create_window(
+            (0, 0), window=self._body, anchor="nw")
+        self._body.bind("<Configure>", lambda e: self._canvas_frame.configure(
+            scrollregion=self._canvas_frame.bbox("all")))
+        self._canvas_frame.bind("<Configure>", lambda e: self._canvas_frame.itemconfig(
+            self._body_win, width=e.width))
 
         self._show_empty()
 
@@ -571,7 +584,7 @@ class PropertiesPanel(tk.Frame):
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=17, column=0, columnspan=2, sticky="w", pady=(10, 0)
+            row=19, column=0, columnspan=2, sticky="w", pady=(10, 0)
         )
 
     def show_vt(self, vt: DiagramVT) -> None:
@@ -763,6 +776,85 @@ class PropertiesPanel(tk.Frame):
         tk.Button(self._body, text="Apply", command=apply).grid(
             row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
+
+    def show_relay(self, relay: "DiagramRelay") -> None:
+        if relay is None:
+            return
+        self._current = relay
+        self._clear()
+        row = _RowCounter()
+        tk.Label(self._body, text="Protection Relay",
+                 font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=row.next(), column=0, columnspan=2,
+                                   sticky="w", pady=(0, 6))
+        v_name = tk.StringVar(value=relay.name)
+        v_type = tk.StringVar(value=relay.relay_type)
+        v_func = tk.StringVar(value=relay.function_code)
+        v_wind = tk.StringVar(value=str(relay.num_windings))
+
+        self._row("ID",   tk.StringVar(value=relay.id), readonly=True, start_row=row.next())
+        self._row("Name", v_name, start_row=row.next())
+
+        r = row.next()
+        tk.Label(self._body, text="Type", anchor="w").grid(row=r, column=0, sticky="w", pady=2)
+        ttk.Combobox(self._body, textvariable=v_type,
+                     values=["OC", "DIFF", "DIST", "GEN", "VOLT", "FREQ"],
+                     state="readonly", width=9).grid(row=r, column=1, sticky="ew", pady=2)
+
+        self._row("Function code", v_func, start_row=row.next())
+
+        r2 = row.next()
+        tk.Label(self._body, text="Windings", anchor="w").grid(row=r2, column=0, sticky="w", pady=2)
+        ttk.Combobox(self._body, textvariable=v_wind, values=["1", "2"],
+                     state="readonly", width=5).grid(row=r2, column=1, sticky="w", pady=2)
+
+        def apply():
+            relay.name = v_name.get().strip() or relay.name
+            relay.relay_type = v_type.get()
+            relay.function_code = v_func.get().strip() or relay.function_code
+            try:
+                relay.num_windings = int(v_wind.get())
+            except ValueError:
+                pass
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+    def show_relay_wire(self, rw: "DiagramRelayWire") -> None:
+        if rw is None:
+            return
+        self._current = rw
+        self._clear()
+        row = _RowCounter()
+        tk.Label(self._body, text="Relay Wire",
+                 font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=row.next(), column=0, columnspan=2,
+                                   sticky="w", pady=(0, 6))
+        self._row("ID",          tk.StringVar(value=rw.id),          readonly=True, start_row=row.next())
+        self._row("Source",      tk.StringVar(value=rw.source_id),   readonly=True, start_row=row.next())
+        self._row("Source type", tk.StringVar(value=rw.source_type), readonly=True, start_row=row.next())
+        self._row("Relay",       tk.StringVar(value=rw.relay_id),    readonly=True, start_row=row.next())
+
+        r = row.next()
+        v_wind = tk.StringVar(value=str(rw.winding))
+        tk.Label(self._body, text="Winding", anchor="w").grid(row=r, column=0, sticky="w", pady=2)
+        ttk.Combobox(self._body, textvariable=v_wind, values=["1", "2"],
+                     state="readonly", width=5).grid(row=r, column=1, sticky="w", pady=2)
+        self._row("Waypoints", tk.StringVar(value=str(len(rw.waypoints))), readonly=True,
+                  start_row=row.next())
+
+        def apply():
+            try:
+                rw.winding = int(v_wind.get())
+            except ValueError:
+                pass
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(12, 0))
 
     def clear(self) -> None:
         self._current = None

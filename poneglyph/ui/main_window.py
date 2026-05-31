@@ -11,6 +11,7 @@ from poneglyph.ui.diagram import (
     TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD, TOOL_CT, TOOL_VT,
     TOOL_CTTB, TOOL_TESTBLOCK, TOOL_DELETE,
     TOOL_BREAKER, TOOL_DISCONNECT,
+    TOOL_RELAY, TOOL_RELAY_WIRE,
 )
 from poneglyph.ui.properties import PropertiesPanel
 
@@ -123,6 +124,15 @@ class MainWindow:
         self._btn_switch["menu"] = switch_menu
         self._btn_switch.pack(side=tk.LEFT, padx=2, pady=2)
 
+        # Protection devices dropdown
+        self._btn_protect = tk.Menubutton(bar, text="Protection ▾", width=12, relief="raised",
+                                           direction="below")
+        protect_menu = tk.Menu(self._btn_protect, tearoff=0)
+        protect_menu.add_command(label="Relay",      command=lambda: self._set_protect_tool(TOOL_RELAY))
+        protect_menu.add_command(label="Relay Wire", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE))
+        self._btn_protect["menu"] = protect_menu
+        self._btn_protect.pack(side=tk.LEFT, padx=2, pady=2)
+
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=2)
 
         # Delete (standalone)
@@ -151,6 +161,8 @@ class MainWindow:
         self.root.bind("m", lambda _e: self._toggle_tool(TOOL_TESTBLOCK, self._set_instr_tool))
         self.root.bind("k", lambda _e: self._toggle_tool(TOOL_BREAKER,     self._set_switch_tool))
         self.root.bind("i", lambda _e: self._toggle_tool(TOOL_DISCONNECT,  self._set_switch_tool))
+        self.root.bind("y", lambda _e: self._toggle_tool(TOOL_RELAY,      self._set_protect_tool))
+        self.root.bind("w", lambda _e: self._toggle_tool(TOOL_RELAY_WIRE, self._set_protect_tool))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
         self.root.bind("g", lambda _e: self.diagram.toggle_snap_grid())
         self.root.bind("<space>", lambda _e: self.diagram.toggle_selected_device())
@@ -180,11 +192,12 @@ class MainWindow:
 
     # ── Tool management ───────────────────────────────────────────────────
 
-    _LINES_TOOLS  = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
-    _XFMR_TOOLS   = {TOOL_TRANSFORMER}
-    _SRC_TOOLS    = {TOOL_SOURCE, TOOL_LOAD}
-    _INSTR_TOOLS  = {TOOL_CT, TOOL_VT, TOOL_CTTB, TOOL_TESTBLOCK}
-    _SWITCH_TOOLS = {TOOL_BREAKER, TOOL_DISCONNECT}
+    _LINES_TOOLS   = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
+    _XFMR_TOOLS    = {TOOL_TRANSFORMER}
+    _SRC_TOOLS     = {TOOL_SOURCE, TOOL_LOAD}
+    _INSTR_TOOLS   = {TOOL_CT, TOOL_VT, TOOL_CTTB, TOOL_TESTBLOCK}
+    _SWITCH_TOOLS  = {TOOL_BREAKER, TOOL_DISCONNECT}
+    _PROTECT_TOOLS = {TOOL_RELAY, TOOL_RELAY_WIRE}
 
     def _set_lines_tool(self, tool: str) -> None:
         self._lines_tool = tool
@@ -213,14 +226,20 @@ class MainWindow:
         self._btn_switch.config(text=labels.get(tool, "Switching ▾"))
         self._set_tool(tool)
 
+    def _set_protect_tool(self, tool: str) -> None:
+        labels = {TOOL_RELAY: "Relay ▾", TOOL_RELAY_WIRE: "Relay Wire ▾"}
+        self._btn_protect.config(text=labels.get(tool, "Protection ▾"))
+        self._set_tool(tool)
+
     def _set_tool(self, tool: str, sticky: bool = False) -> None:
         self._btn_select.config(relief="sunken" if tool == TOOL_SELECT else "flat")
         self._btn_delete.config(relief="sunken" if tool == TOOL_DELETE else "flat")
-        self._btn_lines.config(  relief="sunken" if tool in self._LINES_TOOLS  else "raised")
-        self._btn_xfmr.config(   relief="sunken" if tool in self._XFMR_TOOLS   else "raised")
-        self._btn_src.config(    relief="sunken" if tool in self._SRC_TOOLS    else "raised")
-        self._btn_instr.config(  relief="sunken" if tool in self._INSTR_TOOLS  else "raised")
-        self._btn_switch.config( relief="sunken" if tool in self._SWITCH_TOOLS else "raised")
+        self._btn_lines.config(   relief="sunken" if tool in self._LINES_TOOLS   else "raised")
+        self._btn_xfmr.config(    relief="sunken" if tool in self._XFMR_TOOLS    else "raised")
+        self._btn_src.config(     relief="sunken" if tool in self._SRC_TOOLS     else "raised")
+        self._btn_instr.config(   relief="sunken" if tool in self._INSTR_TOOLS   else "raised")
+        self._btn_switch.config(  relief="sunken" if tool in self._SWITCH_TOOLS  else "raised")
+        self._btn_protect.config( relief="sunken" if tool in self._PROTECT_TOOLS else "raised")
         self.diagram.set_tool(tool, sticky=sticky)
 
     def _toggle_tool(self, tool: str, set_fn) -> None:
@@ -250,6 +269,8 @@ class MainWindow:
             "testblock":   lambda: self.props.show_testblock(self.diagram.get_testblocks().get(elem_id)),
             "breaker":     lambda: self.props.show_breaker(self.diagram.get_breakers().get(elem_id)),
             "disconnect":  lambda: self.props.show_disconnect(self.diagram.get_disconnects().get(elem_id)),
+            "relay":       lambda: self.props.show_relay(self.diagram.get_relays().get(elem_id)),
+            "relay_wire":  lambda: self.props.show_relay_wire(self.diagram.get_relay_wires().get(elem_id)),
         }
         fn = dispatch.get(kind)
         if fn:
@@ -435,6 +456,8 @@ class KeymapDialog(tk.Toplevel):
             ("M",        "FT / ISO Block tool"),
             ("K",        "Circuit Breaker tool"),
             ("I",        "Disconnect Switch tool"),
+            ("Y",        "Relay tool"),
+            ("W",        "Relay Wire tool"),
             ("D",        "Delete tool"),
         ]),
         ("Editing", [
