@@ -352,9 +352,11 @@ class DiagramLoad:
 class DiagramCT:
     id: str
     name: str
-    connection_id: str
+    connection_id: str       # DiagramConnection id, or "" when on a transformer lead
     t: float = 0.5
     ratio: str = "100/1"
+    xfmr_id: str = ""        # transformer id when placed on a lead (else "")
+    xfmr_lead: str = ""      # "hv" or "lv"
 
 
 @dataclass
@@ -1216,18 +1218,50 @@ class Diagram(tk.Frame):
 
     # ── CT ────────────────────────────────────────────────────────────────
 
+    def _ct_wire_endpoints(self, ct: "DiagramCT"):
+        """Return (wx1,wy1, wx2,wy2) for the wire segment the CT sits on, or None."""
+        if ct.xfmr_id:
+            xfmr = self._transformers.get(ct.xfmr_id)
+            if xfmr is None:
+                return None
+            segs = self._xfmr_lead_segments(xfmr)
+            # collect all segments for this lead
+            lead_segs = [(ax,ay,bx,by) for (lead,ax,ay,bx,by) in segs
+                         if lead == ct.xfmr_lead]
+            if not lead_segs:
+                return None
+            # concatenate into a polyline and find the point at t along total length
+            lengths = [math.hypot(bx-ax, by-ay) for ax,ay,bx,by in lead_segs]
+            total = sum(lengths) or 1.0
+            target = ct.t * total
+            acc = 0.0
+            for (ax,ay,bx,by), seg_len in zip(lead_segs, lengths):
+                if acc + seg_len >= target or seg_len < 1e-6:
+                    local_t = (target - acc) / max(seg_len, 1e-6)
+                    wx = ax + (bx - ax) * local_t
+                    wy = ay + (by - ay) * local_t
+                    return ax, ay, bx, by, wx, wy
+                acc += seg_len
+            ax,ay,bx,by = lead_segs[-1]
+            return ax, ay, bx, by, bx, by
+        else:
+            conn = self._connections.get(ct.connection_id)
+            if conn is None:
+                return None
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start is None or end is None:
+                return None
+            wx1, wy1 = start; wx2, wy2 = end
+            wx = wx1 + (wx2 - wx1) * ct.t
+            wy = wy1 + (wy2 - wy1) * ct.t
+            return wx1, wy1, wx2, wy2, wx, wy
+
     def _draw_ct(self, ct: DiagramCT) -> None:
-        conn = self._connections.get(ct.connection_id)
-        if conn is None:
+        pts = self._ct_wire_endpoints(ct)
+        if pts is None:
             return
-        start = conn.start_point(self._buses)
-        end   = conn.end_point(self._buses)
-        if start is None or end is None:
-            return
-        wx1, wy1 = start
-        wx2, wy2 = end
-        wx = wx1 + (wx2 - wx1) * ct.t
-        wy = wy1 + (wy2 - wy1) * ct.t
+        wx1, wy1, wx2, wy2, wx, wy = pts
         sx, sy = self._w2s(wx, wy)
 
         sel    = self._selection == ("ct", ct.id)
@@ -1329,6 +1363,73 @@ class Diagram(tk.Frame):
                 best = (conn.id, t)
         return best
 
+    def _xfmr_lead_segments(self, xfmr: "DiagramTransformer"):
+        """Return [(ax,ay,bx,by,label)] for each drawn lead segment of a transformer."""
+        rot = xfmr.rotation % 360
+        vert_exit = (rot % 180 == 0)
+        hv_y_loc = -XFMR_CORE / 2
+        lv_y_loc = +XFMR_CORE / 2
+        hv_spine = self._xr(xfmr, xfmr.cx, xfmr.cy + hv_y_loc)
+        lv_spine = self._xr(xfmr, xfmr.cx, xfmr.cy + lv_y_loc)
+        segs = []
+        if xfmr.hv_bus and xfmr.hv_bus in self._buses:
+            tap = self._buses[xfmr.hv_bus].nearest_tap(xfmr.hv_tap_x, xfmr.hv_tap_y)
+            ax, ay, bx, by = tap[0], tap[1], hv_spine[0], hv_spine[1]
+            if vert_exit:
+                my = (ay + by) / 2
+                segs += [("hv", ax, ay, ax, my), ("hv", ax, my, bx, my), ("hv", bx, my, bx, by)]
+            else:
+                mx = (ax + bx) / 2
+                segs += [("hv", ax, ay, mx, ay), ("hv", mx, ay, mx, by), ("hv", mx, by, bx, by)]
+        if xfmr.lv_bus and xfmr.lv_bus in self._buses:
+            tap = self._buses[xfmr.lv_bus].nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
+            ax, ay, bx, by = lv_spine[0], lv_spine[1], tap[0], tap[1]
+            if vert_exit:
+                my = (ay + by) / 2
+                segs += [("lv", ax, ay, ax, my), ("lv", ax, my, bx, my), ("lv", bx, my, bx, by)]
+            else:
+                mx = (ax + bx) / 2
+                segs += [("lv", ax, ay, mx, ay), ("lv", mx, ay, mx, by), ("lv", mx, by, bx, by)]
+        return segs
+
+    def _nearest_wire(self, sx: float, sy: float, max_px: float = 20.0):
+        """Return (kind, id, t) for the closest wire to screen point, or None.
+        kind="conn" → DiagramConnection; kind="xfmr_hv"/"xfmr_lv" → transformer lead."""
+        best_dist = max_px
+        best = None
+        # Check DiagramConnections
+        for conn in self._connections.values():
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start is None or end is None:
+                continue
+            x1, y1 = self._w2s(*start)
+            x2, y2 = self._w2s(*end)
+            dx, dy = x2 - x1, y2 - y1
+            lsq = dx*dx + dy*dy
+            if lsq < 1:
+                continue
+            t = max(0.0, min(1.0, ((sx-x1)*dx + (sy-y1)*dy) / lsq))
+            dist = math.hypot(sx - (x1+t*dx), sy - (y1+t*dy))
+            if dist < best_dist:
+                best_dist = dist
+                best = ("conn", conn.id, t)
+        # Check transformer leads
+        for xfmr in self._transformers.values():
+            for (lead, ax, ay, bx, by) in self._xfmr_lead_segments(xfmr):
+                x1, y1 = self._w2s(ax, ay)
+                x2, y2 = self._w2s(bx, by)
+                dx, dy = x2 - x1, y2 - y1
+                lsq = dx*dx + dy*dy
+                if lsq < 1:
+                    continue
+                t = max(0.0, min(1.0, ((sx-x1)*dx + (sy-y1)*dy) / lsq))
+                dist = math.hypot(sx - (x1+t*dx), sy - (y1+t*dy))
+                if dist < best_dist:
+                    best_dist = dist
+                    best = (f"xfmr_{lead}", xfmr.id, t)
+        return best
+
     # ── Hit testing ───────────────────────────────────────────────────────
 
     def _hit_bus(self, wx: float, wy: float) -> Optional[str]:
@@ -1378,17 +1479,10 @@ class Diagram(tk.Frame):
 
     def _hit_ct(self, sx: float, sy: float) -> Optional[str]:
         for ct in self._cts.values():
-            conn = self._connections.get(ct.connection_id)
-            if conn is None:
+            pts = self._ct_wire_endpoints(ct)
+            if pts is None:
                 continue
-            start = conn.start_point(self._buses)
-            end   = conn.end_point(self._buses)
-            if start is None or end is None:
-                continue
-            wx1, wy1 = start
-            wx2, wy2 = end
-            wx = wx1 + (wx2 - wx1) * ct.t
-            wy = wy1 + (wy2 - wy1) * ct.t
+            _, _, _, _, wx, wy = pts
             csx, csy = self._w2s(wx, wy)
             if math.hypot(sx - csx, sy - csy) < 12 * self._scale:
                 return ct.id
@@ -1789,11 +1883,17 @@ class Diagram(tk.Frame):
             self._revert_to_select(event)
 
         elif self._tool == TOOL_CT:
-            result = self._nearest_connection(event.x, event.y)
+            result = self._nearest_wire(event.x, event.y)
             if result:
-                conn_id, t = result
+                kind, eid, t = result
                 cid = f"CT-{len(self._cts) + 1}"
-                self._cts[cid] = DiagramCT(cid, cid, conn_id, t)
+                if kind == "conn":
+                    ct = DiagramCT(cid, cid, eid, t)
+                elif kind == "xfmr_hv":
+                    ct = DiagramCT(cid, cid, "", t, xfmr_id=eid, xfmr_lead="hv")
+                else:  # xfmr_lv
+                    ct = DiagramCT(cid, cid, "", t, xfmr_id=eid, xfmr_lead="lv")
+                self._cts[cid] = ct
                 self._set_selection("ct", cid)
                 self._revert_to_select(event)
 
