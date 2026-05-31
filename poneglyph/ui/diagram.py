@@ -1267,22 +1267,63 @@ class Diagram(tk.Frame):
         sel    = self._selection == ("ct", ct.id)
         colour = "#0066CC" if sel else "black"
 
-        r = 10 * self._scale
-        self.canvas.create_oval(sx - r, sy - r, sx + r, sy + r,
-                                outline=colour, fill="white", width=LINE_WIDTH)
-
+        # Wire direction unit vector and perpendicular
         dx, dy = wx2 - wx1, wy2 - wy1
         length = math.hypot(dx, dy) or 1
-        pxn, pyn = -dy / length, dx / length
-        lead = r + 10
-        ex, ey = sx + pxn * lead, sy + pyn * lead
+        # along-wire unit (screen scale)
+        ax_s = (self._w2s(wx1 + dx/length, wy1 + dy/length)[0] - self._w2s(wx1, wy1)[0],
+                self._w2s(wx1 + dx/length, wy1 + dy/length)[1] - self._w2s(wx1, wy1)[1])
+        aln = math.hypot(*ax_s) or 1
+        alx, aly = ax_s[0]/aln, ax_s[1]/aln   # along-wire unit (screen)
+        pxn, pyn = -aly, alx                    # perpendicular unit (screen)
+
+        R  = 9 * self._scale   # semicircle radius
+        sp = 4 * self._scale   # gap between the two cores (along wire)
+        tk_len = 6 * self._scale  # secondary terminal tick length
+
+        # Two CT core semicircles stacked along the wire direction.
+        # Each arc is drawn as a semicircle opening to the right of the wire
+        # (perpendicular direction). The wire line passes between the flat sides.
+        # arc start/end angle in tkinter is measured from 3-o'clock CCW in degrees.
+        # We want the arc to open in the +perp direction (right of wire as drawn).
+        # Wire goes in direction (alx, aly). Perp is (pxn, pyn).
+        # The arc flat side faces the wire; arc bulge goes +perp.
+        # Compute start angle from wire direction:
+        # tkinter angles: 0=right, 90=up (y flipped), so angle = atan2(-aly, alx) in degrees
+        wire_angle_deg = math.degrees(math.atan2(-aly, alx))
+        # Open arc faces +perp direction → arc from (wire_angle+90) to (wire_angle+270)
+        arc_start = wire_angle_deg + 90
+        arc_extent = 180  # semicircle
+
+        for sign in (-1, +1):   # upper core, lower core (along wire)
+            cx = sx + alx * sign * (R + sp / 2)
+            cy = sy + aly * sign * (R + sp / 2)
+            # Bounding box of the semicircle's full circle
+            x0, y0 = cx - R, cy - R
+            x1_, y1_ = cx + R, cy + R
+            self.canvas.create_arc(x0, y0, x1_, y1_,
+                                   start=arc_start, extent=arc_extent,
+                                   outline=colour, style="arc", width=LINE_WIDTH)
+            # Secondary terminal tick on the perpendicular side (flat side of arc)
+            tx = cx - pxn * R
+            ty = cy - pyn * R
+            self.canvas.create_line(tx - alx * tk_len/2, ty - aly * tk_len/2,
+                                    tx + alx * tk_len/2, ty + aly * tk_len/2,
+                                    fill=colour, width=LINE_WIDTH)
+
+        # Secondary lead from midpoint (between the two cores) outward (+perp)
+        lead_len = R + 14 * self._scale
+        ex = sx + pxn * lead_len
+        ey = sy + pyn * lead_len
         self.canvas.create_line(sx, sy, ex, ey, fill=colour, width=LINE_WIDTH)
-        self.canvas.create_line(ex - pyn * 5, ey + pxn * 5,
-                                ex + pyn * 5, ey - pxn * 5,
+        # Terminal crossbar
+        self.canvas.create_line(ex - alx * tk_len/2, ey - aly * tk_len/2,
+                                ex + alx * tk_len/2, ey + aly * tk_len/2,
                                 fill=colour, width=LINE_WIDTH)
-        self.canvas.create_text(ex + pxn * 4, ey + pyn * 4,
+        self.canvas.create_text(ex + pxn * 5, ey + pyn * 5,
                                 text=ct.name, font=("TkDefaultFont", 8),
-                                fill="#444444", anchor="w")
+                                fill="#444444",
+                                anchor=("w" if pxn >= 0 else "e"))
 
     # ── VT ────────────────────────────────────────────────────────────────
 
