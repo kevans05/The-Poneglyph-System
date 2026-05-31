@@ -1292,7 +1292,7 @@ class Diagram(tk.Frame):
         # tkinter angles: 0=right, 90=up (y flipped), so angle = atan2(-aly, alx) in degrees
         wire_angle_deg = math.degrees(math.atan2(-aly, alx))
         # Open arc faces +perp direction → arc from (wire_angle+90) to (wire_angle+270)
-        arc_start = wire_angle_deg + 90
+        arc_start = wire_angle_deg   # flat chord along wire, bulge opens perpendicular
         arc_extent = 180  # semicircle
 
         for sign in (-1, +1):   # upper core, lower core (along wire)
@@ -1927,6 +1927,11 @@ class Diagram(tk.Frame):
             result = self._nearest_wire(event.x, event.y)
             if result:
                 kind, eid, t = result
+                # Keep CT away from the transformer end of a lead (clamp to 20–80%)
+                if kind.startswith("xfmr_"):
+                    t = max(0.20, min(0.80, t))
+                else:
+                    t = max(0.10, min(0.90, t))
                 cid = f"CT-{len(self._cts) + 1}"
                 if kind == "conn":
                     ct = DiagramCT(cid, cid, eid, t)
