@@ -668,7 +668,7 @@ class PropertiesPanel(tk.Frame):
 
         self._row("ID",   tk.StringVar(value=cttb.id),     readonly=True, start_row=1)
         self._row("Name", v_name,                                          start_row=2)
-        self._row("CT",   tk.StringVar(value=cttb.ct_id),  readonly=True, start_row=3)
+        self._row("Source", tk.StringVar(value=f"{cttb.source_type}:{cttb.source_id}"), readonly=True, start_row=3)
 
         tk.Label(self._body, text="Mode").grid(row=4, column=0, sticky="w", pady=2)
         tk.OptionMenu(self._body, v_mode, "Pass", "Sum", "Subtract").grid(
@@ -705,7 +705,7 @@ class PropertiesPanel(tk.Frame):
 
         self._row("ID",  tk.StringVar(value=tb.id),    readonly=True, start_row=1)
         self._row("Name", v_name,                                       start_row=2)
-        self._row("VT",  tk.StringVar(value=tb.vt_id), readonly=True,  start_row=3)
+        self._row("Source", tk.StringVar(value=f"{tb.source_type}:{tb.source_id}"), readonly=True, start_row=3)
 
         tk.Label(self._body, text="Type").grid(row=4, column=0, sticky="w", pady=2)
         tk.OptionMenu(self._body, v_type, "FT", "ISO").grid(
@@ -783,44 +783,66 @@ class PropertiesPanel(tk.Frame):
         self._current = relay
         self._clear()
         row = _RowCounter()
+
         tk.Label(self._body, text="Protection Relay",
                  font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=row.next(), column=0, columnspan=2,
-                                   sticky="w", pady=(0, 6))
+                                   sticky="w", pady=(0, 4))
+
         v_name = tk.StringVar(value=relay.name)
-        v_type = tk.StringVar(value=relay.relay_type)
         v_func = tk.StringVar(value=relay.function_code)
-        v_wind = tk.StringVar(value=str(relay.num_windings))
+        self._row("ID",             tk.StringVar(value=relay.id), readonly=True, start_row=row.next())
+        self._row("Name",           v_name,  start_row=row.next())
+        self._row("Function code",  v_func,  start_row=row.next())
 
-        self._row("ID",   tk.StringVar(value=relay.id), readonly=True, start_row=row.next())
-        self._row("Name", v_name, start_row=row.next())
+        # ── Windings list ────────────────────────────────────────────────
+        ttk.Separator(self._body, orient="horizontal").grid(
+            row=row.next(), column=0, columnspan=2, sticky="ew", pady=4)
+        tk.Label(self._body, text="Windings", font=("TkDefaultFont", 8, "bold"),
+                 fg="#333").grid(row=row.next(), column=0, columnspan=2, sticky="w")
 
-        r = row.next()
-        tk.Label(self._body, text="Type", anchor="w").grid(row=r, column=0, sticky="w", pady=2)
-        ttk.Combobox(self._body, textvariable=v_type,
-                     values=["OC", "DIFF", "DIST", "GEN", "VOLT", "FREQ"],
-                     state="readonly", width=9).grid(row=r, column=1, sticky="ew", pady=2)
+        winding_vars = []
+        winding_frame = tk.Frame(self._body)
+        winding_frame.grid(row=row.next(), column=0, columnspan=2, sticky="ew")
 
-        self._row("Function code", v_func, start_row=row.next())
+        def _refresh_windings():
+            for w in winding_frame.winfo_children():
+                w.destroy()
+            winding_vars.clear()
+            for wi, label in enumerate(relay.windings):
+                v = tk.StringVar(value=label)
+                winding_vars.append(v)
+                tk.Entry(winding_frame, textvariable=v, width=8).grid(
+                    row=wi, column=0, padx=(0, 2), pady=1)
+                tk.Button(winding_frame, text="✕", width=2, font=("TkDefaultFont", 7),
+                          command=lambda i=wi: _remove_winding(i)).grid(row=wi, column=1)
 
-        r2 = row.next()
-        tk.Label(self._body, text="Windings", anchor="w").grid(row=r2, column=0, sticky="w", pady=2)
-        ttk.Combobox(self._body, textvariable=v_wind, values=["1", "2"],
-                     state="readonly", width=5).grid(row=r2, column=1, sticky="w", pady=2)
+        def _add_winding():
+            relay.windings.append(f"W{len(relay.windings)+1}")
+            _refresh_windings()
+
+        def _remove_winding(i):
+            if len(relay.windings) > 1:
+                relay.windings.pop(i)
+                _refresh_windings()
+
+        _refresh_windings()
+
+        tk.Button(self._body, text="+ Add winding", command=_add_winding).grid(
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         def apply():
-            relay.name = v_name.get().strip() or relay.name
-            relay.relay_type = v_type.get()
+            relay.name          = v_name.get().strip() or relay.name
             relay.function_code = v_func.get().strip() or relay.function_code
-            try:
-                relay.num_windings = int(v_wind.get())
-            except ValueError:
-                pass
+            for wi, v in enumerate(winding_vars):
+                lbl = v.get().strip()
+                if lbl and wi < len(relay.windings):
+                    relay.windings[wi] = lbl
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=row.next(), column=0, columnspan=2, sticky="w", pady=(12, 0))
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(10, 0))
 
     def show_relay_wire(self, rw: "DiagramRelayWire") -> None:
         if rw is None:

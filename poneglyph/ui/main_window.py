@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import tkinter as tk
-from tkinter import ttk, colorchooser
+from tkinter import ttk, colorchooser, filedialog, messagebox
 
 from poneglyph.ui.diagram import (
     Diagram,
@@ -38,13 +39,12 @@ class MainWindow:
         mb = tk.Menu(self.root)
 
         fm = tk.Menu(mb, tearoff=0)
-        fm.add_command(label="New",          accelerator="Ctrl+N", command=self._new)
-        fm.add_command(label="Open…",        accelerator="Ctrl+O")
-        fm.add_command(label="Save",         accelerator="Ctrl+S")
+        fm.add_command(label="New",    accelerator="Ctrl+N", command=self._new)
+        fm.add_command(label="Open…", accelerator="Ctrl+O", command=self._open)
+        fm.add_command(label="Save",  accelerator="Ctrl+S", command=self._save)
+        fm.add_command(label="Save As…",                    command=self._save_as)
         fm.add_separator()
-        fm.add_command(label="Export Report…")
-        fm.add_separator()
-        fm.add_command(label="Quit",         command=self.root.quit)
+        fm.add_command(label="Quit",  command=self.root.quit)
         mb.add_cascade(label="File", menu=fm)
 
         sm = tk.Menu(mb, tearoff=0)
@@ -147,6 +147,16 @@ class MainWindow:
         tk.Button(bar, text="Run Power Flow", relief="flat", padx=6,
                   command=self._run_power_flow).pack(side=tk.LEFT, padx=2, pady=2)
 
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=4)
+
+        # View controls
+        tk.Button(bar, text="⊕", width=3, relief="flat", font=("TkDefaultFont", 11),
+                  command=lambda: self.diagram.zoom_in()).pack(side=tk.LEFT, padx=1, pady=2)
+        tk.Button(bar, text="⊖", width=3, relief="flat", font=("TkDefaultFont", 11),
+                  command=lambda: self.diagram.zoom_out()).pack(side=tk.LEFT, padx=1, pady=2)
+        tk.Button(bar, text="⊡ Fit", relief="flat", padx=4,
+                  command=lambda: self.diagram.fit_view()).pack(side=tk.LEFT, padx=2, pady=2)
+
         # Keyboard shortcuts
         self.root.bind("s", lambda _e: self._set_tool(TOOL_SELECT))
         self.root.bind("b", lambda _e: self._toggle_tool(TOOL_BUS,         self._set_lines_tool))
@@ -167,6 +177,12 @@ class MainWindow:
         self.root.bind("g", lambda _e: self.diagram.toggle_snap_grid())
         self.root.bind("<space>", lambda _e: self.diagram.toggle_selected_device())
         self.root.bind("r", lambda _e: self.diagram.rotate_selected())
+        self.root.bind("<Control-s>", lambda _e: self._save())
+        self.root.bind("<Control-o>", lambda _e: self._open())
+        self.root.bind("<Control-n>", lambda _e: self._new())
+        self.root.bind("<plus>",  lambda _e: self.diagram.zoom_in())
+        self.root.bind("<minus>", lambda _e: self.diagram.zoom_out())
+        self.root.bind("<Home>",  lambda _e: self.diagram.fit_view())
 
     # ── Body ──────────────────────────────────────────────────────────────
 
@@ -297,7 +313,52 @@ class MainWindow:
     def _new(self) -> None:
         self.diagram.clear()
         self.props.clear()
+        self._current_file = None
         self._set_status("New diagram — select a tool and start drawing.")
+
+    # ── File I/O ──────────────────────────────────────────────────────────
+
+    def _save(self) -> None:
+        if not hasattr(self, "_current_file") or not self._current_file:
+            self._save_as()
+        else:
+            self._write_file(self._current_file)
+
+    def _save_as(self) -> None:
+        fname = filedialog.asksaveasfilename(
+            defaultextension=".poneglyph",
+            filetypes=[("Poneglyph diagram", "*.poneglyph"), ("JSON", "*.json"), ("All files", "*")],
+            title="Save diagram",
+        )
+        if fname:
+            self._current_file = fname
+            self._write_file(fname)
+
+    def _write_file(self, fname: str) -> None:
+        try:
+            data = self.diagram.to_dict()
+            with open(fname, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self._set_status(f"Saved → {fname}")
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+
+    def _open(self) -> None:
+        fname = filedialog.askopenfilename(
+            filetypes=[("Poneglyph diagram", "*.poneglyph"), ("JSON", "*.json"), ("All files", "*")],
+            title="Open diagram",
+        )
+        if not fname:
+            return
+        try:
+            with open(fname, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.diagram.load_dict(data)
+            self.props.clear()
+            self._current_file = fname
+            self._set_status(f"Opened {fname}")
+        except Exception as exc:
+            messagebox.showerror("Open failed", str(exc))
 
     def _run_power_flow(self) -> None:
         from poneglyph.ui.network_state import build_network

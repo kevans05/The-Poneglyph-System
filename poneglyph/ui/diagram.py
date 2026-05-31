@@ -26,6 +26,8 @@ Visual conventions (IEC 60617):
 from __future__ import annotations
 
 import cmath
+import dataclasses
+import json
 import math
 import tkinter as tk
 from collections import Counter
@@ -407,37 +409,41 @@ class DiagramVT:
 
 @dataclass
 class DiagramCTTB:
-    """Current Transformer Test Block — lives on a CT secondary lead."""
+    """Current Transformer Test Block."""
     id: str
     name: str
-    ct_id: str              # parent CT
-    # Offset from the CT secondary lead tip in world coords
+    source_id: str              # parent CT or CTTB id
+    source_type: str = "ct"     # "ct" | "cttb"
     offset_x: float = 0.0
     offset_y: float = 40.0
-    mode: str = "Pass"      # "Pass" | "Sum" | "Subtract"
-    num_circuits: int = 1   # how many CT secondaries feed this block
+    mode: str = "Pass"          # "Pass" | "Sum" | "Subtract"
+    num_circuits: int = 1
 
 @dataclass
 class DiagramTestBlock:
-    """FT (Fuse-Test) or ISO block — lives on a VT/CVT secondary lead."""
+    """FT (Fuse-Test) or ISO block."""
     id: str
     name: str
-    vt_id: str              # parent VT
-    block_type: str = "FT"  # "FT" | "ISO"
+    source_id: str              # parent VT or TestBlock id
+    source_type: str = "vt"     # "vt" | "testblock"
+    block_type: str = "FT"      # "FT" | "ISO"
     offset_x: float = 0.0
     offset_y: float = 50.0
-    fused: bool = True      # FT blocks carry a fuse
+    fused: bool = True
 
 
 @dataclass
 class DiagramRelay:
     id: str
     name: str
-    cx: float       # world x centre
-    cy: float       # world y centre
-    relay_type: str = "OC"         # "OC" | "DIFF" | "DIST" | "GEN" | "VOLT" | "FREQ"
-    function_code: str = "51"      # ANSI function number string e.g. "21", "50/51", "87T"
-    num_windings: int = 1          # 1 or 2
+    cx: float
+    cy: float
+    function_code: str = "51"       # ANSI function number e.g. "21", "50/51", "87T"
+    windings: list = None           # list of winding label strings e.g. ["W1","W2"]
+
+    def __post_init__(self):
+        if self.windings is None:
+            self.windings = ["W1"]
 
 @dataclass
 class DiagramRelayWire:
@@ -446,8 +452,8 @@ class DiagramRelayWire:
     source_id: str      # ct, vt, cttb, or testblock id
     source_type: str    # "ct" | "vt" | "cttb" | "testblock"
     relay_id: str
-    winding: int = 1    # 1 or 2
-    waypoints: list = None   # extra world-coord (x,y) waypoints between source tip and relay
+    winding: int = 1    # index into relay.windings
+    waypoints: list = None
 
     def __post_init__(self):
         if self.waypoints is None:
@@ -694,6 +700,125 @@ class Diagram(tk.Frame):
         """Forget the last power-flow solution (clears voltage annotations)."""
         for bus in self._buses.values():
             bus.v_solved = None
+        self.redraw()
+
+    # ── Save / Load ───────────────────────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        """Serialise entire diagram state to a plain JSON-safe dict."""
+        def _ser(obj):
+            d = dataclasses.asdict(obj)
+            # Convert tuple values to lists (JSON arrays) — already happens
+            # via asdict; convert list-of-tuples inside nodes/edges/waypoints
+            return d
+
+        return {
+            "buses":        {k: _ser(v) for k, v in self._buses.items()},
+            "connections":  {k: _ser(v) for k, v in self._connections.items()},
+            "transformers": {k: _ser(v) for k, v in self._transformers.items()},
+            "sources":      {k: _ser(v) for k, v in self._sources.items()},
+            "loads":        {k: _ser(v) for k, v in self._loads.items()},
+            "cts":          {k: _ser(v) for k, v in self._cts.items()},
+            "vts":          {k: _ser(v) for k, v in self._vts.items()},
+            "cttbs":        {k: _ser(v) for k, v in self._cttbs.items()},
+            "testblocks":   {k: _ser(v) for k, v in self._testblocks.items()},
+            "breakers":     {k: _ser(v) for k, v in self._breakers.items()},
+            "disconnects":  {k: _ser(v) for k, v in self._disconnects.items()},
+            "relays":       {k: _ser(v) for k, v in self._relays.items()},
+            "relay_wires":  {k: _ser(v) for k, v in self._relay_wires.items()},
+            "volt_colours": {str(k): v for k, v in self._volt_colours.items()},
+        }
+
+    def load_dict(self, data: dict) -> None:
+        """Restore diagram state from a dict produced by to_dict()."""
+        self.clear()
+
+        def _tuples(lst):
+            """Recursively convert [x,y] lists back to (x,y) tuples."""
+            if isinstance(lst, list) and len(lst) == 2 and not isinstance(lst[0], (list, dict)):
+                return tuple(lst)
+            if isinstance(lst, list):
+                return [_tuples(i) for i in lst]
+            return lst
+
+        def _mk(cls, d):
+            # Convert list-of-lists back to list-of-tuples for known fields
+            for field_name in ("nodes", "edges", "sec_waypoints", "waypoints"):
+                if field_name in d and isinstance(d[field_name], list):
+                    d[field_name] = [_tuples(x) for x in d[field_name]]
+            # Drop unknown keys gracefully (forward-compat)
+            known = {f.name for f in dataclasses.fields(cls)}
+            return cls(**{k: v for k, v in d.items() if k in known})
+
+        for k, v in data.get("buses",        {}).items(): self._buses[k]        = _mk(DiagramBus,        v)
+        for k, v in data.get("connections",  {}).items(): self._connections[k]  = _mk(DiagramConnection, v)
+        for k, v in data.get("transformers", {}).items(): self._transformers[k] = _mk(DiagramTransformer, v)
+        for k, v in data.get("sources",      {}).items(): self._sources[k]      = _mk(DiagramSource,     v)
+        for k, v in data.get("loads",        {}).items(): self._loads[k]        = _mk(DiagramLoad,       v)
+        for k, v in data.get("cts",          {}).items(): self._cts[k]          = _mk(DiagramCT,         v)
+        for k, v in data.get("vts",          {}).items(): self._vts[k]          = _mk(DiagramVT,         v)
+        for k, v in data.get("cttbs",        {}).items(): self._cttbs[k]        = _mk(DiagramCTTB,       v)
+        for k, v in data.get("testblocks",   {}).items(): self._testblocks[k]   = _mk(DiagramTestBlock,  v)
+        for k, v in data.get("breakers",     {}).items(): self._breakers[k]     = _mk(DiagramBreaker,    v)
+        for k, v in data.get("disconnects",  {}).items(): self._disconnects[k]  = _mk(DiagramDisconnect, v)
+        for k, v in data.get("relays",       {}).items(): self._relays[k]       = _mk(DiagramRelay,      v)
+        for k, v in data.get("relay_wires",  {}).items(): self._relay_wires[k]  = _mk(DiagramRelayWire,  v)
+        if "volt_colours" in data:
+            self._volt_colours = {float(k): v for k, v in data["volt_colours"].items()}
+        self.redraw()
+
+    # ── Zoom / fit ────────────────────────────────────────────────────────
+
+    def zoom_in(self) -> None:
+        cx = self.canvas.winfo_width()  / 2
+        cy = self.canvas.winfo_height() / 2
+        f  = 1.25
+        self._offset_x = cx - (cx - self._offset_x) * f
+        self._offset_y = cy - (cy - self._offset_y) * f
+        self._scale    = min(self._scale * f, 8.0)
+        self.redraw()
+
+    def zoom_out(self) -> None:
+        cx = self.canvas.winfo_width()  / 2
+        cy = self.canvas.winfo_height() / 2
+        f  = 1 / 1.25
+        self._offset_x = cx - (cx - self._offset_x) * f
+        self._offset_y = cy - (cy - self._offset_y) * f
+        self._scale    = max(self._scale * f, 0.2)
+        self.redraw()
+
+    def fit_view(self) -> None:
+        """Pan and zoom to fit all placed elements into the canvas viewport."""
+        xs, ys = [], []
+        for bus in self._buses.values():
+            for nx, ny in bus.nodes:
+                xs.append(nx); ys.append(ny)
+        for xfmr in self._transformers.values():
+            xs.append(xfmr.cx); ys.append(xfmr.cy)
+        for src in self._sources.values():
+            xs.append(src.cx); ys.append(src.cy)
+        for ld in self._loads.values():
+            xs.append(ld.cx); ys.append(ld.cy)
+        for vt in self._vts.values():
+            xs.append(vt.tap_x); ys.append(vt.tap_y)
+        for relay in self._relays.values():
+            xs.append(relay.cx); ys.append(relay.cy)
+
+        if not xs:
+            return
+
+        pad   = 60
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        w = self.canvas.winfo_width()  or 800
+        h = self.canvas.winfo_height() or 600
+        span_x = max_x - min_x or 1
+        span_y = max_y - min_y or 1
+        scale  = min((w - 2*pad) / span_x, (h - 2*pad) / span_y)
+        scale  = max(0.2, min(scale, 8.0))
+        self._scale    = scale
+        self._offset_x = pad - min_x * scale + (w - 2*pad - span_x * scale) / 2
+        self._offset_y = pad - min_y * scale + (h - 2*pad - span_y * scale) / 2
         self.redraw()
 
     # ── Coordinates ───────────────────────────────────────────────────────
@@ -1757,13 +1882,41 @@ class Diagram(tk.Frame):
             bottom_sy = sec_y + R
         return self._s2w(sx, bottom_sy)
 
+    def _device_output_world(self, source_type: str, source_id: str):
+        """Return world (x,y) of any secondary device's output point, or None."""
+        if source_type == "ct":
+            ct = self._cts.get(source_id)
+            return self._ct_secondary_tip_world(ct) if ct else None
+        elif source_type == "vt":
+            vt = self._vts.get(source_id)
+            if vt is None:
+                return None
+            bottom = self._vt_secondary_bottom_world(vt)
+            if bottom and vt.sec_waypoints:
+                return vt.sec_waypoints[-1]
+            return bottom
+        elif source_type == "cttb":
+            cttb = self._cttbs.get(source_id)
+            if cttb is None:
+                return None
+            src = self._device_output_world(cttb.source_type, cttb.source_id)
+            if src is None:
+                return None
+            return (src[0] + cttb.offset_x, src[1] + cttb.offset_y)
+        elif source_type == "testblock":
+            tb = self._testblocks.get(source_id)
+            if tb is None:
+                return None
+            src = self._device_output_world(tb.source_type, tb.source_id)
+            if src is None:
+                return None
+            return (src[0] + tb.offset_x, src[1] + tb.offset_y)
+        return None
+
     # ── CTTB draw ─────────────────────────────────────────────────────────
 
     def _draw_cttb(self, cttb: "DiagramCTTB") -> None:
-        ct = self._cts.get(cttb.ct_id)
-        if ct is None:
-            return
-        tip = self._ct_secondary_tip_world(ct)
+        tip = self._device_output_world(cttb.source_type, cttb.source_id)
         if tip is None:
             return
         # Block position = tip + offset
@@ -1798,10 +1951,7 @@ class Diagram(tk.Frame):
     # ── FT / ISO block draw ───────────────────────────────────────────────
 
     def _draw_testblock(self, tb: "DiagramTestBlock") -> None:
-        vt = self._vts.get(tb.vt_id)
-        if vt is None:
-            return
-        bottom = self._vt_secondary_bottom_world(vt)
+        bottom = self._device_output_world(tb.source_type, tb.source_id)
         if bottom is None:
             return
         bwx = bottom[0] + tb.offset_x
@@ -1837,70 +1987,51 @@ class Diagram(tk.Frame):
     def _draw_relay(self, relay: "DiagramRelay") -> None:
         sx, sy = self._w2s(relay.cx, relay.cy)
         sel = self._selection == ("relay", relay.id)
-        colour = "#0066CC" if sel else "#880000"   # dark red for protection devices
+        colour = "#0066CC" if sel else "#880000"
         R = 18 * self._scale
-        self.canvas.create_oval(sx-R, sy-R, sx+R, sy+R, outline=colour,
-                                width=LINE_WIDTH+1, fill="#FFF8F8")
-        # Function code inside circle
-        self.canvas.create_text(sx, sy, text=relay.function_code,
-                                font=("TkDefaultFont", 9, "bold"), fill=colour)
-        # Name label below
-        self.canvas.create_text(sx, sy + R + 4*self._scale, text=relay.name,
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="n")
-        # Winding terminal dots: W1 on left side, W2 on right side
-        tw = 4 * self._scale
-        for wn in range(relay.num_windings):
-            wx_dot = sx - R if wn == 0 else sx + R
-            self.canvas.create_oval(wx_dot-tw, sy-tw, wx_dot+tw, sy+tw,
-                                   fill=colour, outline=colour)
-            label = f"W{wn+1}"
-            anchor = "e" if wn == 0 else "w"
-            offset = -tw-2 if wn == 0 else tw+2
-            self.canvas.create_text(wx_dot+offset, sy, text=label,
-                                   font=("TkDefaultFont", 7), fill=colour, anchor=anchor)
+        canvas = self.canvas
+        canvas.create_oval(sx-R, sy-R, sx+R, sy+R, outline=colour,
+                           width=LINE_WIDTH+1, fill="#FFF8F8")
+        canvas.create_text(sx, sy, text=relay.function_code,
+                           font=("TkDefaultFont", 9, "bold"), fill=colour)
+        canvas.create_text(sx, sy + R + 4*self._scale, text=relay.name,
+                           font=("TkDefaultFont", 8), fill="#444444", anchor="n")
+        # Winding terminals spread evenly across top arc
+        nw   = len(relay.windings)
+        tw   = 4 * self._scale
+        for wi, wlabel in enumerate(relay.windings):
+            if nw == 1:
+                angle = math.pi / 2
+            else:
+                angle = math.pi - (math.pi / (nw - 1)) * wi
+            tx = sx + R * math.cos(angle)
+            ty = sy - R * math.sin(angle)
+            canvas.create_oval(tx-tw, ty-tw, tx+tw, ty+tw, fill=colour, outline=colour)
+            # Label outside circle
+            lx = sx + (R + tw + 4) * math.cos(angle)
+            ly = sy - (R + tw + 4) * math.sin(angle)
+            canvas.create_text(lx, ly, text=wlabel,
+                               font=("TkDefaultFont", 7), fill=colour, anchor="center")
 
     def _draw_relay_wire(self, rw: "DiagramRelayWire") -> None:
         """Draw dashed orthogonal wire from source secondary output to relay winding."""
-        # Resolve source tip
-        tip_w = None
-        if rw.source_type == "ct":
-            ct = self._cts.get(rw.source_id)
-            if ct:
-                tip_w = self._ct_secondary_tip_world(ct)
-        elif rw.source_type == "vt":
-            vt = self._vts.get(rw.source_id)
-            if vt:
-                tip_w = self._vt_secondary_bottom_world(vt)
-                if tip_w and vt.sec_waypoints:
-                    tip_w = vt.sec_waypoints[-1]
-        elif rw.source_type == "cttb":
-            cttb = self._cttbs.get(rw.source_id)
-            if cttb:
-                ct = self._cts.get(cttb.ct_id)
-                if ct:
-                    ct_tip = self._ct_secondary_tip_world(ct)
-                    if ct_tip:
-                        tip_w = (ct_tip[0] + cttb.offset_x, ct_tip[1] + cttb.offset_y)
-        elif rw.source_type == "testblock":
-            tb = self._testblocks.get(rw.source_id)
-            if tb:
-                vt = self._vts.get(tb.vt_id)
-                if vt:
-                    bot = self._vt_secondary_bottom_world(vt)
-                    if bot:
-                        tip_w = (bot[0] + tb.offset_x, bot[1] + tb.offset_y)
+        tip_w = self._device_output_world(rw.source_type, rw.source_id)
         if tip_w is None:
             return
 
-        # Relay terminal position
         relay = self._relays.get(rw.relay_id)
         if relay is None:
             return
+        # Winding terminal: spread evenly around the top half of the relay circle
         R_world = 18
-        if rw.winding == 2:
-            term_w = (relay.cx + R_world, relay.cy)
+        nw = len(relay.windings)
+        wi = max(0, min(rw.winding - 1, nw - 1))
+        if nw == 1:
+            angle = math.pi / 2   # top centre
         else:
-            term_w = (relay.cx - R_world, relay.cy)
+            angle = math.pi - (math.pi / (nw - 1)) * wi if nw > 1 else math.pi / 2
+        term_w = (relay.cx + R_world * math.cos(angle),
+                  relay.cy - R_world * math.sin(angle))
 
         # Build waypoint list with orthogonal elbows
         wpts_raw = [tip_w] + list(rw.waypoints) + [term_w]
@@ -2116,30 +2247,20 @@ class Diagram(tk.Frame):
 
     def _hit_cttb(self, sx: float, sy: float) -> Optional[str]:
         for cttb in self._cttbs.values():
-            ct = self._cts.get(cttb.ct_id)
-            if ct is None:
-                continue
-            tip = self._ct_secondary_tip_world(ct)
+            tip = self._device_output_world(cttb.source_type, cttb.source_id)
             if tip is None:
                 continue
-            bwx = tip[0] + cttb.offset_x
-            bwy = tip[1] + cttb.offset_y
-            bsx, bsy = self._w2s(bwx, bwy)
+            bsx, bsy = self._w2s(tip[0] + cttb.offset_x, tip[1] + cttb.offset_y)
             if math.hypot(sx - bsx, sy - bsy) < 22 * self._scale:
                 return cttb.id
         return None
 
     def _hit_testblock(self, sx: float, sy: float) -> Optional[str]:
         for tb in self._testblocks.values():
-            vt = self._vts.get(tb.vt_id)
-            if vt is None:
+            src = self._device_output_world(tb.source_type, tb.source_id)
+            if src is None:
                 continue
-            bottom = self._vt_secondary_bottom_world(vt)
-            if bottom is None:
-                continue
-            bwx = bottom[0] + tb.offset_x
-            bwy = bottom[1] + tb.offset_y
-            bsx, bsy = self._w2s(bwx, bwy)
+            bsx, bsy = self._w2s(src[0] + tb.offset_x, src[1] + tb.offset_y)
             if math.hypot(sx - bsx, sy - bsy) < 18 * self._scale:
                 return tb.id
         return None
@@ -2191,39 +2312,18 @@ class Diagram(tk.Frame):
         """Return relay_wire id if screen point is near any relay wire segment."""
         tol = 8
         for rw in self._relay_wires.values():
-            # Resolve tip world
-            tip_w = None
-            if rw.source_type == "ct":
-                ct = self._cts.get(rw.source_id)
-                if ct:
-                    tip_w = self._ct_secondary_tip_world(ct)
-            elif rw.source_type == "vt":
-                vt = self._vts.get(rw.source_id)
-                if vt:
-                    tip_w = self._vt_secondary_bottom_world(vt)
-            elif rw.source_type == "cttb":
-                cttb = self._cttbs.get(rw.source_id)
-                if cttb:
-                    ct = self._cts.get(cttb.ct_id)
-                    if ct:
-                        ct_tip = self._ct_secondary_tip_world(ct)
-                        if ct_tip:
-                            tip_w = (ct_tip[0] + cttb.offset_x, ct_tip[1] + cttb.offset_y)
-            elif rw.source_type == "testblock":
-                tb = self._testblocks.get(rw.source_id)
-                if tb:
-                    vt = self._vts.get(tb.vt_id)
-                    if vt:
-                        bot = self._vt_secondary_bottom_world(vt)
-                        if bot:
-                            tip_w = (bot[0] + tb.offset_x, bot[1] + tb.offset_y)
+            tip_w = self._device_output_world(rw.source_type, rw.source_id)
             if tip_w is None:
                 continue
             relay = self._relays.get(rw.relay_id)
             if relay is None:
                 continue
             R_world = 18
-            term_w = (relay.cx - R_world if rw.winding == 1 else relay.cx + R_world, relay.cy)
+            nw  = len(relay.windings)
+            wi  = max(0, min(rw.winding - 1, nw - 1))
+            angle = (math.pi / 2) if nw == 1 else math.pi - (math.pi / (nw - 1)) * wi
+            term_w = (relay.cx + R_world * math.cos(angle),
+                      relay.cy - R_world * math.sin(angle))
             wpts_raw = [tip_w] + list(rw.waypoints) + [term_w]
             wpts = [wpts_raw[0]]
             for i in range(1, len(wpts_raw)):
@@ -2689,22 +2789,32 @@ class Diagram(tk.Frame):
                 self._revert_to_select(event)
 
         elif self._tool == TOOL_CTTB:
-            # Click on a CT to attach a test block to its secondary
-            ct_id = self._hit_ct(event.x, event.y)
+            # Click on CT or existing CTTB to chain a new test block
+            ct_id   = self._hit_ct(event.x, event.y)
+            cttb_id = self._hit_cttb(event.x, event.y) if not ct_id else None
+            cid = f"CTTB-{len(self._cttbs) + 1}"
             if ct_id:
-                cid = f"CTTB-{len(self._cttbs) + 1}"
-                self._cttbs[cid] = DiagramCTTB(cid, cid, ct_id)
+                self._cttbs[cid] = DiagramCTTB(cid, cid, ct_id, source_type="ct")
+                self._set_selection("cttb", cid)
+                self._revert_to_select(event)
+            elif cttb_id:
+                self._cttbs[cid] = DiagramCTTB(cid, cid, cttb_id, source_type="cttb")
                 self._set_selection("cttb", cid)
                 self._revert_to_select(event)
             elif self._on_status:
-                self._on_status("CTTB: click on a CT symbol to attach a test block.")
+                self._on_status("CTTB: click on a CT or another CTTB to chain.")
 
         elif self._tool == TOOL_TESTBLOCK:
-            # Click on a VT to attach an FT or ISO block
+            # Click on VT or existing TestBlock to chain
             vt_id = self._hit_vt(wx, wy)
+            tb_id = self._hit_testblock(event.x, event.y) if not vt_id else None
+            tid = f"TB-{len(self._testblocks) + 1}"
             if vt_id:
-                tid = f"TB-{len(self._testblocks) + 1}"
-                self._testblocks[tid] = DiagramTestBlock(tid, tid, vt_id)
+                self._testblocks[tid] = DiagramTestBlock(tid, tid, vt_id, source_type="vt")
+                self._set_selection("testblock", tid)
+                self._revert_to_select(event)
+            elif tb_id:
+                self._testblocks[tid] = DiagramTestBlock(tid, tid, tb_id, source_type="testblock")
                 self._set_selection("testblock", tid)
                 self._revert_to_select(event)
             elif self._on_status:
