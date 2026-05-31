@@ -1789,20 +1789,13 @@ class Diagram(tk.Frame):
             self._revert_to_select(event)
 
         elif self._tool == TOOL_CT:
-            conn_id = self._hit_connection(event.x, event.y)
-            if conn_id:
-                conn  = self._connections[conn_id]
-                start = conn.start_point(self._buses)
-                end   = conn.end_point(self._buses)
-                if start and end:
-                    wx1, wy1 = start
-                    wx2, wy2 = end
-                    total = math.hypot(wx2 - wx1, wy2 - wy1) or 1
-                    t = max(0.1, min(0.9, math.hypot(wx - wx1, wy - wy1) / total))
-                    cid = f"CT-{len(self._cts) + 1}"
-                    self._cts[cid] = DiagramCT(cid, cid, conn_id, t)
-                    self._set_selection("ct", cid)
-                    self._revert_to_select(event)
+            result = self._nearest_connection(event.x, event.y)
+            if result:
+                conn_id, t = result
+                cid = f"CT-{len(self._cts) + 1}"
+                self._cts[cid] = DiagramCT(cid, cid, conn_id, t)
+                self._set_selection("ct", cid)
+                self._revert_to_select(event)
 
         elif self._tool == TOOL_VT:
             bus_id = self._hit_bus(wx, wy)
