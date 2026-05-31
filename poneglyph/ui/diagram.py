@@ -364,6 +364,7 @@ class DiagramCT:
     num_taps: int = 1                 # 1 = single ratio; >1 = multi-ratio taps
     tap_ratios: str = ""              # comma-sep list of tap ratios e.g. "600:5,900:5,1200:5"
     polarity_standard: bool = True    # True = standard dot polarity (IEC/IEEE)
+    polarity_flipped:  bool = False   # True = secondary lead exits bottom end (reverses polarity sense)
     # ── Winding configurations ────────────────────────────────────────────
     primary_config:   str = "Series"          # Series | Parallel | Window (core-balance)
     secondary_config: str = "Wye"             # Wye | Delta | Open-Delta | Zero-Sequence
@@ -646,6 +647,17 @@ class Diagram(tk.Frame):
             self.redraw()
         elif kind == "disconnect" and eid in self._disconnects:
             self._disconnects[eid].closed = not self._disconnects[eid].closed
+            self.redraw()
+
+    def flip_ct_polarity(self) -> None:
+        """Flip the secondary-lead end of the selected CT (P key)."""
+        kind, eid = self._selection
+        if kind == "ct" and eid in self._cts:
+            ct = self._cts[eid]
+            ct.polarity_flipped = not ct.polarity_flipped
+            if self._on_status:
+                side = "bottom" if ct.polarity_flipped else "top"
+                self._on_status(f"CT polarity flipped — secondary now exits {side} end")
             self.redraw()
 
     def toggle_snap_grid(self) -> None:
@@ -1305,8 +1317,19 @@ class Diagram(tk.Frame):
         wx1, wy1, wx2, wy2, wx, wy = pts
         sx, sy = self._w2s(wx, wy)
 
-        sel    = self._selection == ("ct", ct.id)
-        colour = "#0066CC" if sel else "black"
+        sel = self._selection == ("ct", ct.id)
+
+        # Proximity-to-clamp warning: highlight orange when t is near the exclusion zone
+        t_min = 0.20 if ct.xfmr_id else 0.10
+        t_max = 0.80 if ct.xfmr_id else 0.90
+        warn_zone = 0.06   # within 6% of limit → warn
+        near_limit = ct.t < (t_min + warn_zone) or ct.t > (t_max - warn_zone)
+        if sel:
+            colour = "#0066CC"
+        elif near_limit:
+            colour = "#FF8800"   # orange warning
+        else:
+            colour = "black"
 
         # Wire direction unit vector and perpendicular (screen space)
         dx, dy = wx2 - wx1, wy2 - wy1
@@ -1316,7 +1339,7 @@ class Diagram(tk.Frame):
         raw = (s2[0]-s1[0], s2[1]-s1[1])
         aln = math.hypot(*raw) or 1
         alx, aly = raw[0]/aln, raw[1]/aln   # along-wire unit (screen)
-        pxn, pyn = -aly, alx                 # perpendicular (90° CCW) = "left" of downward wire
+        pxn, pyn = -aly, alx                 # perpendicular (90° CCW)
 
         R  = 10 * self._scale   # arc radius
         tk =  7 * self._scale   # secondary tick length
@@ -1360,18 +1383,26 @@ class Diagram(tk.Frame):
                                     px + pxn*tk*0.6, py + pyn*tk*0.6,
                                     fill=colour, width=lw)
 
-        # Secondary lead from the top outer end, going perpendicular.
-        lead_ex = top_x + pxn * tk * 2.5
-        lead_ey = top_y + pyn * tk * 2.5
-        self.canvas.create_line(top_x, top_y, lead_ex, lead_ey,
+        # Secondary lead exits from top end (normal) or bottom end (flipped polarity).
+        lead_origin_x = bot_x if ct.polarity_flipped else top_x
+        lead_origin_y = bot_y if ct.polarity_flipped else top_y
+        lead_ex = lead_origin_x + pxn * tk * 2.5
+        lead_ey = lead_origin_y + pyn * tk * 2.5
+        self.canvas.create_line(lead_origin_x, lead_origin_y, lead_ex, lead_ey,
                                 fill=colour, width=lw)
 
-        # Polarity dot at the tip of the secondary lead — outside and obvious.
+        # Polarity dot at the tip of the secondary lead.
         pr = max(3, 3.5 * self._scale)
         if ct.polarity_standard:
             self.canvas.create_oval(lead_ex - pr, lead_ey - pr,
                                     lead_ex + pr, lead_ey + pr,
                                     fill=colour, outline=colour)
+
+        # Warning overlay when near clamping limit
+        if near_limit and not sel:
+            wr = R * 2.2
+            self.canvas.create_oval(sx - wr, sy - wr, sx + wr, sy + wr,
+                                    outline="#FF8800", width=2, dash=(4, 3))
 
         label = f"{ct.ratio_str}\n{ct.name}"
         self.canvas.create_text(lead_ex + pxn*(pr+4) + ct.label_ox*self._scale,

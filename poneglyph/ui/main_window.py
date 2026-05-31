@@ -139,7 +139,7 @@ class MainWindow:
         self.root.bind("t", lambda _e: self._toggle_tool(TOOL_TLINE,       self._set_lines_tool))
         self.root.bind("f", lambda _e: self._toggle_tool(TOOL_FEEDER,      self._set_lines_tool))
         self.root.bind("x", lambda _e: self._toggle_tool(TOOL_TRANSFORMER, self._set_xfmr_tool))
-        self.root.bind("p", lambda _e: self._toggle_tool(TOOL_SOURCE,      self._set_src_tool))
+        self.root.bind("p", lambda _e: self._p_key())
         self.root.bind("l", lambda _e: self._toggle_tool(TOOL_LOAD,        self._set_src_tool))
         self.root.bind("c", lambda _e: self._toggle_tool(TOOL_CT,          self._set_instr_tool))
         self.root.bind("v", lambda _e: self._toggle_tool(TOOL_VT,          self._set_instr_tool))
@@ -252,6 +252,14 @@ class MainWindow:
 
     def _edit_volt_colours(self) -> None:
         VoltageColourDialog(self.root, self.diagram)
+
+    def _p_key(self) -> None:
+        """P = flip CT polarity when a CT is selected, else activate Power Source tool."""
+        kind, _ = self.diagram.get_selection()
+        if kind == "ct":
+            self.diagram.flip_ct_polarity()
+        else:
+            self._toggle_tool(TOOL_SOURCE, self._set_src_tool)
 
     def _show_keymap(self) -> None:
         KeymapDialog(self.root)
@@ -411,7 +419,6 @@ class KeymapDialog(tk.Toplevel):
             ("T",        "T-Line tool"),
             ("F",        "Feeder tool"),
             ("X",        "Transformer tool"),
-            ("P",        "Power Source tool"),
             ("L",        "Load tool"),
             ("C",        "Current Transformer (CT) tool"),
             ("V",        "Voltage Transformer (VT) tool"),
@@ -422,6 +429,7 @@ class KeymapDialog(tk.Toplevel):
         ("Editing", [
             ("Space",    "Toggle selected breaker / disconnect open ↔ closed"),
             ("R",        "Rotate selected transformer 90° CCW"),
+            ("P",        "Flip CT polarity (when CT selected) / Power Source tool"),
             ("G",        "Toggle grid snap ON / OFF"),
             ("Shift+click (bus node)", "Delete node  (merges adjacent segments)"),
             ("Shift+click (bus segment midpoint)", "Insert node"),
