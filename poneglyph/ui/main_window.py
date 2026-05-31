@@ -142,6 +142,7 @@ class MainWindow:
         self.root.bind("k", lambda _e: self._toggle_tool(TOOL_BREAKER,     self._set_switch_tool))
         self.root.bind("i", lambda _e: self._toggle_tool(TOOL_DISCONNECT,  self._set_switch_tool))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
+        self.root.bind("g", lambda _e: self.diagram.toggle_snap_grid())
 
     # ── Body ──────────────────────────────────────────────────────────────
 

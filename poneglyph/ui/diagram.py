@@ -55,6 +55,7 @@ LOAD_AH     = 12.0   # load arrowhead height (world units)
 LOAD_AW     = 7.0    # load arrowhead half-width (world units)
 LOAD_LEAD   = 30.0   # load lead length from bus to arrowhead base
 
+GRID_SIZE   = 20.0   # world units per grid cell (matches _draw_grid step)
 
 # ── Element data models ──────────────────────────────────────────────────────
 
@@ -348,6 +349,7 @@ class Diagram(tk.Frame):
         self._drag_node_idx:  Optional[int]   = None   # bus-node being dragged
         self._drag_axis:      Optional[str]   = None   # "h" | "v" | "free" — locked at drag start
         self._term_anchor:    Optional[tuple] = None   # screen (sx,sy) of the fixed terminal end
+        self._snap_grid_on:   bool            = True   # snap all placements/drags to grid
         self._conn_from_bus:  Optional[str]   = None
         self._conn_from_tap:  tuple           = (0.0, 0.0)
         self._pan_start_pt:   Optional[tuple] = None
@@ -468,6 +470,20 @@ class Diagram(tk.Frame):
 
     # ── Redraw ────────────────────────────────────────────────────────────
 
+    def _sg(self, wx: float, wy: float) -> tuple:
+        """Snap world point to grid if snap is enabled."""
+        if not self._snap_grid_on:
+            return wx, wy
+        return (round(wx / GRID_SIZE) * GRID_SIZE,
+                round(wy / GRID_SIZE) * GRID_SIZE)
+
+    def toggle_snap_grid(self) -> None:
+        self._snap_grid_on = not self._snap_grid_on
+        if self._on_status:
+            state = "ON" if self._snap_grid_on else "OFF"
+            self._on_status(f"Grid snap {state}  (G to toggle)")
+        self.redraw()
+
     def redraw(self) -> None:
         self.canvas.delete("all")
         self._draw_grid()
@@ -491,14 +507,18 @@ class Diagram(tk.Frame):
     def _draw_grid(self) -> None:
         w = self.canvas.winfo_width()  or 800
         h = self.canvas.winfo_height() or 600
-        step = 20 * self._scale
-        if step < 8:
+        step = GRID_SIZE * self._scale
+        if step < 6:
             return
+        dot_col  = "#BBBBBB" if self._snap_grid_on else "#EEEEEE"
+        dot_r    = 1.5 if self._snap_grid_on else 1
         x = self._offset_x % step
         while x < w:
             y = self._offset_y % step
             while y < h:
-                self.canvas.create_oval(x-1, y-1, x+1, y+1, fill="#DDDDDD", outline="")
+                self.canvas.create_oval(x - dot_r, y - dot_r,
+                                        x + dot_r, y + dot_r,
+                                        fill=dot_col, outline="")
                 y += step
             x += step
 
@@ -1422,9 +1442,9 @@ class Diagram(tk.Frame):
 
         elif self._tool == TOOL_BUS:
             if self._bus_draw_nodes:
-                # Already drawing — constrain to 90° from last node
+                # Already drawing — constrain to 90° from last node, then grid snap
                 last = self._bus_draw_nodes[-1]
-                snapped_wx, snapped_wy = self._snap_90(last, wx, wy)
+                snapped_wx, snapped_wy = self._snap_90(last, *self._sg(wx, wy))
                 # Double-click detection: new node very close to last node in screen space
                 sx_last, sy_last = self._w2s(*last)
                 sx_new,  sy_new  = self._w2s(snapped_wx, snapped_wy)
@@ -1439,6 +1459,7 @@ class Diagram(tk.Frame):
                     )
             else:
                 # Start a new bus at the clicked position
+                wx, wy = self._sg(wx, wy)
                 self._bus_draw_nodes = [(wx, wy)]
                 self._preview_point  = (wx, wy)
                 if self._on_status:
@@ -1475,6 +1496,7 @@ class Diagram(tk.Frame):
                     hv_kv=bus.kv or 0.0,
                 )
             else:
+                wx, wy = self._sg(wx, wy)
                 xfmr = DiagramTransformer(id=tid, name=tid, cx=wx, cy=wy)
             self._transformers[tid] = xfmr
             self._set_selection("transformer", tid)
@@ -1491,6 +1513,7 @@ class Diagram(tk.Frame):
                                     bus=snap_id, tap_x=tap_x, tap_y=tap_y,
                                     base_kv=bus.kv or 0.0)
             else:
+                wx, wy = self._sg(wx, wy)
                 src = DiagramSource(sid, sid, cx=wx, cy=wy)
             self._sources[sid] = src
             self._set_selection("source", sid)
@@ -1507,6 +1530,7 @@ class Diagram(tk.Frame):
                                  cy=tap_y + LOAD_LEAD + LOAD_AH,
                                  bus=snap_id, tap_x=tap_x, tap_y=tap_y)
             else:
+                wx, wy = self._sg(wx, wy)
                 ld = DiagramLoad(lid, lid, cx=wx, cy=wy)
             self._loads[lid] = ld
             self._set_selection("load", lid)
@@ -1604,12 +1628,14 @@ class Diagram(tk.Frame):
         wx, wy = self._s2w(event.x, event.y)
 
         if self._tool == TOOL_SELECT and self._drag_id and self._drag_origin:
-            dx = wx - self._drag_origin[0]
-            dy = wy - self._drag_origin[1]
+            gx, gy = self._sg(wx, wy)
+            dx = gx - self._drag_origin[0]
+            dy = gy - self._drag_origin[1]
             if self._drag_kind == "bus":
                 bus = self._buses[self._drag_id]
                 bus.nodes = [(nx + dx, ny + dy) for nx, ny in bus.nodes]
             elif self._drag_kind == "bus_node":
+                wx, wy = self._sg(wx, wy)   # snap before axis-lock
                 bus = self._buses[self._drag_id]
                 ni  = self._drag_node_idx
                 ox, oy = bus.nodes[ni]   # original node position at drag start
@@ -1678,7 +1704,7 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "load":
                 ld = self._loads[self._drag_id]
                 ld.cx += dx;  ld.cy += dy
-            self._drag_origin = (wx, wy)
+            self._drag_origin = (gx, gy)
             self.redraw()
 
     def _on_release(self, event: tk.Event) -> None:
