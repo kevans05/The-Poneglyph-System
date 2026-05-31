@@ -1237,44 +1237,66 @@ class Diagram(tk.Frame):
 
     # ── CT ────────────────────────────────────────────────────────────────
 
-    def _ct_wire_endpoints(self, ct: "DiagramCT"):
-        """Return (wx1,wy1, wx2,wy2) for the wire segment the CT sits on, or None."""
+    def _ct_lead_segs(self, ct: "DiagramCT"):
+        """Return list of (ax,ay,bx,by) world segments for the wire the CT is on."""
         if ct.xfmr_id:
             xfmr = self._transformers.get(ct.xfmr_id)
             if xfmr is None:
-                return None
-            segs = self._xfmr_lead_segments(xfmr)
-            # collect all segments for this lead
-            lead_segs = [(ax,ay,bx,by) for (lead,ax,ay,bx,by) in segs
-                         if lead == ct.xfmr_lead]
-            if not lead_segs:
-                return None
-            # concatenate into a polyline and find the point at t along total length
-            lengths = [math.hypot(bx-ax, by-ay) for ax,ay,bx,by in lead_segs]
-            total = sum(lengths) or 1.0
-            target = ct.t * total
-            acc = 0.0
-            for (ax,ay,bx,by), seg_len in zip(lead_segs, lengths):
-                if acc + seg_len >= target or seg_len < 1e-6:
-                    local_t = (target - acc) / max(seg_len, 1e-6)
-                    wx = ax + (bx - ax) * local_t
-                    wy = ay + (by - ay) * local_t
-                    return ax, ay, bx, by, wx, wy
-                acc += seg_len
-            ax,ay,bx,by = lead_segs[-1]
-            return ax, ay, bx, by, bx, by
+                return []
+            return [(ax,ay,bx,by)
+                    for (lead,ax,ay,bx,by) in self._xfmr_lead_segments(xfmr)
+                    if lead == ct.xfmr_lead]
         else:
             conn = self._connections.get(ct.connection_id)
             if conn is None:
-                return None
+                return []
             start = conn.start_point(self._buses)
             end   = conn.end_point(self._buses)
             if start is None or end is None:
-                return None
-            wx1, wy1 = start; wx2, wy2 = end
-            wx = wx1 + (wx2 - wx1) * ct.t
-            wy = wy1 + (wy2 - wy1) * ct.t
-            return wx1, wy1, wx2, wy2, wx, wy
+                return []
+            return [(start[0], start[1], end[0], end[1])]
+
+    def _ct_wire_endpoints(self, ct: "DiagramCT"):
+        """Return (wx1,wy1, wx2,wy2, wx,wy) — segment endpoints + position at ct.t."""
+        segs = self._ct_lead_segs(ct)
+        if not segs:
+            return None
+        lengths = [math.hypot(bx-ax, by-ay) for ax,ay,bx,by in segs]
+        total   = sum(lengths) or 1.0
+        target  = ct.t * total
+        acc = 0.0
+        for (ax,ay,bx,by), seg_len in zip(segs, lengths):
+            if acc + seg_len >= target or seg_len < 1e-6:
+                local_t = (target - acc) / max(seg_len, 1e-6)
+                wx = ax + (bx - ax) * local_t
+                wy = ay + (by - ay) * local_t
+                return ax, ay, bx, by, wx, wy
+            acc += seg_len
+        ax,ay,bx,by = segs[-1]
+        return ax, ay, bx, by, bx, by
+
+    def _ct_project_t(self, ct: "DiagramCT", wx: float, wy: float) -> float:
+        """Project world point (wx,wy) onto the CT's full wire polyline, return t."""
+        segs = self._ct_lead_segs(ct)
+        if not segs:
+            return ct.t
+        lengths  = [math.hypot(bx-ax, by-ay) for ax,ay,bx,by in segs]
+        total    = sum(lengths) or 1.0
+        best_dist = float("inf")
+        best_t    = ct.t
+        acc = 0.0
+        for (ax,ay,bx,by), seg_len in zip(segs, lengths):
+            if seg_len < 1e-9:
+                acc += seg_len; continue
+            sdx, sdy = bx-ax, by-ay
+            loc_t = max(0.0, min(1.0, ((wx-ax)*sdx + (wy-ay)*sdy) / (seg_len**2)))
+            px = ax + loc_t*sdx; py = ay + loc_t*sdy
+            d  = math.hypot(wx-px, wy-py)
+            if d < best_dist:
+                best_dist = d
+                best_t    = (acc + loc_t * seg_len) / total
+            acc += seg_len
+        return best_t
 
     def _draw_ct(self, ct: DiagramCT) -> None:
         pts = self._ct_wire_endpoints(ct)
@@ -1296,81 +1318,68 @@ class Diagram(tk.Frame):
         alx, aly = raw[0]/aln, raw[1]/aln   # along-wire unit (screen)
         pxn, pyn = -aly, alx                 # perpendicular (90° CCW) = "left" of downward wire
 
-        R   = 10 * self._scale   # arc radius
-        gap =  2 * self._scale   # gap between the two C-arc centres
-        tk  =  7 * self._scale   # secondary tick length
-        lw  = LINE_WIDTH
+        R  = 10 * self._scale   # arc radius
+        tk =  7 * self._scale   # secondary tick length
+        lw = LINE_WIDTH
 
-        # Two C-arcs stacked along the wire, both opening in the same (+pxn) direction.
-        # Flat diameters are perpendicular to wire; wire threads through each centre.
+        # Two C-arcs side-by-side (touching, no gap): both open in +pxn direction.
+        # Centres at ±R along the wire so the arcs share their inner diameter edge.
+        # Flat diameter of each C is perpendicular to wire.
+        # Wire is redrawn through each centre so it threads through both openings.
         #
-        #   centre_upper = (sx, sy) − along*(R+gap/2)
-        #   centre_lower = (sx, sy) + along*(R+gap/2)
+        #  Layout for vertical wire (wire goes down, pxn points left):
         #
-        # In tkinter: arc_start = wire_angle_deg − 90, extent = 180
-        # opens arc toward +pxn (perpendicular left of wire).
+        #        |          ← wire above symbol
+        #   ─(   |          ← upper C, flat side on wire
+        #   ─(   |          ← lower C, flat side on wire
+        #        |          ← wire below symbol
 
         wire_angle_deg = math.degrees(math.atan2(-aly, alx))
-        arc_start = wire_angle_deg - 90   # opens in +pxn direction
-        half      = R + gap / 2
+        arc_start = wire_angle_deg - 90   # opens toward +pxn
 
-        for sign in (-1, +1):             # upper (−1) then lower (+1) arc
-            cx = sx + alx * sign * half
-            cy = sy + aly * sign * half
-            # C-arc
+        for sign in (-1, +1):             # sign=-1 → upper arc, +1 → lower arc
+            cx = sx + alx * sign * R
+            cy = sy + aly * sign * R
             self.canvas.create_arc(cx-R, cy-R, cx+R, cy+R,
                                    start=arc_start, extent=180,
                                    outline=colour, style="arc", width=lw)
-            # Primary wire redrawn through the opening (the flat diameter)
+            # Redraw wire through the flat opening of this C
             self.canvas.create_line(cx - alx*R, cy - aly*R,
                                     cx + alx*R, cy + aly*R,
                                     fill=colour, width=lw)
 
-        # Polarity dot: near arc tip of upper C (+pxn side, upper centre)
+        # Polarity dot near tip of upper arc
         if ct.polarity_standard:
             pr = max(2, 2.5 * self._scale)
-            uc_x = sx - alx * half
-            uc_y = sy - aly * half
-            dot_x = uc_x + pxn * (R - 2*self._scale)
-            dot_y = uc_y + pyn * (R - 2*self._scale)
-            self.canvas.create_oval(dot_x-pr, dot_y-pr, dot_x+pr, dot_y+pr,
+            uc_x = sx - alx*R + pxn*R*0.85
+            uc_y = sy - aly*R + pyn*R*0.85
+            self.canvas.create_oval(uc_x-pr, uc_y-pr, uc_x+pr, uc_y+pr,
                                     fill=colour, outline=colour)
 
-        # Terminal ticks at the 4 diameter endpoints (outer ends + inner shared ends)
-        # Outer top end (above upper arc)
-        top_x = sx - alx*(half + R);  top_y = sy - aly*(half + R)
-        # Inner shared end between the two arcs (two ticks, one per arc)
-        mid_x = sx;                    mid_y = sy
-        # Outer bottom end (below lower arc)
-        bot_x = sx + alx*(half + R);  bot_y = sy + aly*(half + R)
+        # Three terminal ticks: top outer, shared middle, bottom outer
+        top_x = sx - alx*2*R;  top_y = sy - aly*2*R
+        bot_x = sx + alx*2*R;  bot_y = sy + aly*2*R
 
-        def _tick(px, py):
-            # Short tick perpendicular to wire (on the +pxn side only)
+        for px, py in [(top_x, top_y), (sx, sy), (bot_x, bot_y)]:
             self.canvas.create_line(px, py,
                                     px + pxn*tk*0.7, py + pyn*tk*0.7,
                                     fill=colour, width=lw)
 
-        _tick(top_x, top_y)
-        _tick(mid_x, mid_y)
-        _tick(bot_x, bot_y)
-
-        # Secondary lead from the bottom outer end going +pxn, with crossbar
-        lead_end_x = bot_x + pxn * tk * 2.5
-        lead_end_y = bot_y + pyn * tk * 2.5
-        self.canvas.create_line(bot_x, bot_y, lead_end_x, lead_end_y,
+        # Secondary lead: from bottom outer end, out in +pxn direction
+        lead_ex = bot_x + pxn * tk * 2.5
+        lead_ey = bot_y + pyn * tk * 2.5
+        self.canvas.create_line(bot_x, bot_y, lead_ex, lead_ey,
                                 fill=colour, width=lw)
-        # Crossbar at terminal
-        self.canvas.create_line(lead_end_x - alx*tk/2, lead_end_y - aly*tk/2,
-                                lead_end_x + alx*tk/2, lead_end_y + aly*tk/2,
+        self.canvas.create_line(lead_ex - alx*tk/2, lead_ey - aly*tk/2,
+                                lead_ex + alx*tk/2, lead_ey + aly*tk/2,
                                 fill=colour, width=lw)
 
-        # Label
         label = f"{ct.ratio_str}\n{ct.name}"
-        lbl_anchor = "w" if pxn >= 0 else "e"
-        self.canvas.create_text(lead_end_x + pxn*4 + ct.label_ox*self._scale,
-                                lead_end_y + pyn*4 + ct.label_oy*self._scale,
+        self.canvas.create_text(lead_ex + pxn*4 + ct.label_ox*self._scale,
+                                lead_ey + pyn*4 + ct.label_oy*self._scale,
                                 text=label, font=("TkDefaultFont", 8),
-                                fill="#444444", anchor=lbl_anchor)
+                                fill="#444444",
+                                anchor="w" if pxn >= 0 else "e")
         end_x = tip_x + pxn * tk_len * 2
         end_y = tip_y + pyn * tk_len * 2
         self.canvas.create_line(tip_x, tip_y, end_x, end_y, fill=colour, width=lw)
@@ -2197,18 +2206,11 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "ct":
                 ct = self._cts.get(self._drag_id)
                 if ct:
-                    pts = self._ct_wire_endpoints(ct)
-                    if pts:
-                        wx1, wy1, wx2, wy2, _, _ = pts
-                        # Project cursor onto the wire segment and update t
-                        sdx, sdy = wx2-wx1, wy2-wy1
-                        seg_len = math.hypot(sdx, sdy)
-                        if seg_len > 1e-6:
-                            t_raw = ((wx - wx1)*sdx + (wy - wy1)*sdy) / (seg_len**2)
-                            if ct.xfmr_id:
-                                ct.t = max(0.20, min(0.80, t_raw))
-                            else:
-                                ct.t = max(0.10, min(0.90, t_raw))
+                    t_raw = self._ct_project_t(ct, wx, wy)
+                    if ct.xfmr_id:
+                        ct.t = max(0.20, min(0.80, t_raw))
+                    else:
+                        ct.t = max(0.10, min(0.90, t_raw))
             self._drag_origin = (gx, gy)
             self.redraw()
 
