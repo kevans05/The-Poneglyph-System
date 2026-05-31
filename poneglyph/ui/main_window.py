@@ -195,7 +195,16 @@ class MainWindow:
     # ── Body ──────────────────────────────────────────────────────────────
 
     def _build_body(self) -> None:
-        pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL,
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill=tk.BOTH, expand=True)
+        nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self._main_nb = nb
+
+        # ── Tab 1: SLD ──────────────────────────────────────────────────────
+        sld_frame = tk.Frame(nb)
+        nb.add(sld_frame, text="SLD")
+
+        pane = tk.PanedWindow(sld_frame, orient=tk.HORIZONTAL,
                               sashwidth=4, sashrelief="flat")
         pane.pack(fill=tk.BOTH, expand=True)
 
@@ -203,9 +212,56 @@ class MainWindow:
                                on_status=self._set_status)
         pane.add(self.diagram, minsize=400, stretch="always")
 
-        self.props = PropertiesPanel(pane, on_change=self.diagram.redraw)
+        self.props = PropertiesPanel(pane, on_change=self._on_props_change)
         self.props.set_diagram(self.diagram)
         pane.add(self.props, minsize=180, width=220)
+
+        # ── Tab 2: Drawings ─────────────────────────────────────────────────
+        drw_frame = tk.Frame(nb)
+        nb.add(drw_frame, text="Drawings")
+        drw_frame.columnconfigure(0, weight=1)
+        drw_frame.rowconfigure(0, weight=1)
+
+        cols = ("device", "type", "drawing")
+        self._drw_tree = ttk.Treeview(drw_frame, columns=cols, show="headings", selectmode="browse")
+        self._drw_tree.heading("device",  text="Device")
+        self._drw_tree.heading("type",    text="Type")
+        self._drw_tree.heading("drawing", text="Drawing")
+        self._drw_tree.column("device",  width=140)
+        self._drw_tree.column("type",    width=80)
+        self._drw_tree.column("drawing", width=200)
+        vsb = ttk.Scrollbar(drw_frame, orient="vertical", command=self._drw_tree.yview)
+        self._drw_tree.configure(yscrollcommand=vsb.set)
+        self._drw_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+    def _on_props_change(self):
+        self.diagram.redraw()
+
+    def _on_tab_changed(self, event):
+        tab = self._main_nb.index(self._main_nb.select())
+        if tab == 1:
+            self._refresh_drawings_tab()
+
+    def _refresh_drawings_tab(self):
+        tree = self._drw_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        d = self.diagram
+        device_groups = [
+            (d._cts,         "CT"),
+            (d._vts,         "VT"),
+            (d._cttbs,       "CTTB"),
+            (d._testblocks,  "FT/ISO"),
+            (d._relays,      "Relay"),
+            (d._breakers,    "Breaker"),
+            (d._disconnects, "Disconnect"),
+            (d._transformers,"Transformer"),
+        ]
+        for dev_dict, dev_type in device_groups:
+            for dev in dev_dict.values():
+                for drw_name in getattr(dev, "device_drawings", []):
+                    tree.insert("", tk.END, values=(dev.name, dev_type, drw_name))
 
     # ── Status bar ────────────────────────────────────────────────────────
 
