@@ -485,7 +485,7 @@ class Diagram(tk.Frame):
                                     fill=colour, width=LINE_WIDTH + 1)
 
         # ── Winding indicators to the right of each coil row ──────────────
-        ind_x = xfmr.cx + span / 2 + XFMR_IND + 4
+        ind_x = xfmr.cx + span / 2 + XFMR_IND + 16
         self._draw_winding_indicator(ind_x, hv_y, xfmr.hv_winding, xfmr.hv_grounded, colour)
         self._draw_winding_indicator(ind_x, lv_y, xfmr.lv_winding, xfmr.lv_grounded, colour)
 
