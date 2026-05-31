@@ -9,6 +9,7 @@ from poneglyph.ui.diagram import (
     Diagram,
     TOOL_SELECT, TOOL_BUS, TOOL_TLINE, TOOL_FEEDER,
     TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD, TOOL_CT, TOOL_VT, TOOL_DELETE,
+    TOOL_BREAKER, TOOL_DISCONNECT,
 )
 from poneglyph.ui.properties import PropertiesPanel
 
@@ -105,6 +106,15 @@ class MainWindow:
         self._btn_instr["menu"] = instr_menu
         self._btn_instr.pack(side=tk.LEFT, padx=2, pady=2)
 
+        # Switching Devices dropdown
+        self._btn_switch = tk.Menubutton(bar, text="Switching ▾", width=10, relief="raised",
+                                          direction="below")
+        switch_menu = tk.Menu(self._btn_switch, tearoff=0)
+        switch_menu.add_command(label="Circuit Breaker",   command=lambda: self._set_switch_tool(TOOL_BREAKER))
+        switch_menu.add_command(label="Disconnect Switch", command=lambda: self._set_switch_tool(TOOL_DISCONNECT))
+        self._btn_switch["menu"] = switch_menu
+        self._btn_switch.pack(side=tk.LEFT, padx=2, pady=2)
+
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=2)
 
         # Delete (standalone)
@@ -129,6 +139,8 @@ class MainWindow:
         self.root.bind("l", lambda _e: self._set_src_tool(TOOL_LOAD))
         self.root.bind("c", lambda _e: self._set_instr_tool(TOOL_CT))
         self.root.bind("v", lambda _e: self._set_instr_tool(TOOL_VT))
+        self.root.bind("k", lambda _e: self._set_switch_tool(TOOL_BREAKER))
+        self.root.bind("i", lambda _e: self._set_switch_tool(TOOL_DISCONNECT))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
 
     # ── Body ──────────────────────────────────────────────────────────────
@@ -155,10 +167,11 @@ class MainWindow:
 
     # ── Tool management ───────────────────────────────────────────────────
 
-    _LINES_TOOLS = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
-    _XFMR_TOOLS  = {TOOL_TRANSFORMER}
-    _SRC_TOOLS   = {TOOL_SOURCE, TOOL_LOAD}
-    _INSTR_TOOLS = {TOOL_CT, TOOL_VT}
+    _LINES_TOOLS  = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
+    _XFMR_TOOLS   = {TOOL_TRANSFORMER}
+    _SRC_TOOLS    = {TOOL_SOURCE, TOOL_LOAD}
+    _INSTR_TOOLS  = {TOOL_CT, TOOL_VT}
+    _SWITCH_TOOLS = {TOOL_BREAKER, TOOL_DISCONNECT}
 
     def _set_lines_tool(self, tool: str) -> None:
         self._lines_tool = tool

@@ -190,6 +190,24 @@ class DiagramVT:
     ratio: str = "11000/110"
 
 
+@dataclass
+class DiagramBreaker:
+    id: str
+    name: str
+    connection_id: str   # which DiagramConnection this lives on
+    t: float = 0.5       # position along the connection (0=start, 1=end)
+    closed: bool = True
+
+
+@dataclass
+class DiagramDisconnect:
+    id: str
+    name: str
+    connection_id: str
+    t: float = 0.5
+    closed: bool = True
+
+
 # ── Tool constants ────────────────────────────────────────────────────────────
 
 TOOL_SELECT      = "select"
@@ -202,6 +220,8 @@ TOOL_LOAD        = "load"
 TOOL_CT          = "ct"
 TOOL_VT          = "vt"
 TOOL_DELETE      = "delete"
+TOOL_BREAKER     = "breaker"
+TOOL_DISCONNECT  = "disconnect"
 
 TOOL_HINTS = {
     TOOL_SELECT:      "Select: click to select; drag a bus, transformer, source or load to move it.",
@@ -214,6 +234,8 @@ TOOL_HINTS = {
     TOOL_CT:          "Current Transformer: click on an existing line.",
     TOOL_VT:          "Voltage Transformer: click on a bus.",
     TOOL_DELETE:      "Delete: click any element to remove it.",
+    TOOL_BREAKER:     "Circuit Breaker: click on an existing connection line to place a breaker.",
+    TOOL_DISCONNECT:  "Disconnect Switch: click on an existing connection line to place a disconnect switch.",
 }
 
 BUS_WIDTH  = 4
@@ -260,6 +282,8 @@ class Diagram(tk.Frame):
         self._loads:        dict[str, DiagramLoad]        = {}
         self._cts:          dict[str, DiagramCT]          = {}
         self._vts:          dict[str, DiagramVT]          = {}
+        self._breakers:     dict[str, DiagramBreaker]     = {}
+        self._disconnects:  dict[str, DiagramDisconnect]  = {}
 
         self._volt_colours: dict[float, str] = dict(DEFAULT_VOLT_COLOURS)
 
@@ -319,6 +343,8 @@ class Diagram(tk.Frame):
     def get_loads(self)        -> dict[str, DiagramLoad]:        return self._loads
     def get_cts(self)          -> dict[str, DiagramCT]:          return self._cts
     def get_vts(self)          -> dict[str, DiagramVT]:          return self._vts
+    def get_breakers(self)     -> dict[str, DiagramBreaker]:     return self._breakers
+    def get_disconnects(self)  -> dict[str, DiagramDisconnect]:  return self._disconnects
     def get_selection(self)    -> Optional[tuple[str, str]]:     return self._selection
 
     def get_volt_colours(self) -> dict[float, str]:
@@ -349,6 +375,8 @@ class Diagram(tk.Frame):
         self._loads.clear()
         self._cts.clear()
         self._vts.clear()
+        self._breakers.clear()
+        self._disconnects.clear()
         self._selection = None
         self.redraw()
 
@@ -440,16 +468,137 @@ class Diagram(tk.Frame):
         kv = from_bus.kv if from_bus else 0.0
         colour = self._voltage_colour(kv, selected=sel)
 
-        self.canvas.create_line(x1, y1, x2, y2, width=LINE_WIDTH, fill=colour)
+        # Collect all switching devices on this connection, sorted by t.
+        devices: list[tuple[float, str, object]] = []
+        for br in self._breakers.values():
+            if br.connection_id == conn.id:
+                devices.append((br.t, "breaker", br))
+        for dc in self._disconnects.values():
+            if dc.connection_id == conn.id:
+                devices.append((dc.t, "disconnect", dc))
+        devices.sort(key=lambda d: d[0])
 
+        # Also include the legacy has_breaker_from as a pseudo-device.
         if conn.has_breaker_from:
-            self._draw_breaker(x1, y1, x2, y2, t=0.15, colour=colour)
+            devices.append((0.15, "_legacy_breaker", None))
+            devices.sort(key=lambda d: d[0])
+
+        if not devices:
+            self.canvas.create_line(x1, y1, x2, y2, width=LINE_WIDTH, fill=colour)
+        else:
+            # Draw the line as segments interrupted by device symbols.
+            prev_sx, prev_sy = x1, y1
+            gap = 10 * self._scale
+            for t_dev, dev_kind, dev_obj in devices:
+                dx_seg = x1 + (x2 - x1) * t_dev
+                dy_seg = y1 + (y2 - y1) * t_dev
+                if dev_kind == "_legacy_breaker":
+                    # Draw line to device, then legacy filled square symbol.
+                    self.canvas.create_line(prev_sx, prev_sy, dx_seg, dy_seg,
+                                            width=LINE_WIDTH, fill=colour)
+                    self._draw_legacy_breaker_square(dx_seg, dy_seg, colour)
+                    prev_sx, prev_sy = dx_seg, dy_seg
+                elif dev_kind == "breaker":
+                    self._draw_breaker_symbol(prev_sx, prev_sy, x1, y1, x2, y2,
+                                              t_dev, colour, dev_obj, gap)
+                    # Advance past gap
+                    length = math.hypot(x2 - x1, y2 - y1) or 1
+                    dt = gap / length
+                    prev_sx = x1 + (x2 - x1) * min(1.0, t_dev + dt)
+                    prev_sy = y1 + (y2 - y1) * min(1.0, t_dev + dt)
+                elif dev_kind == "disconnect":
+                    self._draw_disconnect_symbol(prev_sx, prev_sy, x1, y1, x2, y2,
+                                                 t_dev, colour, dev_obj, gap)
+                    length = math.hypot(x2 - x1, y2 - y1) or 1
+                    dt = gap / length
+                    prev_sx = x1 + (x2 - x1) * min(1.0, t_dev + dt)
+                    prev_sy = y1 + (y2 - y1) * min(1.0, t_dev + dt)
+            # Draw the remaining segment.
+            self.canvas.create_line(prev_sx, prev_sy, x2, y2, width=LINE_WIDTH, fill=colour)
 
         if conn.kind == "feeder":
             self._draw_load_triangle(x2, y2, colour)
 
         mx, my = (x1 + x2) / 2, (y1 + y2) / 2
         self.canvas.create_text(mx + 6, my, text=conn.name,
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+
+    def _draw_legacy_breaker_square(self, bx: float, by: float, colour: str) -> None:
+        """Original filled-square breaker symbol (for has_breaker_from)."""
+        h = 5 * self._scale
+        self.canvas.create_rectangle(bx - h, by - h, bx + h, by + h,
+                                     fill=colour, outline=colour)
+
+    def _draw_breaker_symbol(self, prev_sx, prev_sy, x1, y1, x2, y2,
+                             t: float, colour: str, br: "DiagramBreaker", gap: float) -> None:
+        """IEC-style circuit breaker: open or filled square, gap in line when open."""
+        cx = x1 + (x2 - x1) * t
+        cy = y1 + (y2 - y1) * t
+        s  = 8 * self._scale
+        # Draw segment up to the gap start.
+        length = math.hypot(x2 - x1, y2 - y1) or 1
+        dt = gap / length
+        gap_start_x = x1 + (x2 - x1) * max(0.0, t - dt / 2)
+        gap_start_y = y1 + (y2 - y1) * max(0.0, t - dt / 2)
+        self.canvas.create_line(prev_sx, prev_sy, gap_start_x, gap_start_y,
+                                width=LINE_WIDTH, fill=colour)
+        # Direction perpendicular to the line.
+        lx, ly = (x2 - x1) / length, (y2 - y1) / length
+        px, py = -ly, lx
+        # Box corners (perpendicular sides ±s from midpoint).
+        corners = [
+            (cx - lx * s + px * s, cy - ly * s + py * s),
+            (cx + lx * s + px * s, cy + ly * s + py * s),
+            (cx + lx * s - px * s, cy + ly * s - py * s),
+            (cx - lx * s - px * s, cy - ly * s - py * s),
+        ]
+        flat = [v for pt in corners for v in pt]
+        if br.closed:
+            self.canvas.create_polygon(*flat, fill=colour, outline=colour)
+        else:
+            self.canvas.create_polygon(*flat, fill="white", outline=colour, width=LINE_WIDTH)
+        # Label.
+        lbl_x = cx + px * (s + 4)
+        lbl_y = cy + py * (s + 4)
+        self.canvas.create_text(lbl_x, lbl_y, text=br.name,
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+
+    def _draw_disconnect_symbol(self, prev_sx, prev_sy, x1, y1, x2, y2,
+                                t: float, colour: str, dc: "DiagramDisconnect", gap: float) -> None:
+        """IEC isolator (disconnect switch): diagonal blade."""
+        cx = x1 + (x2 - x1) * t
+        cy = y1 + (y2 - y1) * t
+        blade_len = 10 * self._scale
+        length = math.hypot(x2 - x1, y2 - y1) or 1
+        dt = gap / length
+        gap_start_x = x1 + (x2 - x1) * max(0.0, t - dt / 2)
+        gap_start_y = y1 + (y2 - y1) * max(0.0, t - dt / 2)
+        self.canvas.create_line(prev_sx, prev_sy, gap_start_x, gap_start_y,
+                                width=LINE_WIDTH, fill=colour)
+        lx, ly = (x2 - x1) / length, (y2 - y1) / length
+        px, py = -ly, lx
+        if dc.closed:
+            # Blade at 45°: from one side of gap to other, offset in perpendicular direction.
+            bx1 = cx - lx * blade_len / 2
+            by1 = cy - ly * blade_len / 2
+            bx2 = cx + lx * blade_len / 2 + px * blade_len / 2
+            by2 = cy + ly * blade_len / 2 + py * blade_len / 2
+        else:
+            # Blade at ~90° from conductor (open): perpendicular stub.
+            bx1 = cx
+            by1 = cy
+            bx2 = cx + px * blade_len
+            by2 = cy + py * blade_len
+        self.canvas.create_line(bx1, by1, bx2, by2,
+                                width=LINE_WIDTH + 1, fill=colour, capstyle=tk.ROUND)
+        # Hinge dot.
+        r = 3 * self._scale
+        self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                fill=colour, outline=colour)
+        # Label.
+        lbl_x = cx + px * (blade_len + 4)
+        lbl_y = cy + py * (blade_len + 4)
+        self.canvas.create_text(lbl_x, lbl_y, text=dc.name,
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     def _draw_breaker(self, x1, y1, x2, y2, t: float, colour: str) -> None:
@@ -794,6 +943,31 @@ class Diagram(tk.Frame):
                                 text=vt.name, font=("TkDefaultFont", 8),
                                 fill="#444444", anchor="w")
 
+    # ── Helper: nearest connection ────────────────────────────────────────
+
+    def _nearest_connection(self, sx: float, sy: float, max_px: float = 12.0):
+        """Return (conn_id, t) for the connection whose line is closest to screen point (sx,sy), or None."""
+        best_dist = max_px
+        best = None
+        for conn in self._connections.values():
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start is None or end is None:
+                continue
+            x1, y1 = self._w2s(*start)
+            x2, y2 = self._w2s(*end)
+            dx, dy = x2 - x1, y2 - y1
+            length_sq = dx*dx + dy*dy
+            if length_sq < 1:
+                continue
+            t = max(0.0, min(1.0, ((sx-x1)*dx + (sy-y1)*dy) / length_sq))
+            px, py = x1 + t*dx, y1 + t*dy
+            dist = math.hypot(sx-px, sy-py)
+            if dist < best_dist:
+                best_dist = dist
+                best = (conn.id, t)
+        return best
+
     # ── Hit testing ───────────────────────────────────────────────────────
 
     def _hit_bus(self, wx: float, wy: float) -> Optional[str]:
@@ -872,19 +1046,57 @@ class Diagram(tk.Frame):
                 return vt.id
         return None
 
+    def _hit_breaker(self, sx: float, sy: float) -> Optional[str]:
+        """Return the id of the breaker closest to screen point within 10px."""
+        for br in self._breakers.values():
+            conn = self._connections.get(br.connection_id)
+            if conn is None:
+                continue
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start is None or end is None:
+                continue
+            x1, y1 = self._w2s(*start)
+            x2, y2 = self._w2s(*end)
+            cx = x1 + (x2 - x1) * br.t
+            cy = y1 + (y2 - y1) * br.t
+            if math.hypot(sx - cx, sy - cy) < 10:
+                return br.id
+        return None
+
+    def _hit_disconnect(self, sx: float, sy: float) -> Optional[str]:
+        """Return the id of the disconnect closest to screen point within 10px."""
+        for dc in self._disconnects.values():
+            conn = self._connections.get(dc.connection_id)
+            if conn is None:
+                continue
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start is None or end is None:
+                continue
+            x1, y1 = self._w2s(*start)
+            x2, y2 = self._w2s(*end)
+            cx = x1 + (x2 - x1) * dc.t
+            cy = y1 + (y2 - y1) * dc.t
+            if math.hypot(sx - cx, sy - cy) < 10:
+                return dc.id
+        return None
+
     # ── Mouse events ──────────────────────────────────────────────────────
 
     def _on_press(self, event: tk.Event) -> None:
         wx, wy = self._s2w(event.x, event.y)
 
         if self._tool == TOOL_SELECT:
-            xfmr_id = self._hit_transformer(wx, wy)
-            src_id  = self._hit_source(wx, wy)
-            load_id = self._hit_load(wx, wy)
-            ct_id   = self._hit_ct(event.x, event.y)
-            vt_id   = self._hit_vt(wx, wy)
-            bus_id  = self._hit_bus(wx, wy)
-            conn_id = self._hit_connection(event.x, event.y)
+            xfmr_id  = self._hit_transformer(wx, wy)
+            src_id   = self._hit_source(wx, wy)
+            load_id  = self._hit_load(wx, wy)
+            ct_id    = self._hit_ct(event.x, event.y)
+            vt_id    = self._hit_vt(wx, wy)
+            br_id    = self._hit_breaker(event.x, event.y)
+            dc_id    = self._hit_disconnect(event.x, event.y)
+            bus_id   = self._hit_bus(wx, wy)
+            conn_id  = self._hit_connection(event.x, event.y)
             if xfmr_id:
                 self._begin_drag("transformer", xfmr_id, wx, wy)
             elif src_id:
@@ -895,6 +1107,10 @@ class Diagram(tk.Frame):
                 self._set_selection("ct", ct_id)
             elif vt_id:
                 self._set_selection("vt", vt_id)
+            elif br_id:
+                self._set_selection("breaker", br_id)
+            elif dc_id:
+                self._set_selection("disconnect", dc_id)
             elif bus_id:
                 self._begin_drag("bus", bus_id, wx, wy)
             elif conn_id:
@@ -984,6 +1200,22 @@ class Diagram(tk.Frame):
                 vid = f"VT-{len(self._vts) + 1}"
                 self._vts[vid] = DiagramVT(vid, vid, bus_id, wx)
                 self._set_selection("vt", vid)
+
+        elif self._tool == TOOL_BREAKER:
+            result = self._nearest_connection(event.x, event.y)
+            if result:
+                conn_id, t = result
+                bid = f"BKR-{len(self._breakers) + 1}"
+                self._breakers[bid] = DiagramBreaker(bid, bid, conn_id, t)
+                self._set_selection("breaker", bid)
+
+        elif self._tool == TOOL_DISCONNECT:
+            result = self._nearest_connection(event.x, event.y)
+            if result:
+                conn_id, t = result
+                did = f"DSW-{len(self._disconnects) + 1}"
+                self._disconnects[did] = DiagramDisconnect(did, did, conn_id, t)
+                self._set_selection("disconnect", did)
 
         elif self._tool == TOOL_DELETE:
             self._delete_at(event, wx, wy)
