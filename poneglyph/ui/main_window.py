@@ -22,6 +22,50 @@ from poneglyph.ui.properties import PropertiesPanel
 from poneglyph.loadtest.log_pose import LogPosePanel
 
 
+class DrawingEditDialog(tk.Toplevel):
+    """Modal dialog to add or edit a drawing registry entry."""
+
+    def __init__(self, parent, existing: dict = None, on_save=None):
+        super().__init__(parent)
+        self.title("Edit Drawing" if existing else "Add Drawing")
+        self.resizable(False, False)
+        self.grab_set()
+        self._on_save = on_save
+        self._orig_name = existing.get("name", "") if existing else ""
+        self._build(existing or {})
+
+    def _build(self, d):
+        pad = {"padx": 8, "pady": 3}
+        f = tk.Frame(self, padx=12, pady=10)
+        f.pack(fill=tk.BOTH, expand=True)
+        f.columnconfigure(1, weight=1)
+
+        labels = ["Drawing name", "Title", "Revision", "URL", "Notes"]
+        attrs  = ["name", "title", "rev", "url", "notes"]
+        self._vars = {}
+        for r, (lbl, attr) in enumerate(zip(labels, attrs)):
+            tk.Label(f, text=lbl, anchor="w").grid(row=r, column=0, sticky="w", **pad)
+            v = tk.StringVar(value=d.get(attr, ""))
+            self._vars[attr] = v
+            width = 50 if attr in ("url", "notes") else 30
+            tk.Entry(f, textvariable=v, width=width).grid(row=r, column=1, sticky="ew", **pad)
+
+        btn = tk.Frame(self)
+        btn.pack(fill=tk.X, padx=12, pady=(0, 10))
+        tk.Button(btn, text="Save", command=self._save).pack(side=tk.RIGHT, padx=4)
+        tk.Button(btn, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+
+    def _save(self):
+        data = {k: v.get().strip() for k, v in self._vars.items()}
+        if not data["name"]:
+            messagebox.showwarning("Drawing name required",
+                                   "Please enter a drawing name.", parent=self)
+            return
+        if self._on_save:
+            self._on_save(self._orig_name, data)
+        self.destroy()
+
+
 class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -224,26 +268,84 @@ class MainWindow:
         drw_frame = tk.Frame(nb)
         nb.add(drw_frame, text="Drawings")
 
-        # Drawings toolbar (stub — drawing-specific tools go here later)
-        drw_bar = tk.Frame(drw_frame, bd=1, relief="raised")
-        drw_bar.pack(side=tk.TOP, fill=tk.X)
-        self._drw_toolbar = drw_bar   # kept for future tool buttons
+        drw_nb = ttk.Notebook(drw_frame)
+        drw_nb.pack(fill=tk.BOTH, expand=True)
 
-        # Inner content frame uses grid (can't mix grid+pack in same parent)
-        drw_content = tk.Frame(drw_frame)
-        drw_content.pack(fill=tk.BOTH, expand=True)
-        drw_content.columnconfigure(0, weight=1)
-        drw_content.rowconfigure(0, weight=1)
+        # ── Sub-tab 1: Registry ──────────────────────────────────────────────
+        reg_frame = tk.Frame(drw_nb)
+        drw_nb.add(reg_frame, text="Registry")
+
+        reg_bar = tk.Frame(reg_frame, bd=1, relief="raised")
+        reg_bar.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Button(reg_bar, text="+ Add", relief="flat",
+                  command=lambda: DrawingEditDialog(self.root, on_save=self._drw_add)
+                  ).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(reg_bar, text="Edit", relief="flat",
+                  command=self._drw_open_edit_dialog).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(reg_bar, text="Delete", relief="flat",
+                  command=self._drw_delete).pack(side=tk.LEFT, padx=2, pady=2)
+
+        ttk.Separator(reg_bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=2)
+
+        tk.Button(reg_bar, text="Scan SLD", relief="flat",
+                  command=self._drw_scan_sld).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(reg_bar, text="Index", relief="flat",
+                  command=self._drw_show_index).pack(side=tk.LEFT, padx=2, pady=2)
+
+        ttk.Separator(reg_bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=2)
+
+        tk.Button(reg_bar, text="⬇ Download All", relief="flat",
+                  command=self._drw_download_all).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(reg_bar, text="\U0001f5a8 Print Selected", relief="flat",
+                  command=self._drw_print_selected).pack(side=tk.LEFT, padx=2, pady=2)
+        tk.Button(reg_bar, text="\U0001f5a8 Print All", relief="flat",
+                  command=self._drw_print_all).pack(side=tk.LEFT, padx=2, pady=2)
+
+        reg_content = tk.Frame(reg_frame)
+        reg_content.pack(fill=tk.BOTH, expand=True)
+        reg_content.columnconfigure(0, weight=1)
+        reg_content.rowconfigure(0, weight=1)
+
+        reg_cols = ("drawing", "title", "revision", "url", "notes")
+        self._reg_tree = ttk.Treeview(reg_content, columns=reg_cols, show="headings",
+                                      selectmode="browse")
+        self._reg_tree.heading("drawing",  text="Drawing")
+        self._reg_tree.heading("title",    text="Title")
+        self._reg_tree.heading("revision", text="Revision")
+        self._reg_tree.heading("url",      text="URL")
+        self._reg_tree.heading("notes",    text="Notes")
+        self._reg_tree.column("drawing",  width=180)
+        self._reg_tree.column("title",    width=200)
+        self._reg_tree.column("revision", width=70)
+        self._reg_tree.column("url",      width=280)
+        self._reg_tree.column("notes",    width=200)
+        reg_vsb = ttk.Scrollbar(reg_content, orient="vertical", command=self._reg_tree.yview)
+        self._reg_tree.configure(yscrollcommand=reg_vsb.set)
+        self._reg_tree.grid(row=0, column=0, sticky="nsew")
+        reg_vsb.grid(row=0, column=1, sticky="ns")
+        self._reg_tree.bind("<Double-1>", lambda _e: self._drw_open_edit_dialog())
+        self._reg_tree.bind("<Control-1>", self._drw_ctrl_click)
+
+        # ── Sub-tab 2: Device Links ──────────────────────────────────────────
+        lnk_frame = tk.Frame(drw_nb)
+        drw_nb.add(lnk_frame, text="Device Links")
+
+        lnk_content = tk.Frame(lnk_frame)
+        lnk_content.pack(fill=tk.BOTH, expand=True)
+        lnk_content.columnconfigure(0, weight=1)
+        lnk_content.rowconfigure(0, weight=1)
 
         cols = ("device", "type", "drawing")
-        self._drw_tree = ttk.Treeview(drw_content, columns=cols, show="headings", selectmode="browse")
+        self._drw_tree = ttk.Treeview(lnk_content, columns=cols, show="headings",
+                                      selectmode="browse")
         self._drw_tree.heading("device",  text="Device")
         self._drw_tree.heading("type",    text="Type")
         self._drw_tree.heading("drawing", text="Drawing")
         self._drw_tree.column("device",  width=140)
         self._drw_tree.column("type",    width=80)
         self._drw_tree.column("drawing", width=200)
-        vsb = ttk.Scrollbar(drw_content, orient="vertical", command=self._drw_tree.yview)
+        vsb = ttk.Scrollbar(lnk_content, orient="vertical", command=self._drw_tree.yview)
         self._drw_tree.configure(yscrollcommand=vsb.set)
         self._drw_tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
@@ -264,6 +366,7 @@ class MainWindow:
     def _on_tab_changed(self, event):
         tab = self._main_nb.index(self._main_nb.select())
         if tab == 1:
+            self._drw_refresh_registry()
             self._refresh_drawings_tab()
         elif tab == 2:
             self._load_test.set_project(
@@ -513,6 +616,203 @@ class MainWindow:
 
     def _set_status(self, msg: str) -> None:
         self._status_var.set(msg)
+
+    # ── Drawing registry ──────────────────────────────────────────────────
+
+    def _drw_refresh_registry(self):
+        """Repopulate the registry treeview from diagram._drawings."""
+        for item in self._reg_tree.get_children():
+            self._reg_tree.delete(item)
+        for name in sorted(self.diagram._drawings.keys()):
+            d = self.diagram._drawings[name]
+            self._reg_tree.insert("", tk.END, iid=name, values=(
+                d.name,
+                getattr(d, "title", ""),
+                d.rev,
+                d.url,
+                getattr(d, "notes", ""),
+            ))
+
+    def _drw_ctrl_click(self, event):
+        import webbrowser
+        item = self._reg_tree.identify_row(event.y)
+        if not item:
+            return
+        d = self.diagram._drawings.get(item)
+        if d and d.url:
+            webbrowser.open(d.url)
+
+    def _drw_add(self, _orig_name, data):
+        """Callback from DrawingEditDialog — add new entry."""
+        from poneglyph.ui.diagram import DiagramDrawing
+        name = data["name"]
+        self.diagram._drawings[name] = DiagramDrawing(
+            name=name,
+            url=data.get("url", ""),
+            rev=data.get("rev", ""),
+            description=data.get("title", ""),
+            title=data.get("title", ""),
+            notes=data.get("notes", ""),
+        )
+        self._drw_refresh_registry()
+        self.diagram.redraw()
+
+    def _drw_edit(self, orig_name, data):
+        """Callback from DrawingEditDialog — update existing entry."""
+        from poneglyph.ui.diagram import DiagramDrawing
+        new_name = data["name"]
+        self.diagram._drawings.pop(orig_name, None)
+        self.diagram._drawings[new_name] = DiagramDrawing(
+            name=new_name,
+            url=data.get("url", ""),
+            rev=data.get("rev", ""),
+            description=data.get("title", ""),
+            title=data.get("title", ""),
+            notes=data.get("notes", ""),
+        )
+        self._drw_refresh_registry()
+        self.diagram.redraw()
+
+    def _drw_delete(self):
+        sel = self._reg_tree.selection()
+        if not sel:
+            return
+        name = self._reg_tree.item(sel[0])["values"][0]
+        if messagebox.askyesno("Delete drawing",
+                               f"Remove '{name}' from the registry?",
+                               parent=self.root):
+            self.diagram._drawings.pop(name, None)
+            self._drw_refresh_registry()
+            self.diagram.redraw()
+
+    def _drw_open_edit_dialog(self):
+        sel = self._reg_tree.selection()
+        if not sel:
+            return
+        name = sel[0]
+        d = self.diagram._drawings.get(name)
+        if d is None:
+            return
+        existing = {
+            "name":  d.name,
+            "title": getattr(d, "title", getattr(d, "description", "")),
+            "rev":   d.rev,
+            "url":   d.url,
+            "notes": getattr(d, "notes", ""),
+        }
+        DrawingEditDialog(self.root, existing=existing, on_save=self._drw_edit)
+
+    def _drw_scan_sld(self):
+        """Walk all device_drawings lists; add any names not yet in registry."""
+        from poneglyph.ui.diagram import DiagramDrawing
+        added = 0
+        all_devs = (
+            list(self.diagram._cts.values()) + list(self.diagram._vts.values()) +
+            list(self.diagram._cttbs.values()) + list(self.diagram._testblocks.values()) +
+            list(self.diagram._relays.values()) + list(self.diagram._breakers.values()) +
+            list(self.diagram._disconnects.values()) + list(self.diagram._transformers.values())
+        )
+        for dev in all_devs:
+            for drw_name in getattr(dev, "device_drawings", []):
+                if drw_name and drw_name not in self.diagram._drawings:
+                    self.diagram._drawings[drw_name] = DiagramDrawing(name=drw_name)
+                    added += 1
+        self._drw_refresh_registry()
+        messagebox.showinfo("Scan SLD", f"Added {added} new drawing(s) to the registry.",
+                            parent=self.root)
+
+    def _drw_show_index(self):
+        """Show cross-reference: drawing → devices that reference it."""
+        lines = {}
+        all_devs = (
+            list(self.diagram._cts.values()) + list(self.diagram._vts.values()) +
+            list(self.diagram._cttbs.values()) + list(self.diagram._testblocks.values()) +
+            list(self.diagram._relays.values()) + list(self.diagram._breakers.values()) +
+            list(self.diagram._disconnects.values()) + list(self.diagram._transformers.values())
+        )
+        for dev in all_devs:
+            for drw_name in getattr(dev, "device_drawings", []):
+                lines.setdefault(drw_name, []).append(dev.name)
+        if not lines:
+            messagebox.showinfo("Drawing Index", "No device–drawing links found.", parent=self.root)
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Drawing Index")
+        dlg.grab_set()
+        tv = ttk.Treeview(dlg, columns=("drawing", "devices"), show="headings")
+        tv.heading("drawing", text="Drawing")
+        tv.heading("devices", text="Devices")
+        tv.column("drawing", width=200)
+        tv.column("devices", width=400)
+        for drw_name in sorted(lines.keys()):
+            tv.insert("", tk.END, values=(drw_name, ", ".join(sorted(lines[drw_name]))))
+        tv.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        tk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=(0, 8))
+
+    def _drw_download_all(self):
+        """Download all drawings with a URL into <project>/Drawings/<name>/."""
+        import threading, urllib.request
+        if not self._current_file:
+            messagebox.showwarning("No project", "Save the project first to set a download folder.",
+                                   parent=self.root)
+            return
+        drawings_dir = self._current_file.parent / "Drawings"
+        drawings_dir.mkdir(exist_ok=True)
+        to_download = [(n, d) for n, d in self.diagram._drawings.items() if d.url]
+        if not to_download:
+            messagebox.showinfo("Download All", "No drawings have a URL set.", parent=self.root)
+            return
+
+        def _worker():
+            ok, fail = 0, 0
+            for name, d in to_download:
+                sub = drawings_dir / name.replace("/", "_")
+                sub.mkdir(exist_ok=True)
+                fname = d.url.rsplit("/", 1)[-1] or f"{name}.pdf"
+                dest  = sub / fname
+                try:
+                    urllib.request.urlretrieve(d.url, dest)
+                    ok += 1
+                except Exception:
+                    fail += 1
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Download complete", f"Downloaded {ok}, failed {fail}.", parent=self.root))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._set_status(f"Downloading {len(to_download)} drawing(s)…")
+
+    def _drw_print_selected(self):
+        import subprocess, sys
+        sel = self._reg_tree.selection()
+        if not sel or not self._current_file:
+            return
+        name = self._reg_tree.item(sel[0])["values"][0]
+        sub = self._current_file.parent / "Drawings" / name.replace("/", "_")
+        files = list(sub.iterdir()) if sub.exists() else []
+        if not files:
+            messagebox.showwarning("Print", f"No downloaded file found for '{name}'.",
+                                   parent=self.root)
+            return
+        for f in files:
+            if sys.platform == "win32":
+                import os; os.startfile(str(f), "print")
+            else:
+                subprocess.Popen(["lpr", str(f)])
+
+    def _drw_print_all(self):
+        import subprocess, sys
+        if not self._current_file:
+            return
+        drawings_dir = self._current_file.parent / "Drawings"
+        if not drawings_dir.exists():
+            return
+        for sub in drawings_dir.iterdir():
+            if sub.is_dir():
+                for f in sub.iterdir():
+                    if sys.platform == "win32":
+                        import os; os.startfile(str(f), "print")
+                    else:
+                        subprocess.Popen(["lpr", str(f)])
 
 
 class VoltageColourDialog(tk.Toplevel):

@@ -579,6 +579,8 @@ class DiagramDrawing:
     rev: str = ""               # revision letter e.g. "C"
     description: str = ""
     is_h_type: bool = False     # auto-set when second segment starts with H
+    title: str = ""
+    notes: str = ""
 
     def __post_init__(self):
         parts = self.name.split("-")
