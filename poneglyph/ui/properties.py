@@ -19,6 +19,105 @@ from poneglyph.ui.diagram import (
 )
 
 
+class DrawingPickerDialog(tk.Toplevel):
+    """Modal popup to attach drawings from project registry to a device."""
+
+    def __init__(self, parent, device, diagram, on_change):
+        super().__init__(parent)
+        self.title("Attach Drawings")
+        self.resizable(True, True)
+        self.grab_set()
+        self._device = device
+        self._diagram = diagram
+        self._on_change = on_change
+        self._build()
+
+    def _build(self):
+        # Left: project drawings registry listbox
+        # Right: device's current drawings list
+        # Buttons: Add >> and << Remove, plus a manual entry
+
+        main = tk.Frame(self)
+        main.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        main.columnconfigure(0, weight=1)
+        main.columnconfigure(2, weight=1)
+
+        tk.Label(main, text="Project drawings", font=("TkDefaultFont", 9, "bold")).grid(
+            row=0, column=0, sticky="w")
+        tk.Label(main, text="Attached to device", font=("TkDefaultFont", 9, "bold")).grid(
+            row=0, column=2, sticky="w")
+
+        # Registry listbox
+        reg_frame = tk.Frame(main)
+        reg_frame.grid(row=1, column=0, sticky="nsew", pady=(4,0))
+        reg_lb = tk.Listbox(reg_frame, height=12, selectmode=tk.EXTENDED, exportselection=False)
+        reg_sb = ttk.Scrollbar(reg_frame, orient="vertical", command=reg_lb.yview)
+        reg_lb.configure(yscrollcommand=reg_sb.set)
+        reg_lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        reg_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        drawings = {}
+        if self._diagram is not None:
+            drawings = getattr(self._diagram, "_drawings", {})
+        for dname in sorted(drawings.keys()):
+            reg_lb.insert(tk.END, dname)
+
+        # Middle buttons
+        mid = tk.Frame(main)
+        mid.grid(row=1, column=1, padx=8)
+        tk.Button(mid, text="Add >>", command=lambda: self._add(reg_lb, dev_lb)).pack(pady=4)
+        tk.Button(mid, text="<< Remove", command=lambda: self._remove(dev_lb)).pack(pady=4)
+
+        # Device drawings listbox
+        dev_frame = tk.Frame(main)
+        dev_frame.grid(row=1, column=2, sticky="nsew", pady=(4,0))
+        dev_lb = tk.Listbox(dev_frame, height=12, selectmode=tk.EXTENDED, exportselection=False)
+        dev_sb = ttk.Scrollbar(dev_frame, orient="vertical", command=dev_lb.yview)
+        dev_lb.configure(yscrollcommand=dev_sb.set)
+        dev_lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        dev_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        for d in getattr(self._device, "device_drawings", []):
+            dev_lb.insert(tk.END, d)
+
+        # Manual entry row
+        manual_frame = tk.Frame(self)
+        manual_frame.pack(fill=tk.X, padx=8, pady=(0,4))
+        tk.Label(manual_frame, text="Add manually:").pack(side=tk.LEFT)
+        manual_var = tk.StringVar()
+        tk.Entry(manual_frame, textvariable=manual_var, width=20).pack(side=tk.LEFT, padx=4)
+        tk.Button(manual_frame, text="Add",
+                  command=lambda: self._add_manual(manual_var, dev_lb)).pack(side=tk.LEFT)
+
+        # Bottom buttons
+        btn_row = tk.Frame(self)
+        btn_row.pack(fill=tk.X, padx=8, pady=(0,8))
+        tk.Button(btn_row, text="OK", command=lambda: self._ok(dev_lb)).pack(side=tk.RIGHT, padx=4)
+        tk.Button(btn_row, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+
+    def _add(self, reg_lb, dev_lb):
+        existing = set(dev_lb.get(0, tk.END))
+        for i in reg_lb.curselection():
+            name = reg_lb.get(i)
+            if name not in existing:
+                dev_lb.insert(tk.END, name)
+                existing.add(name)
+
+    def _remove(self, dev_lb):
+        for i in reversed(dev_lb.curselection()):
+            dev_lb.delete(i)
+
+    def _add_manual(self, var, dev_lb):
+        name = var.get().strip()
+        if name and name not in dev_lb.get(0, tk.END):
+            dev_lb.insert(tk.END, name)
+            var.set("")
+
+    def _ok(self, dev_lb):
+        self._device.device_drawings = list(dev_lb.get(0, tk.END))
+        if self._on_change:
+            self._on_change()
+        self.destroy()
+
+
 class _RowCounter:
     """Hands out monotonically increasing grid row indices."""
 
@@ -922,7 +1021,6 @@ class PropertiesPanel(tk.Frame):
         fields = []
         if hasattr(obj, "location"):    fields.append(("Location",     "location"))
         if hasattr(obj, "panel"):       fields.append(("Panel",        "panel"))
-        if hasattr(obj, "drawing"):     fields.append(("Drawing",      "drawing"))
         if hasattr(obj, "drawing_cell") and getattr(obj, "drawing_cell", None) is not None:
             fields.append(("Drawing cell", "drawing_cell"))
         if hasattr(obj, "notes"):       fields.append(("Notes",        "notes"))
@@ -940,34 +1038,15 @@ class PropertiesPanel(tk.Frame):
             vars_[attr] = v
             self._row(label, v, start_row=row)
             row += 1
-        # Drawings registry listbox
-        if fields:
-            tk.Label(self._body, text="Drawings Registry",
-                     font=("TkDefaultFont", 8, "bold"), fg="#333").grid(
-                row=row, column=0, columnspan=2, sticky="w")
+        if hasattr(obj, "device_drawings"):
+            tk.Button(self._body, text="Drawings…",
+                      command=lambda: DrawingPickerDialog(self, obj, getattr(self, "_diagram", None), self._on_change)
+                      ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
             row += 1
-            lb_frame = tk.Frame(self._body)
-            lb_frame.grid(row=row, column=0, columnspan=2, sticky="ew")
-            lb_frame.columnconfigure(0, weight=1)
-            lb = tk.Listbox(lb_frame, height=5, selectmode=tk.SINGLE)
-            lb.grid(row=0, column=0, sticky="ew")
-            sb = ttk.Scrollbar(lb_frame, orient="vertical", command=lb.yview)
-            sb.grid(row=0, column=1, sticky="ns")
-            lb.configure(yscrollcommand=sb.set)
-            drawings = {}
-            if self._diagram is not None:
-                drawings = getattr(self._diagram, "_drawings", {})
-            for dname in sorted(drawings.keys()):
-                lb.insert(tk.END, dname)
+            count = len(getattr(obj, "device_drawings", []))
+            tk.Label(self._body, text=f"{count} drawing(s) attached",
+                     fg="#666666", font=("TkDefaultFont", 8)).grid(row=row, column=0, columnspan=2, sticky="w")
             row += 1
-            if "drawing" in vars_:
-                def _use_sel(lb=lb, v=vars_["drawing"]):
-                    sel = lb.curselection()
-                    if sel:
-                        v.set(lb.get(sel[0]))
-                tk.Button(self._body, text="Use selected drawing",
-                          command=_use_sel).grid(row=row, column=0, columnspan=2, sticky="w")
-                row += 1
         return row, vars_
 
     # ── Internal ──────────────────────────────────────────────────────────

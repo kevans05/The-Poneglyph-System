@@ -184,6 +184,13 @@ class DiagramTransformer:
     label_ox: float = 0.0
     label_oy: float = 0.0
     rotation: int = 0               # degrees CCW: 0 / 90 / 180 / 270
+    # ── Extended device fields ────────────────────────────────────────────
+    device_drawings: list = None
+    drawing_cell: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
     @property
     def top_y(self) -> float:
@@ -231,6 +238,13 @@ class DiagramSource:
     base_kv: float = 0.0
     label_ox: float = 0.0
     label_oy: float = 0.0
+    # ── Extended device fields ────────────────────────────────────────────
+    device_drawings: list = None
+    drawing_cell: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
 
 @dataclass
@@ -270,7 +284,13 @@ class DiagramLoad:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
+    device_drawings: list = None
+    drawing_cell: str = ""
     notes: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
     # ── Helpers ───────────────────────────────────────────────────────────
     @staticmethod
@@ -382,9 +402,13 @@ class DiagramCT:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
     @property
     def ratio_str(self) -> str:
@@ -411,13 +435,15 @@ class DiagramVT:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
 
     def __post_init__(self):
         if self.sec_waypoints is None:
             self.sec_waypoints = []
+        if self.device_drawings is None:
+            self.device_drawings = []
 
     @property
     def ratio_str(self) -> str:
@@ -438,9 +464,13 @@ class DiagramCTTB:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
 @dataclass
 class DiagramTestBlock:
@@ -456,9 +486,13 @@ class DiagramTestBlock:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
 
 @dataclass
@@ -472,13 +506,15 @@ class DiagramRelay:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
 
     def __post_init__(self):
         if self.windings is None:
             self.windings = ["W1"]
+        if self.device_drawings is None:
+            self.device_drawings = []
 
 @dataclass
 class DiagramRelayWire:
@@ -507,9 +543,13 @@ class DiagramBreaker:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
 
 @dataclass
@@ -522,9 +562,13 @@ class DiagramDisconnect:
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
-    drawing: str = ""
+    device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+
+    def __post_init__(self):
+        if self.device_drawings is None:
+            self.device_drawings = []
 
 
 @dataclass
@@ -2295,7 +2339,7 @@ class Diagram(tk.Frame):
                 continue
             _, _, _, _, wx, wy = pts
             csx, csy = self._w2s(wx, wy)
-            if math.hypot(sx - csx, sy - csy) < 12 * self._scale:
+            if math.hypot(sx - csx, sy - csy) < 20 * self._scale:
                 return ct.id
         return None
 

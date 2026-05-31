@@ -134,11 +134,10 @@ class MainWindow:
         self._btn_protect = tk.Menubutton(bar, text="Protection ▾", width=12, relief="raised",
                                            direction="below")
         protect_menu = tk.Menu(self._btn_protect, tearoff=0)
-        protect_menu.add_command(label="Relay",      command=lambda: self._set_protect_tool(TOOL_RELAY))
-        protect_menu.add_command(label="Relay Wire", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE))
+        protect_menu.add_command(label="Relay",    command=lambda: self._set_protect_tool(TOOL_RELAY))
         protect_menu.add_separator()
-        protect_menu.add_command(label="CT Wire (CT/CTTB)", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_I))
-        protect_menu.add_command(label="VT Wire (VT/FT)",   command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_V))
+        protect_menu.add_command(label="CT Wire (CT / CTTB)", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_I))
+        protect_menu.add_command(label="VT Wire (VT / FT)",   command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_V))
         self._btn_protect["menu"] = protect_menu
         self._btn_protect.pack(side=tk.LEFT, padx=2, pady=2)
 
@@ -181,7 +180,7 @@ class MainWindow:
         self.root.bind("k", lambda _e: self._toggle_tool(TOOL_BREAKER,     self._set_switch_tool))
         self.root.bind("i", lambda _e: self._toggle_tool(TOOL_DISCONNECT,  self._set_switch_tool))
         self.root.bind("y", lambda _e: self._toggle_tool(TOOL_RELAY,      self._set_protect_tool))
-        self.root.bind("w", lambda _e: self._toggle_tool(TOOL_RELAY_WIRE, self._set_protect_tool))
+        self.root.bind("w", lambda _e: self._toggle_tool(TOOL_RELAY_WIRE_I, self._set_protect_tool))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
         self.root.bind("g", lambda _e: self.diagram.toggle_snap_grid())
         self.root.bind("<space>", lambda _e: self.diagram.toggle_selected_device())
