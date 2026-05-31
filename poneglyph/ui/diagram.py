@@ -6,6 +6,8 @@ Tools:
   T-Line        — click bus → click bus
   Feeder        — click bus → click empty point (dangling load end)
   Transformer   — click anywhere to place; near a bus = snaps top terminal to it
+  Source        — click anywhere to place a grid/generator source (slack)
+  Load          — click anywhere to place a load (PQ)
   CT            — click on an existing connection line
   VT            — click on a bus
   Delete        — click any element to remove it
@@ -13,13 +15,17 @@ Tools:
 Visual conventions (IEC 60617):
   Bus           — single thick horizontal line, name above, kV below
   T-Line/Feeder — thin line; breaker shown as small filled square
-  Transformer   — standalone component: IEC winding bumps, free or bus-snapped terminals
+  Transformer   — two coupled coil windings with an iron core between them;
+                  winding-connection indicators (wye / delta / zigzag) alongside
+  Source        — circle with a sine wave (AC source)
+  Load          — downward filled arrow
   CT            — circle around the conductor + secondary lead
   VT            — winding bumps hanging from a bus tap, IEC ground symbol
 """
 
 from __future__ import annotations
 
+import cmath
 import math
 import tkinter as tk
 from dataclasses import dataclass, field
@@ -28,12 +34,24 @@ from typing import Callable, Optional
 
 # ── Transformer world-space geometry constants ───────────────────────────────
 # All in world units so the symbol is correctly proportioned at any zoom level.
-# IEC 60617 simplified two-winding symbol: two circles, one per winding.
+# IEC 60617 coupled-coil symbol: two stacked coil windings, iron core between,
+# with the connecting conductor running straight down the centre axis.
 
-XFMR_R    = 20.0   # winding circle radius (world units)
-XFMR_LEAD = 12.0   # lead line from terminal to edge of first/last circle
-XFMR_HALF = XFMR_R * 2 + XFMR_LEAD   # = 52 world units (centre → terminal)
-XFMR_IND  = 8.0    # winding indicator symbol size (world units)
+XFMR_BR   = 7.0    # winding bump radius (world units)
+XFMR_NB   = 3      # bumps per winding
+XFMR_CORE = 12.0   # gap between the two windings (holds the iron-core lines)
+XFMR_LEAD = 14.0   # straight lead from terminal into the first bump
+XFMR_IND  = 9.0    # winding-connection indicator glyph size (world units)
+
+_WIND_SPAN = XFMR_NB * 2 * XFMR_BR                  # 42 world units per winding
+XFMR_HALF  = XFMR_LEAD + _WIND_SPAN + XFMR_CORE / 2  # centre → terminal (= 62)
+
+# ── Source / Load geometry ────────────────────────────────────────────────────
+SRC_R       = 16.0   # AC source circle radius (world units)
+SRC_OFFSET  = SRC_R * 2 + 16   # source centre distance above its bus
+LOAD_AH     = 12.0   # load arrowhead height (world units)
+LOAD_AW     = 7.0    # load arrowhead half-width (world units)
+LOAD_LEAD   = 30.0   # load lead length from bus to arrowhead base
 
 
 # ── Element data models ──────────────────────────────────────────────────────
@@ -46,6 +64,7 @@ class DiagramBus:
     x1: float
     y: float
     x2: float
+    v_solved: Optional[complex] = None   # per-unit voltage phasor after a solve
 
     @property
     def cx(self) -> float:
@@ -91,19 +110,24 @@ class DiagramTransformer:
     id: str
     name: str
     cx: float           # centre x (world)
-    cy: float           # centre y (world) — midpoint between the two winding circles
+    cy: float           # centre y (world) — midpoint between the two windings
     hv_bus: Optional[str] = None    # top terminal bus
     hv_tap_x: float = 0.0
     lv_bus: Optional[str] = None    # bottom terminal bus
     lv_tap_x: float = 0.0
-    r_pu: float = 0.01
+    # Ratings / electrical
+    mva: float = 10.0               # power rating (MVA)
+    hv_kv: float = 0.0              # nominal HV winding voltage (kV)
+    lv_kv: float = 0.0              # nominal LV winding voltage (kV)
+    z_pct: float = 10.0             # impedance (%Z on own MVA base)
+    tap_changer: str = "None"       # "None" | "LTC" | "DETC"
+    r_pu: float = 0.01              # kept for the solver fallback
     x_pu: float = 0.10
-    mva: float = 0.0
     # Winding configuration (IEC 60617)
-    hv_winding:   str  = "wye"    # "wye" | "delta" | "zigzag"
-    lv_winding:   str  = "delta"  # "wye" | "delta" | "zigzag"
-    hv_grounded:  bool = True     # neutral grounded (wye only)
-    lv_grounded:  bool = False
+    hv_winding:  str  = "wye"       # "wye" | "delta" | "zigzag"
+    lv_winding:  str  = "delta"
+    hv_grounded: bool = True        # neutral grounded (wye/zigzag only)
+    lv_grounded: bool = False
 
     @property
     def top_y(self) -> float:
@@ -112,6 +136,39 @@ class DiagramTransformer:
     @property
     def bot_y(self) -> float:
         return self.cy + XFMR_HALF
+
+    @property
+    def voltage_ratio(self) -> str:
+        if self.hv_kv and self.lv_kv:
+            return f"{self.hv_kv:g} : {self.lv_kv:g} kV"
+        return "—"
+
+
+@dataclass
+class DiagramSource:
+    """Grid / generator source. Defines the slack bus when attached to a bus."""
+    id: str
+    name: str
+    cx: float
+    cy: float
+    bus: Optional[str] = None
+    tap_x: float = 0.0
+    v_pu: float = 1.0
+    angle_deg: float = 0.0
+    base_kv: float = 0.0
+
+
+@dataclass
+class DiagramLoad:
+    """Constant-power (PQ) load."""
+    id: str
+    name: str
+    cx: float           # arrow-tip x (world)
+    cy: float           # arrow-tip y (world)
+    bus: Optional[str] = None
+    tap_x: float = 0.0
+    p_mw: float = 1.0
+    q_mvar: float = 0.5
 
 
 @dataclass
@@ -139,16 +196,20 @@ TOOL_BUS         = "bus"
 TOOL_TLINE       = "tline"
 TOOL_FEEDER      = "feeder"
 TOOL_TRANSFORMER = "transformer"
+TOOL_SOURCE      = "source"
+TOOL_LOAD        = "load"
 TOOL_CT          = "ct"
 TOOL_VT          = "vt"
 TOOL_DELETE      = "delete"
 
 TOOL_HINTS = {
-    TOOL_SELECT:      "Select: click to select; drag a bus or transformer to move it.",
+    TOOL_SELECT:      "Select: click to select; drag a bus, transformer, source or load to move it.",
     TOOL_BUS:         "Bus: click and drag horizontally to draw a bus bar.",
     TOOL_TLINE:       "T-Line: click a source bus, then click a destination bus.",
     TOOL_FEEDER:      "Feeder: click a bus, then click an empty point for the load end.",
     TOOL_TRANSFORMER: "Transformer: click to place. Near a bus → snaps to it automatically.",
+    TOOL_SOURCE:      "Power Source: click to place. Near a bus → snaps to it (defines the slack bus).",
+    TOOL_LOAD:        "Load: click to place. Near a bus → snaps to it.",
     TOOL_CT:          "Current Transformer: click on an existing line.",
     TOOL_VT:          "Voltage Transformer: click on a bus.",
     TOOL_DELETE:      "Delete: click any element to remove it.",
@@ -157,7 +218,7 @@ TOOL_HINTS = {
 BUS_WIDTH  = 4
 LINE_WIDTH = 2
 SNAP_TOL   = 16      # pixels for bus hit-tests
-XFMR_SNAP  = 32     # pixels for transformer bus-snap while hovering
+XFMR_SNAP  = 32      # pixels of Y tolerance for transformer/source/load bus-snap
 
 
 # ── Diagram canvas ────────────────────────────────────────────────────────────
@@ -178,6 +239,8 @@ class Diagram(tk.Frame):
         self._buses:        dict[str, DiagramBus]         = {}
         self._connections:  dict[str, DiagramConnection]  = {}
         self._transformers: dict[str, DiagramTransformer] = {}
+        self._sources:      dict[str, DiagramSource]      = {}
+        self._loads:        dict[str, DiagramLoad]        = {}
         self._cts:          dict[str, DiagramCT]          = {}
         self._vts:          dict[str, DiagramVT]          = {}
 
@@ -233,6 +296,8 @@ class Diagram(tk.Frame):
     def get_buses(self)        -> dict[str, DiagramBus]:         return self._buses
     def get_connections(self)  -> dict[str, DiagramConnection]:  return self._connections
     def get_transformers(self) -> dict[str, DiagramTransformer]: return self._transformers
+    def get_sources(self)      -> dict[str, DiagramSource]:      return self._sources
+    def get_loads(self)        -> dict[str, DiagramLoad]:        return self._loads
     def get_cts(self)          -> dict[str, DiagramCT]:          return self._cts
     def get_vts(self)          -> dict[str, DiagramVT]:          return self._vts
     def get_selection(self)    -> Optional[tuple[str, str]]:     return self._selection
@@ -241,9 +306,17 @@ class Diagram(tk.Frame):
         self._buses.clear()
         self._connections.clear()
         self._transformers.clear()
+        self._sources.clear()
+        self._loads.clear()
         self._cts.clear()
         self._vts.clear()
         self._selection = None
+        self.redraw()
+
+    def clear_results(self) -> None:
+        """Forget the last power-flow solution (clears voltage annotations)."""
+        for bus in self._buses.values():
+            bus.v_solved = None
         self.redraw()
 
     # ── Coordinates ───────────────────────────────────────────────────────
@@ -263,6 +336,10 @@ class Diagram(tk.Frame):
             self._draw_connection(conn)
         for xfmr in self._transformers.values():
             self._draw_transformer(xfmr)
+        for src in self._sources.values():
+            self._draw_source(src)
+        for ld in self._loads.values():
+            self._draw_load(ld)
         for bus in self._buses.values():
             self._draw_bus(bus)
         for ct in self._cts.values():
@@ -299,6 +376,16 @@ class Diagram(tk.Frame):
         if bus.kv:
             self.canvas.create_text(cx, sy + 10, text=f"{bus.kv} kV",
                                     font=("TkDefaultFont", 8), fill="#555555", anchor="n")
+        if bus.v_solved is not None:
+            mag = abs(bus.v_solved)
+            ang = math.degrees(cmath.phase(bus.v_solved))
+            kv_actual = mag * bus.kv if bus.kv else 0.0
+            txt = f"{mag:.3f} pu ∠{ang:.1f}°"
+            if kv_actual:
+                txt += f"  ({kv_actual:.2f} kV)"
+            self.canvas.create_text(cx, sy + 24, text=txt,
+                                    font=("TkDefaultFont", 8, "bold"),
+                                    fill="#118811", anchor="n")
 
     # ── Connections (T-line / feeder) ─────────────────────────────────────
 
@@ -336,116 +423,211 @@ class Diagram(tk.Frame):
         self.canvas.create_polygon(x, y, x - s, y + s * 1.6, x + s, y + s * 1.6,
                                    fill="white", outline=colour, width=LINE_WIDTH)
 
-    # ── Transformer (standalone, world-space IEC symbol) ─────────────────
+    # ── Transformer (standalone, world-space IEC coupled-coil symbol) ─────
 
     def _draw_transformer(self, xfmr: DiagramTransformer) -> None:
         sel    = self._selection == ("transformer", xfmr.id)
         colour = "#0066CC" if sel else "black"
-        r   = XFMR_R
-        rs  = r * self._scale   # circle radius in screen pixels
+        r    = XFMR_BR
+        n    = XFMR_NB
+        span = _WIND_SPAN
 
-        # ── HV (top) winding circle ───────────────────────────────────────
-        hv_cy_w = xfmr.cy - r
-        hv_sx, hv_sy = self._w2s(xfmr.cx, hv_cy_w)
-        self.canvas.create_oval(hv_sx - rs, hv_sy - rs, hv_sx + rs, hv_sy + rs,
-                                outline=colour, fill="white", width=LINE_WIDTH)
+        hv_top_w = xfmr.cy - XFMR_CORE / 2 - span   # top of HV winding bumps
+        lv_top_w = xfmr.cy + XFMR_CORE / 2          # top of LV winding bumps
+        lv_bot_w = lv_top_w + span                  # bottom of LV winding bumps
 
-        # ── LV (bottom) winding circle ────────────────────────────────────
-        lv_cy_w = xfmr.cy + r
-        lv_sx, lv_sy = self._w2s(xfmr.cx, lv_cy_w)
-        self.canvas.create_oval(lv_sx - rs, lv_sy - rs, lv_sx + rs, lv_sy + rs,
-                                outline=colour, fill="white", width=LINE_WIDTH)
-
-        # ── HV terminal connection ────────────────────────────────────────
-        # Line runs from bus (or free terminal) down to top edge of HV circle.
-        hv_circle_top_sx, hv_circle_top_sy = self._w2s(xfmr.cx, hv_cy_w - r)
-        if xfmr.hv_bus:
-            bus = self._buses.get(xfmr.hv_bus)
-            if bus:
-                bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
-                self.canvas.create_line(bsx, bsy, hv_circle_top_sx, hv_circle_top_sy,
-                                        fill=colour, width=LINE_WIDTH)
-        else:
-            top_sx, top_sy = self._w2s(xfmr.cx, xfmr.top_y)
-            self.canvas.create_line(top_sx, top_sy, hv_circle_top_sx, hv_circle_top_sy,
+        # ── HV terminal lead (top) ────────────────────────────────────────
+        hv_top_sx, hv_top_sy = self._w2s(xfmr.cx, hv_top_w)
+        if xfmr.hv_bus and xfmr.hv_bus in self._buses:
+            bus = self._buses[xfmr.hv_bus]
+            bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
+            self.canvas.create_line(bsx, bsy, hv_top_sx, hv_top_sy,
                                     fill=colour, width=LINE_WIDTH)
-            rd = max(3, 3 * self._scale)
-            self.canvas.create_oval(top_sx - rd, top_sy - rd, top_sx + rd, top_sy + rd,
-                                    fill=colour, outline=colour)
-
-        # ── LV terminal connection ────────────────────────────────────────
-        lv_circle_bot_sx, lv_circle_bot_sy = self._w2s(xfmr.cx, lv_cy_w + r)
-        if xfmr.lv_bus:
-            bus = self._buses.get(xfmr.lv_bus)
-            if bus:
-                bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
-                self.canvas.create_line(lv_circle_bot_sx, lv_circle_bot_sy, bsx, bsy,
-                                        fill=colour, width=LINE_WIDTH)
         else:
-            bot_sx, bot_sy = self._w2s(xfmr.cx, xfmr.bot_y)
-            self.canvas.create_line(lv_circle_bot_sx, lv_circle_bot_sy, bot_sx, bot_sy,
+            t_sx, t_sy = self._w2s(xfmr.cx, xfmr.top_y)
+            self.canvas.create_line(t_sx, t_sy, hv_top_sx, hv_top_sy,
                                     fill=colour, width=LINE_WIDTH)
-            rd = max(3, 3 * self._scale)
-            self.canvas.create_oval(bot_sx - rd, bot_sy - rd, bot_sx + rd, bot_sy + rd,
-                                    fill=colour, outline=colour)
+            self._terminal_dot(t_sx, t_sy, colour)
 
-        # ── Winding type indicators (to the right of each circle) ─────────
-        ind_x = xfmr.cx + r + 6
-        self._draw_winding_indicator(ind_x, hv_cy_w, xfmr.hv_winding, xfmr.hv_grounded, colour)
-        self._draw_winding_indicator(ind_x, lv_cy_w, xfmr.lv_winding, xfmr.lv_grounded, colour)
+        # ── HV winding coil (bumps bulge LEFT) ────────────────────────────
+        self._draw_coil(xfmr.cx, hv_top_w, n, r, bulge_left=True, colour=colour)
 
-        # ── Label ─────────────────────────────────────────────────────────
-        lsx, lsy = self._w2s(xfmr.cx + r + 6, xfmr.cy)
-        self.canvas.create_text(lsx, lsy, text=xfmr.name,
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        # ── Iron core: two short horizontal lines between the windings ────
+        core_half = (r + 4) * self._scale
+        for off in (-2.0, 2.0):
+            csx, csy = self._w2s(xfmr.cx, xfmr.cy + off)
+            self.canvas.create_line(csx - core_half, csy, csx + core_half, csy,
+                                    fill=colour, width=LINE_WIDTH)
+
+        # ── LV winding coil (bumps bulge RIGHT) ───────────────────────────
+        self._draw_coil(xfmr.cx, lv_top_w, n, r, bulge_left=False, colour=colour)
+
+        # ── LV terminal lead (bottom) ─────────────────────────────────────
+        lv_bot_sx, lv_bot_sy = self._w2s(xfmr.cx, lv_bot_w)
+        if xfmr.lv_bus and xfmr.lv_bus in self._buses:
+            bus = self._buses[xfmr.lv_bus]
+            bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
+            self.canvas.create_line(lv_bot_sx, lv_bot_sy, bsx, bsy,
+                                    fill=colour, width=LINE_WIDTH)
+        else:
+            b_sx, b_sy = self._w2s(xfmr.cx, xfmr.bot_y)
+            self.canvas.create_line(lv_bot_sx, lv_bot_sy, b_sx, b_sy,
+                                    fill=colour, width=LINE_WIDTH)
+            self._terminal_dot(b_sx, b_sy, colour)
+
+        # ── Winding-connection indicators (to the right of each winding) ──
+        ind_x  = xfmr.cx + r + 24
+        hv_mid = hv_top_w + span / 2
+        lv_mid = lv_top_w + span / 2
+        self._draw_winding_indicator(ind_x, hv_mid, xfmr.hv_winding, xfmr.hv_grounded, colour)
+        self._draw_winding_indicator(ind_x, lv_mid, xfmr.lv_winding, xfmr.lv_grounded, colour)
+
+        # ── Label (to the left) ───────────────────────────────────────────
+        lsx, lsy = self._w2s(xfmr.cx - r - 8, xfmr.cy)
+        label = xfmr.name
+        if xfmr.mva:
+            label += f"\n{xfmr.mva:g} MVA"
+        self.canvas.create_text(lsx, lsy, text=label, justify="right",
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="e")
+
+    def _terminal_dot(self, sx: float, sy: float, colour: str) -> None:
+        rd = max(3, 3 * self._scale)
+        self.canvas.create_oval(sx - rd, sy - rd, sx + rd, sy + rd,
+                                fill=colour, outline=colour)
+
+    def _draw_coil(self, cx_w: float, y_top_w: float, n: int, r: float,
+                   bulge_left: bool, colour: str) -> None:
+        """Draw a vertical coil of n half-loop bumps starting at y_top_w."""
+        N = 18
+        sign = -1.0 if bulge_left else 1.0
+        for i in range(n):
+            by = y_top_w + r + i * 2 * r
+            pts: list[float] = []
+            for j in range(N + 1):
+                t  = -math.pi / 2 + math.pi * j / N
+                wx = cx_w + sign * r * math.cos(t)
+                wy = by + r * math.sin(t)
+                sx, sy = self._w2s(wx, wy)
+                pts.extend([sx, sy])
+            if len(pts) >= 4:
+                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
 
     def _draw_winding_indicator(self, ax_w: float, ay_w: float,
                                 wtype: str, grounded: bool, colour: str) -> None:
-        """Draw IEC winding-connection indicator (wye/delta/zigzag) at world point."""
-        s  = XFMR_IND
-        s2 = s * self._scale
+        """Draw IEC winding-connection indicator (wye / delta / zigzag) at world point."""
+        s = XFMR_IND
 
         if wtype == "wye":
-            # Y: three arms at 120° from centre; neutral side points right (outward)
+            # Y / star: one arm up, two arms down-left and down-right.
             cx_s, cy_s = self._w2s(ax_w, ay_w)
-            for angle_deg in (0, 120, 240):
-                a  = math.radians(angle_deg)
-                ex = cx_s + s2 * math.cos(a)
-                ey = cy_s + s2 * math.sin(a)
+            for ang in (-math.pi / 2, math.pi / 6, 5 * math.pi / 6):
+                ex, ey = self._w2s(ax_w + s * math.cos(ang), ay_w + s * math.sin(ang))
                 self.canvas.create_line(cx_s, cy_s, ex, ey, fill=colour, width=LINE_WIDTH)
             if grounded:
-                # Stepped ground bars on the downward arm
-                gx, gy = self._w2s(ax_w, ay_w + s)
-                for i, frac in enumerate((1.0, 0.65, 0.35)):
-                    half = s2 * frac * 0.5
-                    off  = i * s2 * 0.3
-                    self.canvas.create_line(gx - half, gy + off, gx + half, gy + off,
-                                            fill=colour, width=LINE_WIDTH)
+                self._draw_ground_stub(ax_w, ay_w, colour)
 
         elif wtype == "delta":
-            # Equilateral triangle (point up, flat bottom)
-            h = s * 0.87
-            pts_w = [(ax_w, ay_w - h * 0.67),
-                     (ax_w - s, ay_w + h * 0.33),
-                     (ax_w + s, ay_w + h * 0.33)]
+            # Equilateral triangle, point up.
+            pts_w = [(ax_w, ay_w - s * 0.75),
+                     (ax_w - s * 0.7, ay_w + s * 0.55),
+                     (ax_w + s * 0.7, ay_w + s * 0.55)]
             pts_s: list[float] = []
             for wx, wy in pts_w:
-                sx, sy = self._w2s(wx, wy)
-                pts_s.extend([sx, sy])
+                px, py = self._w2s(wx, wy)
+                pts_s.extend([px, py])
             self.canvas.create_polygon(*pts_s, outline=colour, fill="", width=LINE_WIDTH)
 
         elif wtype == "zigzag":
-            # Two stacked Z-like segments representing interconnected zigzag winding
-            w = s * 0.7
-            for offset_y in (-s * 0.5, s * 0.5):
-                row_pts: list[float] = []
-                for wx, wy in [(ax_w - w, ay_w + offset_y - s * 0.25),
-                               (ax_w + w, ay_w + offset_y - s * 0.25),
-                               (ax_w - w, ay_w + offset_y + s * 0.25),
-                               (ax_w + w, ay_w + offset_y + s * 0.25)]:
-                    sx, sy = self._w2s(wx, wy)
-                    row_pts.extend([sx, sy])
-                self.canvas.create_line(*row_pts, fill=colour, width=LINE_WIDTH)
+            # Vertical zigzag (interconnected-star) glyph.
+            steps = [(0.0, -1.0), (0.55, -0.5), (-0.55, 0.0), (0.55, 0.5), (0.0, 1.0)]
+            pts_s = []
+            for fx, fy in steps:
+                px, py = self._w2s(ax_w + fx * s, ay_w + fy * s)
+                pts_s.extend([px, py])
+            self.canvas.create_line(*pts_s, fill=colour, width=LINE_WIDTH)
+            if grounded:
+                self._draw_ground_stub(ax_w, ay_w, colour)
+
+    def _draw_ground_stub(self, ax_w: float, ay_w: float, colour: str) -> None:
+        """Small IEC earth symbol on a short stub to the left of (ax_w, ay_w)."""
+        stub = XFMR_IND * 0.9
+        x0_sx, x0_sy = self._w2s(ax_w, ay_w)
+        end_sx, end_sy = self._w2s(ax_w - stub, ay_w)
+        self.canvas.create_line(x0_sx, x0_sy, end_sx, end_sy, fill=colour, width=LINE_WIDTH)
+        for k, half in enumerate((5.0, 3.0, 1.5)):
+            bx_w = ax_w - stub - k * 2.0
+            t_sx, t_sy = self._w2s(bx_w, ay_w - half)
+            b_sx, b_sy = self._w2s(bx_w, ay_w + half)
+            self.canvas.create_line(t_sx, t_sy, b_sx, b_sy, fill=colour, width=LINE_WIDTH)
+
+    # ── Source (AC source / grid / generator) ─────────────────────────────
+
+    def _draw_source(self, src: DiagramSource) -> None:
+        sel    = self._selection == ("source", src.id)
+        colour = "#0066CC" if sel else "black"
+        rs = SRC_R * self._scale
+        csx, csy = self._w2s(src.cx, src.cy)
+
+        # Lead from bottom of circle to bus (or free terminal).
+        bot_sx, bot_sy = self._w2s(src.cx, src.cy + SRC_R)
+        if src.bus and src.bus in self._buses:
+            bus = self._buses[src.bus]
+            tsx, tsy = self._w2s(bus.nearest_tap(src.tap_x), bus.y)
+            self.canvas.create_line(bot_sx, bot_sy, tsx, tsy, fill=colour, width=LINE_WIDTH)
+        else:
+            self._terminal_dot(bot_sx, bot_sy, colour)
+
+        self.canvas.create_oval(csx - rs, csy - rs, csx + rs, csy + rs,
+                                outline=colour, fill="white", width=LINE_WIDTH)
+
+        # Sine wave inside the circle.
+        half = SRC_R * 0.6
+        amp  = SRC_R * 0.38
+        pts: list[float] = []
+        N = 26
+        for k in range(N + 1):
+            frac = k / N
+            wx = src.cx - half + 2 * half * frac
+            wy = src.cy - amp * math.sin(2 * math.pi * frac)
+            sx, sy = self._w2s(wx, wy)
+            pts.extend([sx, sy])
+        self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
+
+        lsx, lsy = self._w2s(src.cx + SRC_R + 6, src.cy)
+        label = f"{src.name}\n{src.v_pu:g} pu"
+        self.canvas.create_text(lsx, lsy, text=label, justify="left",
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+
+    # ── Load (downward filled arrow) ──────────────────────────────────────
+
+    def _draw_load(self, ld: DiagramLoad) -> None:
+        sel    = self._selection == ("load", ld.id)
+        colour = "#0066CC" if sel else "black"
+
+        base_w = ld.cy - LOAD_AH                 # arrowhead base
+        tip_sx, tip_sy   = self._w2s(ld.cx, ld.cy)
+        base_sx, base_sy = self._w2s(ld.cx, base_w)
+
+        # Lead from bus (or free terminal) down to the arrowhead base.
+        if ld.bus and ld.bus in self._buses:
+            bus = self._buses[ld.bus]
+            tsx, tsy = self._w2s(bus.nearest_tap(ld.tap_x), bus.y)
+            self.canvas.create_line(tsx, tsy, base_sx, base_sy, fill=colour, width=LINE_WIDTH)
+        else:
+            top_sx, top_sy = self._w2s(ld.cx, base_w - LOAD_LEAD)
+            self.canvas.create_line(top_sx, top_sy, base_sx, base_sy, fill=colour, width=LINE_WIDTH)
+            self._terminal_dot(top_sx, top_sy, colour)
+
+        aw = LOAD_AW * self._scale
+        self.canvas.create_polygon(tip_sx, tip_sy,
+                                   base_sx - aw, base_sy,
+                                   base_sx + aw, base_sy,
+                                   fill=colour, outline=colour)
+
+        lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6, ld.cy - LOAD_AH / 2)
+        label = f"{ld.name}\n{ld.p_mw:g} MW / {ld.q_mvar:g} MVAr"
+        self.canvas.create_text(lsx, lsy, text=label, justify="left",
+                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── CT ────────────────────────────────────────────────────────────────
 
@@ -546,8 +728,8 @@ class Diagram(tk.Frame):
         return None
 
     def _snap_bus(self, wx: float, wy: float) -> Optional[str]:
-        """Snap for transformer placement: cursor must be over the bus bar (strict X)
-        but with a wide Y tolerance so the user can approach from above/below."""
+        """Snap for transformer/source/load placement: cursor must be over the bus
+        bar (strict X) but with a wide Y tolerance so the user can approach it."""
         tol_y = XFMR_SNAP / self._scale
         for bus in self._buses.values():
             if bus.x1 <= wx <= bus.x2 and abs(wy - bus.y) <= tol_y:
@@ -567,11 +749,24 @@ class Diagram(tk.Frame):
         return None
 
     def _hit_transformer(self, wx: float, wy: float) -> Optional[str]:
-        tol_x = XFMR_R * 2
+        tol_x = XFMR_BR * 2 + 4
         tol_y = XFMR_HALF
         for xfmr in self._transformers.values():
             if abs(wx - xfmr.cx) < tol_x and abs(wy - xfmr.cy) < tol_y:
                 return xfmr.id
+        return None
+
+    def _hit_source(self, wx: float, wy: float) -> Optional[str]:
+        for src in self._sources.values():
+            if math.hypot(wx - src.cx, wy - src.cy) < SRC_R + 4:
+                return src.id
+        return None
+
+    def _hit_load(self, wx: float, wy: float) -> Optional[str]:
+        for ld in self._loads.values():
+            top = ld.cy - LOAD_AH - LOAD_LEAD - 4
+            if abs(wx - ld.cx) < LOAD_AW + 6 and top <= wy <= ld.cy + 4:
+                return ld.id
         return None
 
     def _hit_ct(self, sx: float, sy: float) -> Optional[str]:
@@ -609,24 +804,24 @@ class Diagram(tk.Frame):
 
         if self._tool == TOOL_SELECT:
             xfmr_id = self._hit_transformer(wx, wy)
+            src_id  = self._hit_source(wx, wy)
+            load_id = self._hit_load(wx, wy)
             ct_id   = self._hit_ct(event.x, event.y)
             vt_id   = self._hit_vt(wx, wy)
             bus_id  = self._hit_bus(wx, wy)
             conn_id = self._hit_connection(event.x, event.y)
             if xfmr_id:
-                self._set_selection("transformer", xfmr_id)
-                self._drag_id     = xfmr_id
-                self._drag_kind   = "transformer"
-                self._drag_origin = (wx, wy)
+                self._begin_drag("transformer", xfmr_id, wx, wy)
+            elif src_id:
+                self._begin_drag("source", src_id, wx, wy)
+            elif load_id:
+                self._begin_drag("load", load_id, wx, wy)
             elif ct_id:
                 self._set_selection("ct", ct_id)
             elif vt_id:
                 self._set_selection("vt", vt_id)
             elif bus_id:
-                self._set_selection("bus", bus_id)
-                self._drag_id     = bus_id
-                self._drag_kind   = "bus"
-                self._drag_origin = (wx, wy)
+                self._begin_drag("bus", bus_id, wx, wy)
             elif conn_id:
                 self._set_selection("conn", conn_id)
             else:
@@ -658,13 +853,40 @@ class Diagram(tk.Frame):
                     id=tid, name=tid,
                     cx=tap_x,
                     cy=bus.y + XFMR_HALF,   # top_y == bus.y: HV terminal on the bus
-                    hv_bus=snap_id,
-                    hv_tap_x=tap_x,
+                    hv_bus=snap_id, hv_tap_x=tap_x,
+                    hv_kv=bus.kv or 0.0,
                 )
             else:
                 xfmr = DiagramTransformer(id=tid, name=tid, cx=wx, cy=wy)
             self._transformers[tid] = xfmr
             self._set_selection("transformer", tid)
+
+        elif self._tool == TOOL_SOURCE:
+            snap_id = self._snap_bus(wx, wy)
+            sid = f"SRC-{len(self._sources) + 1}"
+            if snap_id:
+                bus = self._buses[snap_id]
+                tap_x = bus.nearest_tap(wx)
+                src = DiagramSource(sid, sid, cx=tap_x, cy=bus.y - SRC_OFFSET,
+                                    bus=snap_id, tap_x=tap_x, base_kv=bus.kv or 0.0)
+            else:
+                src = DiagramSource(sid, sid, cx=wx, cy=wy)
+            self._sources[sid] = src
+            self._set_selection("source", sid)
+
+        elif self._tool == TOOL_LOAD:
+            snap_id = self._snap_bus(wx, wy)
+            lid = f"LOAD-{len(self._loads) + 1}"
+            if snap_id:
+                bus = self._buses[snap_id]
+                tap_x = bus.nearest_tap(wx)
+                ld = DiagramLoad(lid, lid, cx=tap_x,
+                                 cy=bus.y + LOAD_LEAD + LOAD_AH,
+                                 bus=snap_id, tap_x=tap_x)
+            else:
+                ld = DiagramLoad(lid, lid, cx=wx, cy=wy)
+            self._loads[lid] = ld
+            self._set_selection("load", lid)
 
         elif self._tool == TOOL_CT:
             conn_id = self._hit_connection(event.x, event.y)
@@ -689,27 +911,41 @@ class Diagram(tk.Frame):
                 self._set_selection("vt", vid)
 
         elif self._tool == TOOL_DELETE:
-            xfmr_id = self._hit_transformer(wx, wy)
-            ct_id   = self._hit_ct(event.x, event.y)
-            vt_id   = self._hit_vt(wx, wy)
-            bus_id  = self._hit_bus(wx, wy)
-            conn_id = self._hit_connection(event.x, event.y)
-            if xfmr_id:
-                self._transformers.pop(xfmr_id)
-                self._set_selection(None, None)
-                self.redraw()
-            elif ct_id:
-                self._cts.pop(ct_id)
-                self._set_selection(None, None)
-                self.redraw()
-            elif vt_id:
-                self._vts.pop(vt_id)
-                self._set_selection(None, None)
-                self.redraw()
-            elif bus_id:
-                self._delete_bus(bus_id)
-            elif conn_id:
-                self._delete_connection(conn_id)
+            self._delete_at(event, wx, wy)
+
+    def _begin_drag(self, kind: str, elem_id: str, wx: float, wy: float) -> None:
+        self._set_selection(kind, elem_id)
+        self._drag_id     = elem_id
+        self._drag_kind   = kind
+        self._drag_origin = (wx, wy)
+
+    def _delete_at(self, event: tk.Event, wx: float, wy: float) -> None:
+        xfmr_id = self._hit_transformer(wx, wy)
+        src_id  = self._hit_source(wx, wy)
+        load_id = self._hit_load(wx, wy)
+        ct_id   = self._hit_ct(event.x, event.y)
+        vt_id   = self._hit_vt(wx, wy)
+        bus_id  = self._hit_bus(wx, wy)
+        conn_id = self._hit_connection(event.x, event.y)
+        if xfmr_id:
+            self._transformers.pop(xfmr_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif src_id:
+            self._sources.pop(src_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif load_id:
+            self._loads.pop(load_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif ct_id:
+            self._cts.pop(ct_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif vt_id:
+            self._vts.pop(vt_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif bus_id:
+            self._delete_bus(bus_id)
+        elif conn_id:
+            self._delete_connection(conn_id)
 
     def _on_drag(self, event: tk.Event) -> None:
         wx, wy = self._s2w(event.x, event.y)
@@ -723,6 +959,12 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "transformer":
                 xfmr = self._transformers[self._drag_id]
                 xfmr.cx += dx;  xfmr.cy += dy
+            elif self._drag_kind == "source":
+                src = self._sources[self._drag_id]
+                src.cx += dx;  src.cy += dy
+            elif self._drag_kind == "load":
+                ld = self._loads[self._drag_id]
+                ld.cx += dx;  ld.cy += dy
             self._drag_origin = (wx, wy)
             self.redraw()
 
@@ -759,7 +1001,7 @@ class Diagram(tk.Frame):
                 self.canvas.create_line(sx, sy, event.x, event.y,
                                         width=LINE_WIDTH, fill="#888888", dash=(4, 4))
 
-        elif self._tool == TOOL_TRANSFORMER:
+        elif self._tool in (TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD):
             snap_id = self._snap_bus(wx, wy)
             if snap_id:
                 self.redraw()
@@ -800,12 +1042,18 @@ class Diagram(tk.Frame):
             self._delete_connection(cid)
         for vid in [k for k, v in self._vts.items() if v.bus_id == bus_id]:
             self._vts.pop(vid)
-        # Disconnect transformers that referenced this bus
+        # Detach elements that referenced this bus.
         for xfmr in self._transformers.values():
             if xfmr.hv_bus == bus_id:
                 xfmr.hv_bus = None
             if xfmr.lv_bus == bus_id:
                 xfmr.lv_bus = None
+        for src in self._sources.values():
+            if src.bus == bus_id:
+                src.bus = None
+        for ld in self._loads.values():
+            if ld.bus == bus_id:
+                ld.bus = None
         self._set_selection(None, None)
         self.redraw()
 
@@ -847,8 +1095,6 @@ class Diagram(tk.Frame):
             self._on_select(self._selection)
         self.redraw()
 
-
-# ── Geometry ─────────────────────────────────────────────────────────────────
 
 def _point_to_segment_dist(px, py, x1, y1, x2, y2) -> float:
     dx, dy = x2 - x1, y2 - y1

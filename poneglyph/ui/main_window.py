@@ -8,7 +8,7 @@ from tkinter import ttk
 from poneglyph.ui.diagram import (
     Diagram,
     TOOL_SELECT, TOOL_BUS, TOOL_TLINE, TOOL_FEEDER,
-    TOOL_TRANSFORMER, TOOL_CT, TOOL_VT, TOOL_DELETE,
+    TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD, TOOL_CT, TOOL_VT, TOOL_DELETE,
 )
 from poneglyph.ui.properties import PropertiesPanel
 
@@ -83,6 +83,15 @@ class MainWindow:
         self._btn_xfmr["menu"] = xfmr_menu
         self._btn_xfmr.pack(side=tk.LEFT, padx=2, pady=2)
 
+        # Sources dropdown (power source + load)
+        self._btn_src = tk.Menubutton(bar, text="Sources ▾", width=10, relief="raised",
+                                      direction="below")
+        src_menu = tk.Menu(self._btn_src, tearoff=0)
+        src_menu.add_command(label="Power Source", command=lambda: self._set_src_tool(TOOL_SOURCE))
+        src_menu.add_command(label="Load",         command=lambda: self._set_src_tool(TOOL_LOAD))
+        self._btn_src["menu"] = src_menu
+        self._btn_src.pack(side=tk.LEFT, padx=2, pady=2)
+
         # Instrument Devices dropdown
         self._btn_instr = tk.Menubutton(bar, text="Instrument Devices ▾", width=18, relief="raised",
                                          direction="below")
@@ -112,8 +121,10 @@ class MainWindow:
         self.root.bind("t", lambda _e: self._set_lines_tool(TOOL_TLINE))
         self.root.bind("f", lambda _e: self._set_lines_tool(TOOL_FEEDER))
         self.root.bind("x", lambda _e: self._set_xfmr_tool(TOOL_TRANSFORMER))
-        self.root.bind("c", lambda _e: self._set_xfmr_tool(TOOL_CT))
-        self.root.bind("v", lambda _e: self._set_xfmr_tool(TOOL_VT))
+        self.root.bind("p", lambda _e: self._set_src_tool(TOOL_SOURCE))
+        self.root.bind("l", lambda _e: self._set_src_tool(TOOL_LOAD))
+        self.root.bind("c", lambda _e: self._set_instr_tool(TOOL_CT))
+        self.root.bind("v", lambda _e: self._set_instr_tool(TOOL_VT))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
 
     # ── Body ──────────────────────────────────────────────────────────────
@@ -142,6 +153,7 @@ class MainWindow:
 
     _LINES_TOOLS = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
     _XFMR_TOOLS  = {TOOL_TRANSFORMER}
+    _SRC_TOOLS   = {TOOL_SOURCE, TOOL_LOAD}
     _INSTR_TOOLS = {TOOL_CT, TOOL_VT}
 
     def _set_lines_tool(self, tool: str) -> None:
@@ -155,6 +167,11 @@ class MainWindow:
         self._btn_xfmr.config(text="Power Tx ▾")
         self._set_tool(tool)
 
+    def _set_src_tool(self, tool: str) -> None:
+        labels = {TOOL_SOURCE: "Source ▾", TOOL_LOAD: "Load ▾"}
+        self._btn_src.config(text=labels.get(tool, "Sources ▾"))
+        self._set_tool(tool)
+
     def _set_instr_tool(self, tool: str) -> None:
         labels = {TOOL_CT: "CT ▾", TOOL_VT: "VT ▾"}
         self._btn_instr.config(text=labels.get(tool, "Instrument Devices ▾"))
@@ -165,6 +182,7 @@ class MainWindow:
         self._btn_delete.config(relief="sunken" if tool == TOOL_DELETE else "flat")
         self._btn_lines.config( relief="sunken" if tool in self._LINES_TOOLS else "raised")
         self._btn_xfmr.config(  relief="sunken" if tool in self._XFMR_TOOLS  else "raised")
+        self._btn_src.config(   relief="sunken" if tool in self._SRC_TOOLS   else "raised")
         self._btn_instr.config( relief="sunken" if tool in self._INSTR_TOOLS  else "raised")
         self.diagram.set_tool(tool)
 
@@ -179,6 +197,8 @@ class MainWindow:
             "bus":         lambda: self.props.show_bus(self.diagram.get_buses().get(elem_id)),
             "conn":        lambda: self.props.show_connection(self.diagram.get_connections().get(elem_id)),
             "transformer": lambda: self.props.show_transformer(self.diagram.get_transformers().get(elem_id)),
+            "source":      lambda: self.props.show_source(self.diagram.get_sources().get(elem_id)),
+            "load":        lambda: self.props.show_load(self.diagram.get_loads().get(elem_id)),
             "ct":          lambda: self.props.show_ct(self.diagram.get_cts().get(elem_id)),
             "vt":          lambda: self.props.show_vt(self.diagram.get_vts().get(elem_id)),
         }
@@ -196,7 +216,48 @@ class MainWindow:
         self._set_status("New diagram — select a tool and start drawing.")
 
     def _run_power_flow(self) -> None:
-        self._set_status("Power flow — not yet wired up.")
+        from poneglyph.ui.network_state import build_network
+        from poneglyph.simulation.powerflow import PowerFlowSolver
+
+        buses   = self.diagram.get_buses()
+        conns   = self.diagram.get_connections()
+        xfmrs   = self.diagram.get_transformers()
+        sources = self.diagram.get_sources()
+        loads   = self.diagram.get_loads()
+
+        if not buses:
+            self._set_status("Add at least one bus before running power flow.")
+            return
+        if not sources:
+            self._set_status("Add a Power Source (defines the slack bus) before running power flow.")
+            return
+
+        net = build_network(buses, conns, xfmrs)
+        solver = PowerFlowSolver(net)
+
+        slack_bus = next((s.bus for s in sources.values() if s.bus in net.buses), None)
+        if slack_bus is None:
+            self._set_status("Attach the Power Source to a bus (snap it onto a bus bar) first.")
+            return
+        src = next(s for s in sources.values() if s.bus == slack_bus)
+        solver.set_slack_bus(slack_bus, v_pu=src.v_pu, angle_deg=src.angle_deg)
+
+        for ld in loads.values():
+            if ld.bus in net.buses:
+                solver.set_load(ld.bus, ld.p_mw, ld.q_mvar)
+
+        result = solver.solve()
+
+        for bid, dbus in buses.items():
+            nb = net.buses.get(bid)
+            dbus.v_solved = nb.v_pu if nb else None
+        self.diagram.redraw()
+
+        if result.converged:
+            self._set_status(f"Power flow converged in {result.iterations} iterations. "
+                             f"Slack: {slack_bus}.")
+        else:
+            self._set_status(f"Power flow DID NOT converge after {result.iterations} iterations.")
 
     def _set_status(self, msg: str) -> None:
         self._status_var.set(msg)
