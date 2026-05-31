@@ -400,6 +400,30 @@ class DiagramVT:
 
 
 @dataclass
+class DiagramCTTB:
+    """Current Transformer Test Block — lives on a CT secondary lead."""
+    id: str
+    name: str
+    ct_id: str              # parent CT
+    # Offset from the CT secondary lead tip in world coords
+    offset_x: float = 0.0
+    offset_y: float = 40.0
+    mode: str = "Pass"      # "Pass" | "Sum" | "Subtract"
+    num_circuits: int = 1   # how many CT secondaries feed this block
+
+@dataclass
+class DiagramTestBlock:
+    """FT (Fuse-Test) or ISO block — lives on a VT/CVT secondary lead."""
+    id: str
+    name: str
+    vt_id: str              # parent VT
+    block_type: str = "FT"  # "FT" | "ISO"
+    offset_x: float = 0.0
+    offset_y: float = 50.0
+    fused: bool = True      # FT blocks carry a fuse
+
+
+@dataclass
 class DiagramBreaker:
     id: str
     name: str
@@ -428,6 +452,8 @@ TOOL_SOURCE      = "source"
 TOOL_LOAD        = "load"
 TOOL_CT          = "ct"
 TOOL_VT          = "vt"
+TOOL_CTTB        = "cttb"
+TOOL_TESTBLOCK   = "testblock"
 TOOL_DELETE      = "delete"
 TOOL_BREAKER     = "breaker"
 TOOL_DISCONNECT  = "disconnect"
@@ -442,6 +468,8 @@ TOOL_HINTS = {
     TOOL_LOAD:        "Load: click to place. Near a bus → snaps to it.",
     TOOL_CT:          "Current Transformer: click on an existing line.",
     TOOL_VT:          "Voltage Transformer: click on a bus.",
+    TOOL_CTTB:        "CT Test Block: click on a placed CT to attach a test block to its secondary.",
+    TOOL_TESTBLOCK:   "FT / ISO Block: click on a placed VT/CVT to attach a test block to its secondary.",
     TOOL_DELETE:      "Delete: click any element to remove it.",
     TOOL_BREAKER:     "Circuit Breaker: click on an existing connection line to place a breaker.",
     TOOL_DISCONNECT:  "Disconnect Switch: click on an existing connection line to place a disconnect switch.",
@@ -491,6 +519,8 @@ class Diagram(tk.Frame):
         self._loads:        dict = {}
         self._cts:          dict = {}
         self._vts:          dict = {}
+        self._cttbs:        dict = {}
+        self._testblocks:   dict = {}
         self._breakers:     dict = {}
         self._disconnects:  dict = {}
 
@@ -575,6 +605,8 @@ class Diagram(tk.Frame):
     def get_loads(self)        -> dict: return self._loads
     def get_cts(self)          -> dict: return self._cts
     def get_vts(self)          -> dict: return self._vts
+    def get_cttbs(self)        -> dict: return self._cttbs
+    def get_testblocks(self)   -> dict: return self._testblocks
     def get_breakers(self)     -> dict: return self._breakers
     def get_disconnects(self)  -> dict: return self._disconnects
     def get_selection(self)    -> Optional[tuple]: return self._selection
@@ -607,6 +639,8 @@ class Diagram(tk.Frame):
         self._loads.clear()
         self._cts.clear()
         self._vts.clear()
+        self._cttbs.clear()
+        self._testblocks.clear()
         self._breakers.clear()
         self._disconnects.clear()
         self._selection = None
@@ -694,6 +728,10 @@ class Diagram(tk.Frame):
             self._draw_ct(ct)
         for vt in self._vts.values():
             self._draw_vt(vt)
+        for cttb in self._cttbs.values():
+            self._draw_cttb(cttb)
+        for tb in self._testblocks.values():
+            self._draw_testblock(tb)
         # Draw in-progress bus preview
         self._draw_bus_preview()
 
@@ -1491,6 +1529,149 @@ class Diagram(tk.Frame):
                            text=label, font=("TkDefaultFont", 8),
                            fill="#444444", anchor="w")
 
+    # ── Test block position helpers ───────────────────────────────────────
+
+    def _ct_secondary_tip_world(self, ct: "DiagramCT"):
+        """Return world (x, y) of the CT secondary lead tip, or None."""
+        pts = self._ct_wire_endpoints(ct)
+        if pts is None:
+            return None
+        wx1, wy1, wx2, wy2, wx, wy = pts
+        sx, sy = self._w2s(wx, wy)
+        dx, dy = wx2 - wx1, wy2 - wy1
+        length = math.hypot(dx, dy) or 1
+        s1 = self._w2s(wx1, wy1)
+        s2 = self._w2s(wx1 + dx/length, wy1 + dy/length)
+        raw = (s2[0]-s1[0], s2[1]-s1[1])
+        aln = math.hypot(*raw) or 1
+        alx, aly = raw[0]/aln, raw[1]/aln
+        pxn, pyn = -aly, alx
+        tk = 7 * self._scale
+        if ct.polarity_flipped:
+            bot_x = sx + alx*2*self._scale*10; bot_y = sy + aly*2*self._scale*10
+            tip_sx = bot_x + pxn*tk*2.5;       tip_sy = bot_y + pyn*tk*2.5
+        else:
+            top_x = sx - alx*2*self._scale*10; top_y = sy - aly*2*self._scale*10
+            tip_sx = top_x + pxn*tk*2.5;       tip_sy = top_y + pyn*tk*2.5
+        return self._s2w(tip_sx, tip_sy)
+
+    def _vt_secondary_bottom_world(self, vt: "DiagramVT"):
+        """Return world (x, y) just below the VT's lowest winding (secondary lead start)."""
+        bus = self._buses.get(vt.bus_id)
+        if bus is None:
+            return None
+        tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
+        # Replicate the geometry from _draw_vt to find bottom_y in world coords
+        sx, sy = self._w2s(*tap_pt)
+        R    = 10 * self._scale
+        gap  = 2  * self._scale
+        Rs   = R  * 0.85
+        drop = 10 * self._scale
+        pri_cy  = sy + drop + R
+        sec_cy2 = pri_cy + R + gap + Rs
+        if vt.num_secondaries >= 2:
+            sec2_cy = sec_cy2 + Rs + gap + Rs
+            bottom_sy = sec2_cy + Rs
+        else:
+            bottom_sy = sec_cy2 + Rs
+        return self._s2w(sx, bottom_sy)
+
+    # ── CTTB draw ─────────────────────────────────────────────────────────
+
+    def _draw_cttb(self, cttb: "DiagramCTTB") -> None:
+        ct = self._cts.get(cttb.ct_id)
+        if ct is None:
+            return
+        tip = self._ct_secondary_tip_world(ct)
+        if tip is None:
+            return
+        # Block position = tip + offset
+        bwx = tip[0] + cttb.offset_x
+        bwy = tip[1] + cttb.offset_y
+        bsx, bsy = self._w2s(bwx, bwy)
+        tip_sx, tip_sy = self._w2s(*tip)
+
+        sel    = self._selection == ("cttb", cttb.id)
+        colour = "#0066CC" if sel else "#333333"
+        canvas = self.canvas
+
+        # Wire from CT secondary tip to block
+        canvas.create_line(tip_sx, tip_sy, bsx, bsy,
+                           fill=colour, width=LINE_WIDTH, dash=(4, 3))
+
+        # Block body: rectangle
+        W = 18 * self._scale
+        H = 28 * self._scale
+        canvas.create_rectangle(bsx - W, bsy - H/2, bsx + W, bsy + H/2,
+                                 outline=colour, fill="#F8F8F8", width=LINE_WIDTH)
+
+        # Terminal lines across the block (4 horizontal stripes)
+        for k in range(4):
+            ty = bsy - H/2 + H * (k + 0.5) / 4
+            canvas.create_line(bsx - W, ty, bsx + W, ty,
+                               fill=colour, width=1)
+
+        # Mode symbol centred in block
+        mode_sym = {"Pass": "→", "Sum": "Σ", "Subtract": "−"}.get(cttb.mode, "?")
+        canvas.create_text(bsx, bsy, text=mode_sym,
+                           font=("TkDefaultFont", 9, "bold"), fill=colour)
+
+        # Label
+        canvas.create_text(bsx + W + 4 * self._scale, bsy,
+                           text=f"CTTB\n{cttb.name}",
+                           font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+
+    # ── FT / ISO block draw ───────────────────────────────────────────────
+
+    def _draw_testblock(self, tb: "DiagramTestBlock") -> None:
+        vt = self._vts.get(tb.vt_id)
+        if vt is None:
+            return
+        bottom = self._vt_secondary_bottom_world(vt)
+        if bottom is None:
+            return
+        bwx = bottom[0] + tb.offset_x
+        bwy = bottom[1] + tb.offset_y
+        bsx, bsy = self._w2s(bwx, bwy)
+        bot_sx, bot_sy = self._w2s(*bottom)
+
+        sel    = self._selection == ("testblock", tb.id)
+        colour = "#0066CC" if sel else "#555500" if tb.block_type == "FT" else "#005555"
+        canvas = self.canvas
+
+        # Wire from VT secondary bottom to block
+        canvas.create_line(bot_sx, bot_sy, bsx, bsy,
+                           fill=colour, width=LINE_WIDTH, dash=(4, 3))
+
+        W = 14 * self._scale
+        H = 20 * self._scale
+        canvas.create_rectangle(bsx - W, bsy - H/2, bsx + W, bsy + H/2,
+                                 outline=colour, fill="#F8F8F8", width=LINE_WIDTH)
+
+        if tb.block_type == "FT":
+            # Fuse symbol: two arcs (oval ends) inside box
+            fr = 4 * self._scale
+            canvas.create_oval(bsx - fr, bsy - H/4 - fr,
+                               bsx + fr, bsy - H/4 + fr,
+                               outline=colour, width=1)
+            canvas.create_oval(bsx - fr, bsy + H/4 - fr,
+                               bsx + fr, bsy + H/4 + fr,
+                               outline=colour, width=1)
+            canvas.create_line(bsx, bsy - H/4 + fr, bsx, bsy + H/4 - fr,
+                               fill=colour, width=1)
+        else:
+            # ISO symbol: gap (two short lines with break in middle)
+            canvas.create_line(bsx, bsy - H/2, bsx, bsy - 4*self._scale,
+                               fill=colour, width=LINE_WIDTH)
+            canvas.create_line(bsx, bsy + 4*self._scale, bsx, bsy + H/2,
+                               fill=colour, width=LINE_WIDTH)
+            canvas.create_text(bsx, bsy, text="○", font=("TkDefaultFont", 7), fill=colour)
+
+        # Label
+        canvas.create_text(bsx + W + 4*self._scale, bsy,
+                           text=f"{tb.block_type}\n{tb.name}",
+                           font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+
     # ── Helper: nearest connection ────────────────────────────────────────
 
     def _nearest_connection(self, sx: float, sy: float, max_px: float = 20.0):
@@ -1650,6 +1831,36 @@ class Diagram(tk.Frame):
             tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
             if math.hypot(tap_pt[0] - wx, tap_pt[1] - wy) < tol * 2:
                 return vt.id
+        return None
+
+    def _hit_cttb(self, sx: float, sy: float) -> Optional[str]:
+        for cttb in self._cttbs.values():
+            ct = self._cts.get(cttb.ct_id)
+            if ct is None:
+                continue
+            tip = self._ct_secondary_tip_world(ct)
+            if tip is None:
+                continue
+            bwx = tip[0] + cttb.offset_x
+            bwy = tip[1] + cttb.offset_y
+            bsx, bsy = self._w2s(bwx, bwy)
+            if math.hypot(sx - bsx, sy - bsy) < 22 * self._scale:
+                return cttb.id
+        return None
+
+    def _hit_testblock(self, sx: float, sy: float) -> Optional[str]:
+        for tb in self._testblocks.values():
+            vt = self._vts.get(tb.vt_id)
+            if vt is None:
+                continue
+            bottom = self._vt_secondary_bottom_world(vt)
+            if bottom is None:
+                continue
+            bwx = bottom[0] + tb.offset_x
+            bwy = bottom[1] + tb.offset_y
+            bsx, bsy = self._w2s(bwx, bwy)
+            if math.hypot(sx - bsx, sy - bsy) < 18 * self._scale:
+                return tb.id
         return None
 
     def _hit_breaker(self, sx: float, sy: float) -> Optional[str]:
@@ -1914,6 +2125,8 @@ class Diagram(tk.Frame):
             load_id  = self._hit_load(wx, wy)
             ct_id    = self._hit_ct(event.x, event.y)
             vt_id    = self._hit_vt(wx, wy)
+            cttb_id  = self._hit_cttb(event.x, event.y)
+            tb_id    = self._hit_testblock(event.x, event.y)
             br_id    = self._hit_breaker(event.x, event.y)
             dc_id    = self._hit_disconnect(event.x, event.y)
             bus_id   = self._hit_bus(wx, wy)
@@ -1929,6 +2142,12 @@ class Diagram(tk.Frame):
                 self._begin_drag("ct", ct_id, wx, wy)
             elif vt_id:
                 self._set_selection("vt", vt_id)
+            elif cttb_id:
+                self._set_selection("cttb", cttb_id)
+                self._begin_drag("cttb", cttb_id, wx, wy)
+            elif tb_id:
+                self._set_selection("testblock", tb_id)
+                self._begin_drag("testblock", tb_id, wx, wy)
             elif br_id:
                 self._set_selection("breaker", br_id)
             elif dc_id:
@@ -2066,6 +2285,28 @@ class Diagram(tk.Frame):
                 self._set_selection("vt", vid)
                 self._revert_to_select(event)
 
+        elif self._tool == TOOL_CTTB:
+            # Click on a CT to attach a test block to its secondary
+            ct_id = self._hit_ct(event.x, event.y)
+            if ct_id:
+                cid = f"CTTB-{len(self._cttbs) + 1}"
+                self._cttbs[cid] = DiagramCTTB(cid, cid, ct_id)
+                self._set_selection("cttb", cid)
+                self._revert_to_select(event)
+            elif self._on_status:
+                self._on_status("CTTB: click on a CT symbol to attach a test block.")
+
+        elif self._tool == TOOL_TESTBLOCK:
+            # Click on a VT to attach an FT or ISO block
+            vt_id = self._hit_vt(wx, wy)
+            if vt_id:
+                tid = f"TB-{len(self._testblocks) + 1}"
+                self._testblocks[tid] = DiagramTestBlock(tid, tid, vt_id)
+                self._set_selection("testblock", tid)
+                self._revert_to_select(event)
+            elif self._on_status:
+                self._on_status("Test Block: click on a VT/CVT symbol to attach.")
+
         elif self._tool == TOOL_BREAKER:
             result = self._nearest_connection(event.x, event.y)
             if result:
@@ -2106,6 +2347,8 @@ class Diagram(tk.Frame):
         load_id = self._hit_load(wx, wy)
         ct_id   = self._hit_ct(event.x, event.y)
         vt_id   = self._hit_vt(wx, wy)
+        cttb_id = self._hit_cttb(event.x, event.y)
+        tb_id   = self._hit_testblock(event.x, event.y)
         bus_id  = self._hit_bus(wx, wy)
         conn_id = self._hit_connection(event.x, event.y)
         if xfmr_id:
@@ -2117,8 +2360,14 @@ class Diagram(tk.Frame):
         elif load_id:
             self._loads.pop(load_id, None)
             self._set_selection(None, None); self.redraw()
+        elif cttb_id:
+            self._cttbs.pop(cttb_id, None)
+            self._set_selection(None, None); self.redraw()
         elif ct_id:
             self._cts.pop(ct_id, None)
+            self._set_selection(None, None); self.redraw()
+        elif tb_id:
+            self._testblocks.pop(tb_id, None)
             self._set_selection(None, None); self.redraw()
         elif vt_id:
             self._vts.pop(vt_id, None)
@@ -2253,6 +2502,16 @@ class Diagram(tk.Frame):
                         ct.t = max(0.20, min(0.80, t_raw))
                     else:
                         ct.t = max(0.10, min(0.90, t_raw))
+            elif self._drag_kind == "cttb":
+                cttb = self._cttbs.get(self._drag_id)
+                if cttb:
+                    cttb.offset_x += dx
+                    cttb.offset_y += dy
+            elif self._drag_kind == "testblock":
+                tb = self._testblocks.get(self._drag_id)
+                if tb:
+                    tb.offset_x += dx
+                    tb.offset_y += dy
             self._drag_origin = (gx, gy)
             self.redraw()
 

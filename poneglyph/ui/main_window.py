@@ -8,7 +8,8 @@ from tkinter import ttk, colorchooser
 from poneglyph.ui.diagram import (
     Diagram,
     TOOL_SELECT, TOOL_BUS, TOOL_TLINE, TOOL_FEEDER,
-    TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD, TOOL_CT, TOOL_VT, TOOL_DELETE,
+    TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD, TOOL_CT, TOOL_VT,
+    TOOL_CTTB, TOOL_TESTBLOCK, TOOL_DELETE,
     TOOL_BREAKER, TOOL_DISCONNECT,
 )
 from poneglyph.ui.properties import PropertiesPanel
@@ -107,6 +108,9 @@ class MainWindow:
         instr_menu = tk.Menu(self._btn_instr, tearoff=0)
         instr_menu.add_command(label="Current Transformer (CT)", command=lambda: self._set_instr_tool(TOOL_CT))
         instr_menu.add_command(label="Voltage Transformer (VT)", command=lambda: self._set_instr_tool(TOOL_VT))
+        instr_menu.add_separator()
+        instr_menu.add_command(label="CT Test Block (CTTB)",  command=lambda: self._set_instr_tool(TOOL_CTTB))
+        instr_menu.add_command(label="FT / ISO Block",        command=lambda: self._set_instr_tool(TOOL_TESTBLOCK))
         self._btn_instr["menu"] = instr_menu
         self._btn_instr.pack(side=tk.LEFT, padx=2, pady=2)
 
@@ -141,8 +145,10 @@ class MainWindow:
         self.root.bind("x", lambda _e: self._toggle_tool(TOOL_TRANSFORMER, self._set_xfmr_tool))
         self.root.bind("p", lambda _e: self._p_key())
         self.root.bind("l", lambda _e: self._toggle_tool(TOOL_LOAD,        self._set_src_tool))
-        self.root.bind("c", lambda _e: self._toggle_tool(TOOL_CT,          self._set_instr_tool))
-        self.root.bind("v", lambda _e: self._toggle_tool(TOOL_VT,          self._set_instr_tool))
+        self.root.bind("c", lambda _e: self._toggle_tool(TOOL_CT,        self._set_instr_tool))
+        self.root.bind("v", lambda _e: self._toggle_tool(TOOL_VT,        self._set_instr_tool))
+        self.root.bind("n", lambda _e: self._toggle_tool(TOOL_CTTB,      self._set_instr_tool))
+        self.root.bind("m", lambda _e: self._toggle_tool(TOOL_TESTBLOCK, self._set_instr_tool))
         self.root.bind("k", lambda _e: self._toggle_tool(TOOL_BREAKER,     self._set_switch_tool))
         self.root.bind("i", lambda _e: self._toggle_tool(TOOL_DISCONNECT,  self._set_switch_tool))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
@@ -177,7 +183,7 @@ class MainWindow:
     _LINES_TOOLS  = {TOOL_BUS, TOOL_TLINE, TOOL_FEEDER}
     _XFMR_TOOLS   = {TOOL_TRANSFORMER}
     _SRC_TOOLS    = {TOOL_SOURCE, TOOL_LOAD}
-    _INSTR_TOOLS  = {TOOL_CT, TOOL_VT}
+    _INSTR_TOOLS  = {TOOL_CT, TOOL_VT, TOOL_CTTB, TOOL_TESTBLOCK}
     _SWITCH_TOOLS = {TOOL_BREAKER, TOOL_DISCONNECT}
 
     def _set_lines_tool(self, tool: str) -> None:
@@ -197,7 +203,8 @@ class MainWindow:
         self._set_tool(tool)
 
     def _set_instr_tool(self, tool: str) -> None:
-        labels = {TOOL_CT: "CT ▾", TOOL_VT: "VT ▾"}
+        labels = {TOOL_CT: "CT ▾", TOOL_VT: "VT ▾",
+                  TOOL_CTTB: "CTTB ▾", TOOL_TESTBLOCK: "FT/ISO ▾"}
         self._btn_instr.config(text=labels.get(tool, "Instrument Devices ▾"))
         self._set_tool(tool)
 
@@ -239,6 +246,8 @@ class MainWindow:
             "load":        lambda: self.props.show_load(self.diagram.get_loads().get(elem_id)),
             "ct":          lambda: self.props.show_ct(self.diagram.get_cts().get(elem_id)),
             "vt":          lambda: self.props.show_vt(self.diagram.get_vts().get(elem_id)),
+            "cttb":        lambda: self.props.show_cttb(self.diagram.get_cttbs().get(elem_id)),
+            "testblock":   lambda: self.props.show_testblock(self.diagram.get_testblocks().get(elem_id)),
             "breaker":     lambda: self.props.show_breaker(self.diagram.get_breakers().get(elem_id)),
             "disconnect":  lambda: self.props.show_disconnect(self.diagram.get_disconnects().get(elem_id)),
         }
@@ -422,6 +431,8 @@ class KeymapDialog(tk.Toplevel):
             ("L",        "Load tool"),
             ("C",        "Current Transformer (CT) tool"),
             ("V",        "Voltage Transformer (VT) tool"),
+            ("N",        "CT Test Block (CTTB) tool"),
+            ("M",        "FT / ISO Block tool"),
             ("K",        "Circuit Breaker tool"),
             ("I",        "Disconnect Switch tool"),
             ("D",        "Delete tool"),

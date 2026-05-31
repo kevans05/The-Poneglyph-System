@@ -14,6 +14,7 @@ from poneglyph.ui.diagram import (
     DiagramBus, DiagramConnection, DiagramCT, DiagramVT,
     DiagramTransformer, DiagramSource, DiagramLoad,
     DiagramBreaker, DiagramDisconnect,
+    DiagramCTTB, DiagramTestBlock,
 )
 
 
@@ -637,6 +638,78 @@ class PropertiesPanel(tk.Frame):
 
         tk.Button(self._body, text="Apply", command=apply).grid(
             row=12, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_cttb(self, cttb: DiagramCTTB) -> None:
+        if cttb is None:
+            return
+        self._current = cttb
+        self._clear()
+        tk.Label(self._body, text="CT Test Block (CTTB)",
+                 font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        v_name    = tk.StringVar(value=cttb.name)
+        v_mode    = tk.StringVar(value=cttb.mode)
+        v_circuits = tk.StringVar(value=str(cttb.num_circuits))
+
+        self._row("ID",   tk.StringVar(value=cttb.id),     readonly=True, start_row=1)
+        self._row("Name", v_name,                                          start_row=2)
+        self._row("CT",   tk.StringVar(value=cttb.ct_id),  readonly=True, start_row=3)
+
+        tk.Label(self._body, text="Mode").grid(row=4, column=0, sticky="w", pady=2)
+        tk.OptionMenu(self._body, v_mode, "Pass", "Sum", "Subtract").grid(
+            row=4, column=1, sticky="ew", pady=2)
+
+        self._row("# CT Circuits", v_circuits, start_row=5)
+
+        def apply():
+            cttb.name         = v_name.get().strip() or cttb.name
+            cttb.mode         = v_mode.get()
+            try:
+                cttb.num_circuits = int(v_circuits.get())
+            except ValueError:
+                pass
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_testblock(self, tb: DiagramTestBlock) -> None:
+        if tb is None:
+            return
+        self._current = tb
+        self._clear()
+        tk.Label(self._body, text="FT / ISO Test Block",
+                 font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        v_name  = tk.StringVar(value=tb.name)
+        v_type  = tk.StringVar(value=tb.block_type)
+        v_fused = tk.BooleanVar(value=tb.fused)
+
+        self._row("ID",  tk.StringVar(value=tb.id),    readonly=True, start_row=1)
+        self._row("Name", v_name,                                       start_row=2)
+        self._row("VT",  tk.StringVar(value=tb.vt_id), readonly=True,  start_row=3)
+
+        tk.Label(self._body, text="Type").grid(row=4, column=0, sticky="w", pady=2)
+        tk.OptionMenu(self._body, v_type, "FT", "ISO").grid(
+            row=4, column=1, sticky="ew", pady=2)
+
+        tk.Checkbutton(self._body, text="Fused", variable=v_fused).grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=2)
+
+        def apply():
+            tb.name       = v_name.get().strip() or tb.name
+            tb.block_type = v_type.get()
+            tb.fused      = v_fused.get()
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_breaker(self, br: DiagramBreaker) -> None:
