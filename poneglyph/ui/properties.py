@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from poneglyph.ui.diagram import (
     DiagramBus, DiagramConnection, DiagramCT, DiagramVT,
     DiagramTransformer, DiagramSource, DiagramLoad,
+    DiagramBreaker, DiagramDisconnect,
 )
 
 
@@ -306,6 +307,58 @@ class PropertiesPanel(tk.Frame):
         def apply():
             vt.name  = v_name.get().strip() or vt.name
             vt.ratio = v_ratio.get().strip() or vt.ratio
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_breaker(self, br: DiagramBreaker) -> None:
+        if br is None:
+            return
+        self._current = br
+        self._clear()
+        tk.Label(self._body, text="Circuit Breaker", font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        v_name   = tk.StringVar(value=br.name)
+        v_closed = tk.BooleanVar(value=br.closed)
+        self._row("ID",         tk.StringVar(value=br.id),           readonly=True, start_row=1)
+        self._row("Name",       v_name,                                              start_row=2)
+        self._row("Connection", tk.StringVar(value=br.connection_id), readonly=True, start_row=3)
+        self._row("Position",   tk.StringVar(value=f"{br.t * 100:.1f}%"), readonly=True, start_row=4)
+        tk.Checkbutton(self._body, text="Closed", variable=v_closed).grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=2)
+
+        def apply():
+            br.name   = v_name.get().strip() or br.name
+            br.closed = v_closed.get()
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(self._body, text="Apply", command=apply).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+        )
+
+    def show_disconnect(self, dc: DiagramDisconnect) -> None:
+        if dc is None:
+            return
+        self._current = dc
+        self._clear()
+        tk.Label(self._body, text="Disconnect Switch", font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        v_name   = tk.StringVar(value=dc.name)
+        v_closed = tk.BooleanVar(value=dc.closed)
+        self._row("ID",         tk.StringVar(value=dc.id),           readonly=True, start_row=1)
+        self._row("Name",       v_name,                                              start_row=2)
+        self._row("Connection", tk.StringVar(value=dc.connection_id), readonly=True, start_row=3)
+        self._row("Position",   tk.StringVar(value=f"{dc.t * 100:.1f}%"), readonly=True, start_row=4)
+        tk.Checkbutton(self._body, text="Closed", variable=v_closed).grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=2)
+
+        def apply():
+            dc.name   = v_name.get().strip() or dc.name
+            dc.closed = v_closed.get()
             if self._on_change:
                 self._on_change()
 
