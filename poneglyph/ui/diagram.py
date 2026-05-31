@@ -67,6 +67,8 @@ class DiagramBus:
     nodes: list   # list[tuple[float, float]] — world-space (x, y) for each node
     edges: list   # list[tuple[int, int]]     — pairs of node indices forming segments
     v_solved: Optional[complex] = None   # per-unit voltage phasor after a solve
+    label_ox: float = 0.0
+    label_oy: float = 0.0
 
     @property
     def cx(self) -> float:
@@ -131,6 +133,8 @@ class DiagramConnection:
     has_breaker_from: bool = True
     r_pu: float = 0.01
     x_pu: float = 0.10
+    label_ox: float = 0.0
+    label_oy: float = 0.0
 
     def start_point(self, buses: dict) -> Optional[tuple]:
         b = buses.get(self.from_bus)
@@ -175,6 +179,8 @@ class DiagramTransformer:
     lv_winding:  str  = "delta"
     hv_grounded: bool = True        # neutral grounded (wye/zigzag only)
     lv_grounded: bool = False
+    label_ox: float = 0.0
+    label_oy: float = 0.0
 
     @property
     def top_y(self) -> float:
@@ -204,6 +210,8 @@ class DiagramSource:
     v_pu: float = 1.0
     angle_deg: float = 0.0
     base_kv: float = 0.0
+    label_ox: float = 0.0
+    label_oy: float = 0.0
 
 
 @dataclass
@@ -218,6 +226,8 @@ class DiagramLoad:
     tap_y: float = 0.0
     p_mw: float = 1.0
     q_mvar: float = 0.5
+    label_ox: float = 0.0
+    label_oy: float = 0.0
 
 
 @dataclass
@@ -477,6 +487,18 @@ class Diagram(tk.Frame):
         return (round(wx / GRID_SIZE) * GRID_SIZE,
                 round(wy / GRID_SIZE) * GRID_SIZE)
 
+    def toggle_selected_device(self) -> None:
+        """Toggle open/closed state of the selected breaker or disconnect."""
+        if self._selection is None:
+            return
+        kind, eid = self._selection
+        if kind == "breaker" and eid in self._breakers:
+            self._breakers[eid].closed = not self._breakers[eid].closed
+            self.redraw()
+        elif kind == "disconnect" and eid in self._disconnects:
+            self._disconnects[eid].closed = not self._disconnects[eid].closed
+            self.redraw()
+
     def toggle_snap_grid(self) -> None:
         self._snap_grid_on = not self._snap_grid_on
         if self._on_status:
@@ -561,8 +583,10 @@ class Diagram(tk.Frame):
                 self.canvas.create_polygon(sx, sy-dm, sx+dm, sy, sx, sy+dm, sx-dm, sy,
                                            outline="#0066CC", fill="#CCE5FF", width=1)
 
-        # Name label at top-centre
-        cxs, cys = self._w2s(bus.cx, bus.cy_label)
+        # Name label at top-centre (offset if user has dragged it)
+        lx_w = bus.cx + bus.label_ox
+        ly_w = bus.cy_label + bus.label_oy
+        cxs, cys = self._w2s(lx_w, ly_w)
         self.canvas.create_text(cxs, cys - 12, text=bus.name,
                                 font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
         if bus.kv:
@@ -671,8 +695,26 @@ class Diagram(tk.Frame):
         if conn.kind == "feeder":
             self._draw_load_triangle(x2, y2, colour)
 
-        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-        self.canvas.create_text(mx + 6, my, text=conn.name,
+        # Label — offset if user has dragged it; erase wire underneath when offset
+        lbl_sx = (x1 + x2) / 2 + conn.label_ox * self._scale
+        lbl_sy = (y1 + y2) / 2 + conn.label_oy * self._scale
+        if conn.label_ox != 0.0 or conn.label_oy != 0.0:
+            # Blank out the wire under the label so text is readable
+            line_len = math.hypot(x2 - x1, y2 - y1) or 1
+            lx_rel = lbl_sx - x1
+            ly_rel = lbl_sy - y1
+            ldx, ldy = (x2 - x1) / line_len, (y2 - y1) / line_len
+            t_lbl = (lx_rel * ldx + ly_rel * ldy) / line_len
+            half_gap = 38 / line_len
+            t0 = max(0.0, t_lbl - half_gap)
+            t1 = min(1.0, t_lbl + half_gap)
+            if 0.0 < t0:
+                self.canvas.create_line(x1, y1, x1 + (x2-x1)*t0, y1 + (y2-y1)*t0,
+                                        width=LINE_WIDTH, fill=colour)
+            if t1 < 1.0:
+                self.canvas.create_line(x1 + (x2-x1)*t1, y1 + (y2-y1)*t1, x2, y2,
+                                        width=LINE_WIDTH, fill=colour)
+        self.canvas.create_text(lbl_sx + 4, lbl_sy, text=conn.name,
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     def _draw_legacy_breaker_square(self, bx: float, by: float, colour: str) -> None:
@@ -840,11 +882,11 @@ class Diagram(tk.Frame):
                                     font=("TkDefaultFont", 8, "bold"),
                                     fill=lv_col, anchor="e")
 
-        # ── Label (name + MVA, centred to the left) ───────────────────────
+        # ── Label (name + MVA, offset if dragged) ─────────────────────────
         label = xfmr.name
         if xfmr.mva:
             label += f"\n{xfmr.mva:g} MVA"
-        l_sx, l_sy = self._w2s(kv_x, xfmr.cy)
+        l_sx, l_sy = self._w2s(kv_x + xfmr.label_ox, xfmr.cy + xfmr.label_oy)
         self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="e")
 
@@ -972,7 +1014,7 @@ class Diagram(tk.Frame):
             pts.extend([sx, sy])
         self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
 
-        lsx, lsy = self._w2s(src.cx + SRC_R + 6, src.cy)
+        lsx, lsy = self._w2s(src.cx + SRC_R + 6 + src.label_ox, src.cy + src.label_oy)
         label = f"{src.name}\n{src.v_pu:g} pu"
         self.canvas.create_text(lsx, lsy, text=label, justify="left",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="w")
@@ -1004,7 +1046,7 @@ class Diagram(tk.Frame):
                                    base_sx + aw, base_sy,
                                    fill=colour, outline=colour)
 
-        lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6, ld.cy - LOAD_AH / 2)
+        lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6 + ld.label_ox, ld.cy - LOAD_AH / 2 + ld.label_oy)
         label = f"{ld.name}\n{ld.p_mw:g} MW / {ld.q_mvar:g} MVAr"
         self.canvas.create_text(lsx, lsy, text=label, justify="left",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="w")
@@ -1238,6 +1280,45 @@ class Diagram(tk.Frame):
                 return dc.id
         return None
 
+    def _hit_label(self, sx: float, sy: float):
+        """Return (kind, elem_id) if screen point is near a rendered label."""
+        TX, TY = 54, 12   # hit-box half-extents in screen pixels
+
+        for bus in self._buses.values():
+            lx, ly = self._w2s(bus.cx + bus.label_ox, bus.cy_label + bus.label_oy - 12 / self._scale)
+            if abs(sx - lx) < TX and abs(sy - ly) < TY:
+                return ("bus", bus.id)
+
+        for xfmr in self._transformers.values():
+            base_x = xfmr.cx - _WIND_SPAN / 2 - 6
+            lx, ly = self._w2s(base_x + xfmr.label_ox, xfmr.cy + xfmr.label_oy)
+            if abs(sx - lx) < TX and abs(sy - ly) < TY:
+                return ("transformer", xfmr.id)
+
+        for src in self._sources.values():
+            lx, ly = self._w2s(src.cx + SRC_R + 6 + src.label_ox, src.cy + src.label_oy)
+            if abs(sx - lx) < TX and abs(sy - ly) < TY:
+                return ("source", src.id)
+
+        for ld in self._loads.values():
+            lx, ly = self._w2s(ld.cx + LOAD_AW + 6 + ld.label_ox,
+                               ld.cy - LOAD_AH / 2 + ld.label_oy)
+            if abs(sx - lx) < TX and abs(sy - ly) < TY:
+                return ("load", ld.id)
+
+        for conn in self._connections.values():
+            start = conn.start_point(self._buses)
+            end   = conn.end_point(self._buses)
+            if start and end:
+                mwx = (start[0] + end[0]) / 2
+                mwy = (start[1] + end[1]) / 2
+                lx = (self._w2s(mwx, mwy)[0]) + conn.label_ox * self._scale
+                ly = (self._w2s(mwx, mwy)[1]) + conn.label_oy * self._scale
+                if abs(sx - lx) < TX and abs(sy - ly) < TY:
+                    return ("conn", conn.id)
+
+        return None
+
     def _hit_terminal(self, sx: float, sy: float, wx: float, wy: float):
         """Return (kind, elem_id, anchor_sx, anchor_sy) if click is near a terminal dot/lead-tip."""
         tol = max(10, 10 * self._scale)
@@ -1391,6 +1472,15 @@ class Diagram(tk.Frame):
                             if math.hypot(event.x - sx, event.y - sy) <= seg_tol:
                                 self._bus_insert_node(bus, idx)
                                 return
+
+            # ── Label drag ───────────────────────────────────────────────────
+            lbl_hit = self._hit_label(event.x, event.y)
+            if lbl_hit:
+                lkind, lid = lbl_hit
+                self._drag_id     = lid
+                self._drag_kind   = f"label_{lkind}"
+                self._drag_origin = (wx, wy)
+                return
 
             # ── Terminal drag: grab a free or connected lead tip ─────────────
             term_hit = self._hit_terminal(event.x, event.y, wx, wy)
@@ -1676,6 +1766,26 @@ class Diagram(tk.Frame):
                 bus.nodes[ni] = (wx, wy)
                 self.redraw()
                 return
+            elif self._drag_kind and self._drag_kind.startswith("label_"):
+                # Labels are dragged freely (no grid snap — fine positioning needed)
+                raw_wx, raw_wy = self._s2w(event.x, event.y)
+                ddx = raw_wx - self._drag_origin[0]
+                ddy = raw_wy - self._drag_origin[1]
+                lkind = self._drag_kind[6:]
+                eid   = self._drag_id
+                if lkind == "bus" and eid in self._buses:
+                    b = self._buses[eid]; b.label_ox += ddx; b.label_oy += ddy
+                elif lkind == "transformer" and eid in self._transformers:
+                    t = self._transformers[eid]; t.label_ox += ddx; t.label_oy += ddy
+                elif lkind == "source" and eid in self._sources:
+                    s = self._sources[eid]; s.label_ox += ddx; s.label_oy += ddy
+                elif lkind == "load" and eid in self._loads:
+                    l = self._loads[eid]; l.label_ox += ddx; l.label_oy += ddy
+                elif lkind == "conn" and eid in self._connections:
+                    c = self._connections[eid]; c.label_ox += ddx; c.label_oy += ddy
+                self._drag_origin = (raw_wx, raw_wy)
+                self.redraw()
+                return
             elif self._drag_kind in ("xfmr_hv", "xfmr_lv", "src_term", "load_term"):
                 # Terminal rewire drag: show rubber-band + snap highlight
                 self.redraw()
@@ -1737,9 +1847,10 @@ class Diagram(tk.Frame):
                 src = self._sources[eid]
                 if snap_id:
                     tap = self._buses[snap_id].nearest_tap(wx, wy)
-                    src.bus   = snap_id
-                    src.tap_x = tap[0]
-                    src.tap_y = tap[1]
+                    src.bus     = snap_id
+                    src.tap_x   = tap[0]
+                    src.tap_y   = tap[1]
+                    src.base_kv = self._buses[snap_id].kv or src.base_kv
                 else:
                     src.bus = None
             elif kind == "load_term" and eid in self._loads:

@@ -53,6 +53,10 @@ class MainWindow:
         vm.add_command(label="Voltage Colours…", command=self._edit_volt_colours)
         mb.add_cascade(label="View", menu=vm)
 
+        hm = tk.Menu(mb, tearoff=0)
+        hm.add_command(label="Keyboard Shortcuts…", command=self._show_keymap)
+        mb.add_cascade(label="Help", menu=hm)
+
         self.root.config(menu=mb)
 
     # ── Toolbar ───────────────────────────────────────────────────────────
@@ -143,6 +147,7 @@ class MainWindow:
         self.root.bind("i", lambda _e: self._toggle_tool(TOOL_DISCONNECT,  self._set_switch_tool))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
         self.root.bind("g", lambda _e: self.diagram.toggle_snap_grid())
+        self.root.bind("<space>", lambda _e: self.diagram.toggle_selected_device())
 
     # ── Body ──────────────────────────────────────────────────────────────
 
@@ -246,6 +251,9 @@ class MainWindow:
 
     def _edit_volt_colours(self) -> None:
         VoltageColourDialog(self.root, self.diagram)
+
+    def _show_keymap(self) -> None:
+        KeymapDialog(self.root)
 
     def _new(self) -> None:
         self.diagram.clear()
@@ -392,3 +400,63 @@ class VoltageColourDialog(tk.Toplevel):
     def _ok(self) -> None:
         self._apply()
         self.destroy()
+
+
+class KeymapDialog(tk.Toplevel):
+    _KEYMAP = [
+        ("Tools", [
+            ("S",        "Select tool"),
+            ("B",        "Bus tool  (press again to toggle sticky)"),
+            ("T",        "T-Line tool"),
+            ("F",        "Feeder tool"),
+            ("X",        "Transformer tool"),
+            ("P",        "Power Source tool"),
+            ("L",        "Load tool"),
+            ("C",        "Current Transformer (CT) tool"),
+            ("V",        "Voltage Transformer (VT) tool"),
+            ("K",        "Circuit Breaker tool"),
+            ("I",        "Disconnect Switch tool"),
+            ("D",        "Delete tool"),
+        ]),
+        ("Editing", [
+            ("Space",    "Toggle selected breaker / disconnect open ↔ closed"),
+            ("G",        "Toggle grid snap ON / OFF"),
+            ("Shift+click (bus node)", "Delete node  (merges adjacent segments)"),
+            ("Shift+click (bus segment midpoint)", "Insert node"),
+            ("Drag terminal dot",     "Rewire device terminal to a different bus"),
+            ("Drag label",            "Move element label (wire goes invisible underneath)"),
+        ]),
+        ("Canvas", [
+            ("Right-click drag",  "Pan"),
+            ("Mouse wheel",       "Zoom in / out"),
+            ("Ctrl+N",            "New diagram"),
+        ]),
+    ]
+
+    def __init__(self, parent: tk.Widget) -> None:
+        super().__init__(parent)
+        self.title("Keyboard Shortcuts")
+        self.resizable(False, False)
+        self.grab_set()
+
+        pad = {"padx": 6, "pady": 2}
+        row = 0
+        for section, entries in self._KEYMAP:
+            tk.Label(self, text=section, font=("TkDefaultFont", 9, "bold"),
+                     anchor="w").grid(row=row, column=0, columnspan=2,
+                                      sticky="w", padx=8, pady=(10, 2))
+            row += 1
+            ttk.Separator(self, orient="horizontal").grid(
+                row=row, column=0, columnspan=2, sticky="ew", padx=6)
+            row += 1
+            for key, desc in entries:
+                tk.Label(self, text=key, font=("TkFixedFont", 9),
+                         fg="#0044AA", anchor="e", width=30).grid(
+                    row=row, column=0, sticky="e", **pad)
+                tk.Label(self, text=desc, anchor="w").grid(
+                    row=row, column=1, sticky="w", **pad)
+                row += 1
+
+        tk.Button(self, text="Close", command=self.destroy,
+                  width=10).grid(row=row, column=0, columnspan=2, pady=10)
+        self.columnconfigure(1, weight=1)
