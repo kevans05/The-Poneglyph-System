@@ -181,6 +181,7 @@ class DiagramTransformer:
     lv_grounded: bool = False
     label_ox: float = 0.0
     label_oy: float = 0.0
+    rotation: int = 0               # degrees CCW: 0 / 90 / 180 / 270
 
     @property
     def top_y(self) -> float:
@@ -189,6 +190,22 @@ class DiagramTransformer:
     @property
     def bot_y(self) -> float:
         return self.cy + XFMR_HALF
+
+    @property
+    def hv_terminal(self) -> tuple:
+        r = self.rotation % 360
+        if r == 90:  return (self.cx + XFMR_HALF, self.cy)
+        if r == 180: return (self.cx, self.cy + XFMR_HALF)
+        if r == 270: return (self.cx - XFMR_HALF, self.cy)
+        return (self.cx, self.cy - XFMR_HALF)
+
+    @property
+    def lv_terminal(self) -> tuple:
+        r = self.rotation % 360
+        if r == 90:  return (self.cx - XFMR_HALF, self.cy)
+        if r == 180: return (self.cx, self.cy - XFMR_HALF)
+        if r == 270: return (self.cx + XFMR_HALF, self.cy)
+        return (self.cx, self.cy + XFMR_HALF)
 
     @property
     def voltage_ratio(self) -> str:
@@ -486,6 +503,16 @@ class Diagram(tk.Frame):
             return wx, wy
         return (round(wx / GRID_SIZE) * GRID_SIZE,
                 round(wy / GRID_SIZE) * GRID_SIZE)
+
+    def rotate_selected(self) -> None:
+        """Rotate the selected transformer 90° CCW."""
+        if self._selection is None:
+            return
+        kind, eid = self._selection
+        if kind == "transformer" and eid in self._transformers:
+            xfmr = self._transformers[eid]
+            xfmr.rotation = (xfmr.rotation + 90) % 360
+            self.redraw()
 
     def toggle_selected_device(self) -> None:
         """Toggle open/closed state of the selected breaker or disconnect."""
@@ -809,111 +836,139 @@ class Diagram(tk.Frame):
 
     # ── Transformer (standalone, world-space IEC coupled-coil symbol) ─────
 
+    def _xr(self, xfmr, wx: float, wy: float) -> tuple:
+        """Rotate world point (wx,wy) CCW around xfmr centre by xfmr.rotation degrees."""
+        dx, dy = wx - xfmr.cx, wy - xfmr.cy
+        r = xfmr.rotation % 360
+        if r == 90:  return xfmr.cx - dy, xfmr.cy + dx
+        if r == 180: return xfmr.cx - dx, xfmr.cy - dy
+        if r == 270: return xfmr.cx + dy, xfmr.cy - dx
+        return wx, wy
+
+    def _draw_elbow_lead(self, ax, ay, bx, by, vert_exit: bool, colour: str) -> None:
+        """Draw an L-shaped 90° lead from (ax,ay) to (bx,by).
+        vert_exit=True  → corner at (ax, by)  [go vertical from A, then horizontal]
+        vert_exit=False → corner at (bx, ay)  [go horizontal from A, then vertical]
+        Collapses to a straight line when already aligned.
+        """
+        if vert_exit:
+            mx, my = ax, by
+        else:
+            mx, my = bx, ay
+        ax_s, ay_s = self._w2s(ax, ay)
+        mx_s, my_s = self._w2s(mx, my)
+        bx_s, by_s = self._w2s(bx, by)
+        pts = [(ax_s, ay_s), (mx_s, my_s), (bx_s, by_s)]
+        # Remove consecutive near-duplicates
+        uniq = [pts[0]]
+        for p in pts[1:]:
+            if abs(p[0] - uniq[-1][0]) > 0.5 or abs(p[1] - uniq[-1][1]) > 0.5:
+                uniq.append(p)
+        if len(uniq) >= 2:
+            self.canvas.create_line(*[v for pt in uniq for v in pt],
+                                    fill=colour, width=LINE_WIDTH)
+
     def _draw_transformer(self, xfmr: DiagramTransformer) -> None:
         sel      = self._selection == ("transformer", xfmr.id)
         hv_col   = self._voltage_colour(xfmr.hv_kv, selected=sel)
         lv_col   = self._voltage_colour(xfmr.lv_kv, selected=sel)
         core_col = "#0066CC" if sel else self._UNSET_COLOUR
-        r    = XFMR_BR
         n    = XFMR_NB
-        span = _WIND_SPAN   # horizontal span of each coil row
+        r    = XFMR_BR
+        half = _WIND_SPAN / 2
+        rot  = xfmr.rotation % 360
+        # vert_exit: True when terminal exits vertically (rotation 0 or 180)
+        vert_exit = (rot % 180 == 0)
 
-        hv_y   = xfmr.cy - XFMR_CORE / 2
-        lv_y   = xfmr.cy + XFMR_CORE / 2
-        x_left = xfmr.cx - span / 2
+        # Local y offsets of the two coil spine rows (at rotation=0)
+        hv_y_loc = -XFMR_CORE / 2
+        lv_y_loc = +XFMR_CORE / 2
 
-        # ── HV terminal lead (bus → top of centre conductor) ─────────────
-        ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y)   # outer edge of HV coil spine
+        # Coil spine world positions after rotation
+        hv_spine = self._xr(xfmr, xfmr.cx, xfmr.cy + hv_y_loc)
+        lv_spine = self._xr(xfmr, xfmr.cx, xfmr.cy + lv_y_loc)
+
+        # Terminal world positions (rotation-aware)
+        hv_term = xfmr.hv_terminal
+        lv_term = xfmr.lv_terminal
+
+        # ── HV lead: bus tap → coil spine (L-shaped) ─────────────────────
         if xfmr.hv_bus and xfmr.hv_bus in self._buses:
             bus = self._buses[xfmr.hv_bus]
-            tap_pt = bus.nearest_tap(xfmr.hv_tap_x, xfmr.hv_tap_y)
-            bsx, bsy = self._w2s(*tap_pt)
-            self.canvas.create_line(bsx, bsy, ct_sx, ct_sy,
-                                    fill=hv_col, width=LINE_WIDTH)
+            tap = bus.nearest_tap(xfmr.hv_tap_x, xfmr.hv_tap_y)
+            self._draw_elbow_lead(tap[0], tap[1], hv_spine[0], hv_spine[1], vert_exit, hv_col)
         else:
-            t_sx, t_sy = self._w2s(xfmr.cx, xfmr.top_y)
-            self.canvas.create_line(t_sx, t_sy, ct_sx, ct_sy,
-                                    fill=hv_col, width=LINE_WIDTH)
+            t_sx, t_sy = self._w2s(*hv_term)
+            ct_sx, ct_sy = self._w2s(*hv_spine)
+            self.canvas.create_line(t_sx, t_sy, ct_sx, ct_sy, fill=hv_col, width=LINE_WIDTH)
             self._terminal_dot(t_sx, t_sy, hv_col)
 
-        # ── LV terminal lead (outer edge of LV coil spine → bus) ──────────
-        cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y)   # outer edge of LV coil spine
+        # ── LV lead: coil spine → bus tap (L-shaped) ─────────────────────
         if xfmr.lv_bus and xfmr.lv_bus in self._buses:
             bus = self._buses[xfmr.lv_bus]
-            tap_pt = bus.nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
-            bsx, bsy = self._w2s(*tap_pt)
-            self.canvas.create_line(cb_sx, cb_sy, bsx, bsy,
-                                    fill=lv_col, width=LINE_WIDTH)
+            tap = bus.nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
+            self._draw_elbow_lead(lv_spine[0], lv_spine[1], tap[0], tap[1], vert_exit, lv_col)
         else:
-            b_sx, b_sy = self._w2s(xfmr.cx, xfmr.bot_y)
-            self.canvas.create_line(cb_sx, cb_sy, b_sx, b_sy,
-                                    fill=lv_col, width=LINE_WIDTH)
+            cb_sx, cb_sy = self._w2s(*lv_spine)
+            b_sx,  b_sy  = self._w2s(*lv_term)
+            self.canvas.create_line(cb_sx, cb_sy, b_sx, b_sy, fill=lv_col, width=LINE_WIDTH)
             self._terminal_dot(b_sx, b_sy, lv_col)
 
-        # (no conductor drawn through the core gap — coils are magnetically coupled)
+        # ── Coil bumps (rotated) ──────────────────────────────────────────
+        for i in range(n):
+            bx_loc = -half + r + i * 2 * r
+            hv_pts, lv_pts = [], []
+            for j in range(19):
+                t_ang = -math.pi / 2 + math.pi * j / 18
+                lx = bx_loc + r * math.sin(t_ang)
+                cos_t = r * math.cos(t_ang)
+                # HV: bumps downward (toward core) → sign +1
+                wx, wy = self._xr(xfmr, xfmr.cx + lx, xfmr.cy + hv_y_loc + cos_t)
+                hv_pts.extend(self._w2s(wx, wy))
+                # LV: bumps upward (toward core) → sign -1
+                wx, wy = self._xr(xfmr, xfmr.cx + lx, xfmr.cy + lv_y_loc - cos_t)
+                lv_pts.extend(self._w2s(wx, wy))
+            if len(hv_pts) >= 4:
+                self.canvas.create_line(*hv_pts, fill=hv_col, width=LINE_WIDTH, smooth=True)
+                self.canvas.create_line(*lv_pts, fill=lv_col, width=LINE_WIDTH, smooth=True)
 
-        # ── HV coil row (bumps inward / downward) ─────────────────────────
-        self._draw_coil_h(x_left, hv_y, n, r, bulge_up=False, colour=hv_col)
-
-        # ── LV coil row (bumps inward / upward) ───────────────────────────
-        self._draw_coil_h(x_left, lv_y, n, r, bulge_up=True, colour=lv_col)
-
-        # ── Iron core: two horizontal lines in the gap ────────────────────
+        # ── Iron core (two lines, rotated) ────────────────────────────────
         for off in (-2.5, 2.5):
-            ic_l_sx, ic_l_sy = self._w2s(xfmr.cx - span / 2, xfmr.cy + off)
-            ic_r_sx, ic_r_sy = self._w2s(xfmr.cx + span / 2, xfmr.cy + off)
-            self.canvas.create_line(ic_l_sx, ic_l_sy, ic_r_sx, ic_r_sy,
+            ic_l = self._xr(xfmr, xfmr.cx - half, xfmr.cy + off)
+            ic_r = self._xr(xfmr, xfmr.cx + half, xfmr.cy + off)
+            self.canvas.create_line(*self._w2s(*ic_l), *self._w2s(*ic_r),
                                     fill=core_col, width=LINE_WIDTH + 1)
 
-        # ── Winding indicators + kV labels to the right of each coil row ──
-        ind_x = xfmr.cx + span / 2 + XFMR_IND + 16
-        self._draw_winding_indicator(ind_x, hv_y, xfmr.hv_winding, xfmr.hv_grounded, hv_col)
-        self._draw_winding_indicator(ind_x, lv_y, xfmr.lv_winding, xfmr.lv_grounded, lv_col)
+        # ── Winding indicators (rotated) ──────────────────────────────────
+        ind_loc_x = half + XFMR_IND + 16
+        hv_ind = self._xr(xfmr, xfmr.cx + ind_loc_x, xfmr.cy + hv_y_loc)
+        lv_ind = self._xr(xfmr, xfmr.cx + ind_loc_x, xfmr.cy + lv_y_loc)
+        self._draw_winding_indicator(hv_ind[0], hv_ind[1],
+                                     xfmr.hv_winding, xfmr.hv_grounded, hv_col)
+        self._draw_winding_indicator(lv_ind[0], lv_ind[1],
+                                     xfmr.lv_winding, xfmr.lv_grounded, lv_col)
 
-        kv_x = xfmr.cx - span / 2 - 6   # kV labels on the left side
+        # ── kV labels (rotated) ───────────────────────────────────────────
+        kv_loc_x = -half - 6
         if xfmr.hv_kv:
-            kv_sx, kv_sy = self._w2s(kv_x, hv_y)
+            kv_hv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + hv_y_loc)
+            kv_sx, kv_sy = self._w2s(*kv_hv)
             self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.hv_kv:g} kV",
-                                    font=("TkDefaultFont", 8, "bold"),
-                                    fill=hv_col, anchor="e")
+                                    font=("TkDefaultFont", 8, "bold"), fill=hv_col, anchor="e")
         if xfmr.lv_kv:
-            kv_sx, kv_sy = self._w2s(kv_x, lv_y)
+            kv_lv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + lv_y_loc)
+            kv_sx, kv_sy = self._w2s(*kv_lv)
             self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.lv_kv:g} kV",
-                                    font=("TkDefaultFont", 8, "bold"),
-                                    fill=lv_col, anchor="e")
+                                    font=("TkDefaultFont", 8, "bold"), fill=lv_col, anchor="e")
 
-        # ── Label (name + MVA, offset if dragged) ─────────────────────────
+        # ── Name label ────────────────────────────────────────────────────
         label = xfmr.name
         if xfmr.mva:
             label += f"\n{xfmr.mva:g} MVA"
-        l_sx, l_sy = self._w2s(kv_x + xfmr.label_ox, xfmr.cy + xfmr.label_oy)
+        l_sx, l_sy = self._w2s(xfmr.cx + kv_loc_x + xfmr.label_ox,
+                               xfmr.cy + xfmr.label_oy)
         self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="e")
-
-    def _terminal_dot(self, sx: float, sy: float, colour: str) -> None:
-        rd = max(3, 3 * self._scale)
-        self.canvas.create_oval(sx - rd, sy - rd, sx + rd, sy + rd,
-                                fill=colour, outline=colour)
-
-    def _draw_coil_h(self, x_left_w: float, cy_w: float, n: int, r: float,
-                     bulge_up: bool, colour: str) -> None:
-        """Draw a horizontal coil of n half-loop bumps centred on cy_w.
-
-        Bumps face upward (bulge_up=True) or downward, starting at x_left_w.
-        """
-        N = 18
-        sign = -1.0 if bulge_up else 1.0   # up = negative y
-        for i in range(n):
-            bx = x_left_w + r + i * 2 * r
-            pts = []
-            for j in range(N + 1):
-                t  = -math.pi / 2 + math.pi * j / N
-                wx = bx + r * math.sin(t)
-                wy = cy_w + sign * r * math.cos(t)
-                sx, sy = self._w2s(wx, wy)
-                pts.extend([sx, sy])
-            if len(pts) >= 4:
-                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
 
     def _draw_coil(self, cx_w: float, y_top_w: float, n: int, r: float,
                    bulge_left: bool, colour: str) -> None:
@@ -1143,7 +1198,7 @@ class Diagram(tk.Frame):
 
     # ── Helper: nearest connection ────────────────────────────────────────
 
-    def _nearest_connection(self, sx: float, sy: float, max_px: float = 12.0):
+    def _nearest_connection(self, sx: float, sy: float, max_px: float = 20.0):
         """Return (conn_id, t) for the connection whose line is closest to screen point (sx,sy), or None."""
         best_dist = max_px
         best = None
@@ -1190,15 +1245,13 @@ class Diagram(tk.Frame):
                 continue
             x1, y1 = self._w2s(*start)
             x2, y2 = self._w2s(*end)
-            if _point_to_segment_dist(sx, sy, x1, y1, x2, y2) < 8:
+            if _point_to_segment_dist(sx, sy, x1, y1, x2, y2) < 16:
                 return conn.id
         return None
 
     def _hit_transformer(self, wx: float, wy: float) -> Optional[str]:
-        tol_x = XFMR_BR * 2 + 4
-        tol_y = XFMR_HALF
         for xfmr in self._transformers.values():
-            if abs(wx - xfmr.cx) < tol_x and abs(wy - xfmr.cy) < tol_y:
+            if math.hypot(wx - xfmr.cx, wy - xfmr.cy) < XFMR_HALF + 4:
                 return xfmr.id
         return None
 
@@ -1324,19 +1377,20 @@ class Diagram(tk.Frame):
         tol = max(10, 10 * self._scale)
 
         for xfmr in self._transformers.values():
-            coil_hv_sx, coil_hv_sy = self._w2s(xfmr.cx, xfmr.cy - XFMR_CORE / 2)
-            coil_lv_sx, coil_lv_sy = self._w2s(xfmr.cx, xfmr.cy + XFMR_CORE / 2)
-            # HV lead tip: bus tap if connected, else free terminal at top_y
+            hv_spine = self._xr(xfmr, xfmr.cx, xfmr.cy - XFMR_CORE / 2)
+            lv_spine = self._xr(xfmr, xfmr.cx, xfmr.cy + XFMR_CORE / 2)
+            coil_hv_sx, coil_hv_sy = self._w2s(*hv_spine)
+            coil_lv_sx, coil_lv_sy = self._w2s(*lv_spine)
             if xfmr.hv_bus and xfmr.hv_bus in self._buses:
                 hv_tip = self._buses[xfmr.hv_bus].nearest_tap(xfmr.hv_tap_x, xfmr.hv_tap_y)
                 hv_tip_sx, hv_tip_sy = self._w2s(*hv_tip)
             else:
-                hv_tip_sx, hv_tip_sy = self._w2s(xfmr.cx, xfmr.top_y)
+                hv_tip_sx, hv_tip_sy = self._w2s(*xfmr.hv_terminal)
             if xfmr.lv_bus and xfmr.lv_bus in self._buses:
                 lv_tip = self._buses[xfmr.lv_bus].nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
                 lv_tip_sx, lv_tip_sy = self._w2s(*lv_tip)
             else:
-                lv_tip_sx, lv_tip_sy = self._w2s(xfmr.cx, xfmr.bot_y)
+                lv_tip_sx, lv_tip_sy = self._w2s(*xfmr.lv_terminal)
             if math.hypot(sx - hv_tip_sx, sy - hv_tip_sy) <= tol:
                 return ("xfmr_hv", xfmr.id, coil_hv_sx, coil_hv_sy)
             if math.hypot(sx - lv_tip_sx, sy - lv_tip_sy) <= tol:

@@ -148,6 +148,7 @@ class MainWindow:
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
         self.root.bind("g", lambda _e: self.diagram.toggle_snap_grid())
         self.root.bind("<space>", lambda _e: self.diagram.toggle_selected_device())
+        self.root.bind("r", lambda _e: self.diagram.rotate_selected())
 
     # ── Body ──────────────────────────────────────────────────────────────
 
@@ -420,6 +421,7 @@ class KeymapDialog(tk.Toplevel):
         ]),
         ("Editing", [
             ("Space",    "Toggle selected breaker / disconnect open ↔ closed"),
+            ("R",        "Rotate selected transformer 90° CCW"),
             ("G",        "Toggle grid snap ON / OFF"),
             ("Shift+click (bus node)", "Delete node  (merges adjacent segments)"),
             ("Shift+click (bus segment midpoint)", "Insert node"),
