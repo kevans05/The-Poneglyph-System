@@ -45,7 +45,7 @@ XFMR_LEAD = 14.0   # straight lead from terminal to the first coil row
 XFMR_IND  = 9.0    # winding-connection indicator glyph size (world units)
 
 _WIND_SPAN = XFMR_NB * 2 * XFMR_BR                    # 42 — horizontal span of each coil
-XFMR_HALF  = XFMR_LEAD + XFMR_BR + XFMR_CORE / 2     # centre → terminal (= 27)
+XFMR_HALF  = XFMR_LEAD + XFMR_CORE / 2               # centre → terminal (= 29)
 
 # ── Source / Load geometry ────────────────────────────────────────────────────
 SRC_R       = 16.0   # AC source circle radius (world units)
@@ -480,7 +480,7 @@ class Diagram(tk.Frame):
         x_left = xfmr.cx - span / 2
 
         # ── HV terminal lead (bus → top of centre conductor) ─────────────
-        ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y - r)
+        ct_sx, ct_sy = self._w2s(xfmr.cx, hv_y)   # outer edge of HV coil spine
         if xfmr.hv_bus and xfmr.hv_bus in self._buses:
             bus = self._buses[xfmr.hv_bus]
             bsx, bsy = self._w2s(bus.nearest_tap(xfmr.hv_tap_x), bus.y)
@@ -492,8 +492,8 @@ class Diagram(tk.Frame):
                                     fill=hv_col, width=LINE_WIDTH)
             self._terminal_dot(t_sx, t_sy, hv_col)
 
-        # ── LV terminal lead (bottom of centre conductor → bus) ────────────
-        cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y + r)
+        # ── LV terminal lead (outer edge of LV coil spine → bus) ──────────
+        cb_sx, cb_sy = self._w2s(xfmr.cx, lv_y)   # outer edge of LV coil spine
         if xfmr.lv_bus and xfmr.lv_bus in self._buses:
             bus = self._buses[xfmr.lv_bus]
             bsx, bsy = self._w2s(bus.nearest_tap(xfmr.lv_tap_x), bus.y)
