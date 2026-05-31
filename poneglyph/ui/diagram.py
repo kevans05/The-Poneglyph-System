@@ -345,9 +345,11 @@ class Diagram(tk.Frame):
         self._drag_id:        Optional[str]   = None
         self._drag_kind:      Optional[str]   = None
         self._drag_origin:    Optional[tuple] = None
+        self._drag_node_idx:  Optional[int]   = None   # bus-node being dragged
         self._conn_from_bus:  Optional[str]   = None
         self._conn_from_tap:  tuple           = (0.0, 0.0)
         self._pan_start_pt:   Optional[tuple] = None
+        self._sticky_tool:    bool            = False   # hold-Shift keeps tool active
 
         # Bus polyline drawing state
         self._bus_draw_nodes: list = []   # accumulated world-space nodes
@@ -378,8 +380,9 @@ class Diagram(tk.Frame):
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def set_tool(self, tool: str) -> None:
-        self._tool = tool
+    def set_tool(self, tool: str, sticky: bool = False) -> None:
+        self._tool        = tool
+        self._sticky_tool = sticky
         self._conn_from_bus  = None
         # Cancel any in-progress bus drawing
         self._bus_draw_nodes = []
@@ -388,10 +391,18 @@ class Diagram(tk.Frame):
             hint = TOOL_HINTS.get(tool, "")
             if tool == TOOL_BUS:
                 hint = "Bus: click to place first node."
+            if sticky:
+                hint += "  [STICKY — hold Shift or press key again to keep tool]"
             self._on_status(hint)
         cursor = {TOOL_SELECT: "arrow", TOOL_DELETE: "X_cursor"}.get(tool, "crosshair")
         self.canvas.configure(cursor=cursor)
         self.redraw()
+
+    def _revert_to_select(self, event: Optional[tk.Event] = None) -> None:
+        """After a single placement, revert to select unless sticky or Shift held."""
+        shift_held = event and bool(event.state & 0x0001)
+        if not self._sticky_tool and not shift_held:
+            self.set_tool(TOOL_SELECT)
 
     def get_buses(self)        -> dict: return self._buses
     def get_connections(self)  -> dict: return self._connections
@@ -511,6 +522,22 @@ class Diagram(tk.Frame):
                 sx, sy = self._w2s(nx, ny)
                 r = BUS_WIDTH * self._scale
                 self.canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=colour, outline=colour)
+
+        # When selected: draw draggable node handles and mid-segment add-node hints
+        if sel:
+            hr = max(5, 5 * self._scale)
+            for ni, (nx, ny) in enumerate(bus.nodes):
+                sx, sy = self._w2s(nx, ny)
+                self.canvas.create_rectangle(sx-hr, sy-hr, sx+hr, sy+hr,
+                                             outline="#0066CC", fill="white", width=2)
+            # Mid-point diamonds on each segment — shift-click to insert node
+            for i, j in bus.edges:
+                mx = (bus.nodes[i][0] + bus.nodes[j][0]) / 2
+                my = (bus.nodes[i][1] + bus.nodes[j][1]) / 2
+                sx, sy = self._w2s(mx, my)
+                dm = max(4, 4 * self._scale)
+                self.canvas.create_polygon(sx, sy-dm, sx+dm, sy, sx, sy+dm, sx-dm, sy,
+                                           outline="#0066CC", fill="#CCE5FF", width=1)
 
         # Name label at top-centre
         cxs, cys = self._w2s(bus.cx, bus.cy_label)
@@ -1217,6 +1244,44 @@ class Diagram(tk.Frame):
             self._on_status("Bus: click to place first node.")
         self.redraw()
 
+    def _bus_insert_node(self, bus: DiagramBus, edge_idx: int) -> None:
+        """Split edge at its midpoint, inserting a new node."""
+        i, j = bus.edges[edge_idx]
+        nx = (bus.nodes[i][0] + bus.nodes[j][0]) / 2
+        ny = (bus.nodes[i][1] + bus.nodes[j][1]) / 2
+        new_idx = len(bus.nodes)
+        bus.nodes.append((nx, ny))
+        bus.edges[edge_idx] = (i, new_idx)
+        bus.edges.append((new_idx, j))
+        self.redraw()
+
+    def _bus_delete_node(self, bus: DiagramBus, ni: int) -> None:
+        """Remove a node; reconnect its two neighbours if it was degree-2."""
+        neighbours_as_i = [(idx, e) for idx, e in enumerate(bus.edges) if e[0] == ni]
+        neighbours_as_j = [(idx, e) for idx, e in enumerate(bus.edges) if e[1] == ni]
+        connected_edges = neighbours_as_i + neighbours_as_j
+        if len(connected_edges) == 2:
+            # Degree-2 node: merge the two edges
+            other_nodes = []
+            for _, e in connected_edges:
+                other_nodes.extend([n for n in e if n != ni])
+            # Remove both edges, add one merged edge
+            idxs_to_remove = sorted([idx for idx, _ in connected_edges], reverse=True)
+            for idx in idxs_to_remove:
+                bus.edges.pop(idx)
+            if len(other_nodes) == 2:
+                bus.edges.append((other_nodes[0], other_nodes[1]))
+        elif len(connected_edges) == 1:
+            # End node: just remove its edge
+            bus.edges.pop(connected_edges[0][0])
+        # Remove the node; remap edge indices
+        bus.nodes.pop(ni)
+        bus.edges = [
+            (i if i < ni else i - 1, j if j < ni else j - 1)
+            for i, j in bus.edges
+        ]
+        self.redraw()
+
     def _on_escape(self, _e=None) -> None:
         if self._bus_draw_nodes:
             self._finish_bus()
@@ -1227,6 +1292,38 @@ class Diagram(tk.Frame):
         wx, wy = self._s2w(event.x, event.y)
 
         if self._tool == TOOL_SELECT:
+            shift = bool(event.state & 0x0001)
+
+            # ── Bus node editing (only when a bus is already selected) ────
+            if self._selection and self._selection[0] == "bus":
+                bus = self._buses.get(self._selection[1])
+                if bus:
+                    node_tol = max(7, 7 * self._scale)
+                    # Check for click on an existing node handle
+                    for ni, (nx, ny) in enumerate(bus.nodes):
+                        sx, sy = self._w2s(nx, ny)
+                        if math.hypot(event.x - sx, event.y - sy) <= node_tol:
+                            if shift:
+                                # Shift-click node: delete it (merge adjacent edges)
+                                self._bus_delete_node(bus, ni)
+                            else:
+                                # Start dragging this node
+                                self._drag_id       = bus.id
+                                self._drag_kind     = "bus_node"
+                                self._drag_node_idx = ni
+                                self._drag_origin   = (wx, wy)
+                            return
+                    # Check for shift-click on a segment mid-diamond → insert node
+                    if shift:
+                        seg_tol = max(10, 10 * self._scale)
+                        for idx, (i, j) in enumerate(bus.edges):
+                            mx = (bus.nodes[i][0] + bus.nodes[j][0]) / 2
+                            my = (bus.nodes[i][1] + bus.nodes[j][1]) / 2
+                            sx, sy = self._w2s(mx, my)
+                            if math.hypot(event.x - sx, event.y - sy) <= seg_tol:
+                                self._bus_insert_node(bus, idx)
+                                return
+
             xfmr_id  = self._hit_transformer(wx, wy)
             src_id   = self._hit_source(wx, wy)
             load_id  = self._hit_load(wx, wy)
@@ -1315,6 +1412,7 @@ class Diagram(tk.Frame):
                 xfmr = DiagramTransformer(id=tid, name=tid, cx=wx, cy=wy)
             self._transformers[tid] = xfmr
             self._set_selection("transformer", tid)
+            self._revert_to_select(event)
 
         elif self._tool == TOOL_SOURCE:
             snap_id = self._snap_bus(wx, wy)
@@ -1330,6 +1428,7 @@ class Diagram(tk.Frame):
                 src = DiagramSource(sid, sid, cx=wx, cy=wy)
             self._sources[sid] = src
             self._set_selection("source", sid)
+            self._revert_to_select(event)
 
         elif self._tool == TOOL_LOAD:
             snap_id = self._snap_bus(wx, wy)
@@ -1345,6 +1444,7 @@ class Diagram(tk.Frame):
                 ld = DiagramLoad(lid, lid, cx=wx, cy=wy)
             self._loads[lid] = ld
             self._set_selection("load", lid)
+            self._revert_to_select(event)
 
         elif self._tool == TOOL_CT:
             conn_id = self._hit_connection(event.x, event.y)
@@ -1360,6 +1460,7 @@ class Diagram(tk.Frame):
                     cid = f"CT-{len(self._cts) + 1}"
                     self._cts[cid] = DiagramCT(cid, cid, conn_id, t)
                     self._set_selection("ct", cid)
+                    self._revert_to_select(event)
 
         elif self._tool == TOOL_VT:
             bus_id = self._hit_bus(wx, wy)
@@ -1369,6 +1470,7 @@ class Diagram(tk.Frame):
                 vid = f"VT-{len(self._vts) + 1}"
                 self._vts[vid] = DiagramVT(vid, vid, bus_id, tap_pt[0], tap_pt[1])
                 self._set_selection("vt", vid)
+                self._revert_to_select(event)
 
         elif self._tool == TOOL_BREAKER:
             result = self._nearest_connection(event.x, event.y)
@@ -1377,6 +1479,7 @@ class Diagram(tk.Frame):
                 bid = f"BKR-{len(self._breakers) + 1}"
                 self._breakers[bid] = DiagramBreaker(bid, bid, conn_id, t)
                 self._set_selection("breaker", bid)
+                self._revert_to_select(event)
 
         elif self._tool == TOOL_DISCONNECT:
             result = self._nearest_connection(event.x, event.y)
@@ -1385,6 +1488,7 @@ class Diagram(tk.Frame):
                 did = f"DSW-{len(self._disconnects) + 1}"
                 self._disconnects[did] = DiagramDisconnect(did, did, conn_id, t)
                 self._set_selection("disconnect", did)
+                self._revert_to_select(event)
 
         elif self._tool == TOOL_DELETE:
             self._delete_at(event, wx, wy)
@@ -1439,6 +1543,30 @@ class Diagram(tk.Frame):
             if self._drag_kind == "bus":
                 bus = self._buses[self._drag_id]
                 bus.nodes = [(nx + dx, ny + dy) for nx, ny in bus.nodes]
+            elif self._drag_kind == "bus_node":
+                bus = self._buses[self._drag_id]
+                ni  = self._drag_node_idx
+                nx, ny = bus.nodes[ni]
+                # Constrain to axis-aligned from neighbouring nodes
+                neighbours = [j for i,j in bus.edges if i==ni] + [i for i,j in bus.edges if j==ni]
+                if len(neighbours) == 1:
+                    # End node: free movement but snapped to 90° from its neighbour
+                    nbx, nby = bus.nodes[neighbours[0]]
+                    wx, wy = self._snap_90((nbx, nby), wx, wy)
+                elif len(neighbours) == 2:
+                    # Mid node: keep it on the axis between its two neighbours
+                    # Allow both H and V movement but snap to one axis at a time
+                    nbx0, nby0 = bus.nodes[neighbours[0]]
+                    nbx1, nby1 = bus.nodes[neighbours[1]]
+                    # Prefer the axis that keeps segments rectilinear
+                    if abs(nbx0 - nbx1) < 1:    # both neighbours same X → node must stay on H axis
+                        wy = ny                  # lock Y, allow X
+                    elif abs(nby0 - nby1) < 1:  # both neighbours same Y → lock X, allow Y
+                        wx = nx
+                bus.nodes[ni] = (wx, wy)
+                self._drag_origin = (wx, wy)
+                self.redraw()
+                return
             elif self._drag_kind == "transformer":
                 xfmr = self._transformers[self._drag_id]
                 xfmr.cx += dx;  xfmr.cy += dy
@@ -1452,9 +1580,10 @@ class Diagram(tk.Frame):
             self.redraw()
 
     def _on_release(self, event: tk.Event) -> None:
-        self._drag_id     = None
-        self._drag_kind   = None
-        self._drag_origin = None
+        self._drag_id       = None
+        self._drag_kind     = None
+        self._drag_origin   = None
+        self._drag_node_idx = None
 
     def _on_motion(self, event: tk.Event) -> None:
         wx, wy = self._s2w(event.x, event.y)

@@ -131,16 +131,16 @@ class MainWindow:
 
         # Keyboard shortcuts
         self.root.bind("s", lambda _e: self._set_tool(TOOL_SELECT))
-        self.root.bind("b", lambda _e: self._set_lines_tool(TOOL_BUS))
-        self.root.bind("t", lambda _e: self._set_lines_tool(TOOL_TLINE))
-        self.root.bind("f", lambda _e: self._set_lines_tool(TOOL_FEEDER))
-        self.root.bind("x", lambda _e: self._set_xfmr_tool(TOOL_TRANSFORMER))
-        self.root.bind("p", lambda _e: self._set_src_tool(TOOL_SOURCE))
-        self.root.bind("l", lambda _e: self._set_src_tool(TOOL_LOAD))
-        self.root.bind("c", lambda _e: self._set_instr_tool(TOOL_CT))
-        self.root.bind("v", lambda _e: self._set_instr_tool(TOOL_VT))
-        self.root.bind("k", lambda _e: self._set_switch_tool(TOOL_BREAKER))
-        self.root.bind("i", lambda _e: self._set_switch_tool(TOOL_DISCONNECT))
+        self.root.bind("b", lambda _e: self._toggle_tool(TOOL_BUS,         self._set_lines_tool))
+        self.root.bind("t", lambda _e: self._toggle_tool(TOOL_TLINE,       self._set_lines_tool))
+        self.root.bind("f", lambda _e: self._toggle_tool(TOOL_FEEDER,      self._set_lines_tool))
+        self.root.bind("x", lambda _e: self._toggle_tool(TOOL_TRANSFORMER, self._set_xfmr_tool))
+        self.root.bind("p", lambda _e: self._toggle_tool(TOOL_SOURCE,      self._set_src_tool))
+        self.root.bind("l", lambda _e: self._toggle_tool(TOOL_LOAD,        self._set_src_tool))
+        self.root.bind("c", lambda _e: self._toggle_tool(TOOL_CT,          self._set_instr_tool))
+        self.root.bind("v", lambda _e: self._toggle_tool(TOOL_VT,          self._set_instr_tool))
+        self.root.bind("k", lambda _e: self._toggle_tool(TOOL_BREAKER,     self._set_switch_tool))
+        self.root.bind("i", lambda _e: self._toggle_tool(TOOL_DISCONNECT,  self._set_switch_tool))
         self.root.bind("d", lambda _e: self._set_tool(TOOL_DELETE))
 
     # ── Body ──────────────────────────────────────────────────────────────
@@ -199,7 +199,7 @@ class MainWindow:
         self._btn_switch.config(text=labels.get(tool, "Switching ▾"))
         self._set_tool(tool)
 
-    def _set_tool(self, tool: str) -> None:
+    def _set_tool(self, tool: str, sticky: bool = False) -> None:
         self._btn_select.config(relief="sunken" if tool == TOOL_SELECT else "flat")
         self._btn_delete.config(relief="sunken" if tool == TOOL_DELETE else "flat")
         self._btn_lines.config(  relief="sunken" if tool in self._LINES_TOOLS  else "raised")
@@ -207,7 +207,15 @@ class MainWindow:
         self._btn_src.config(    relief="sunken" if tool in self._SRC_TOOLS    else "raised")
         self._btn_instr.config(  relief="sunken" if tool in self._INSTR_TOOLS  else "raised")
         self._btn_switch.config( relief="sunken" if tool in self._SWITCH_TOOLS else "raised")
-        self.diagram.set_tool(tool)
+        self.diagram.set_tool(tool, sticky=sticky)
+
+    def _toggle_tool(self, tool: str, set_fn) -> None:
+        """Press hotkey: if already in this tool → toggle sticky; else activate it."""
+        if self.diagram._tool == tool:
+            new_sticky = not self.diagram._sticky_tool
+            self.diagram.set_tool(tool, sticky=new_sticky)
+        else:
+            set_fn(tool)
 
     # ── Selection → properties ────────────────────────────────────────────
 
