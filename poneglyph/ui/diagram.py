@@ -347,6 +347,7 @@ class Diagram(tk.Frame):
         self._drag_origin:    Optional[tuple] = None
         self._drag_node_idx:  Optional[int]   = None   # bus-node being dragged
         self._drag_axis:      Optional[str]   = None   # "h" | "v" | "free" — locked at drag start
+        self._term_anchor:    Optional[tuple] = None   # screen (sx,sy) of the fixed terminal end
         self._conn_from_bus:  Optional[str]   = None
         self._conn_from_tap:  tuple           = (0.0, 0.0)
         self._pan_start_pt:   Optional[tuple] = None
@@ -1217,6 +1218,52 @@ class Diagram(tk.Frame):
                 return dc.id
         return None
 
+    def _hit_terminal(self, sx: float, sy: float, wx: float, wy: float):
+        """Return (kind, elem_id, anchor_sx, anchor_sy) if click is near a terminal dot/lead-tip."""
+        tol = max(10, 10 * self._scale)
+
+        for xfmr in self._transformers.values():
+            coil_hv_sx, coil_hv_sy = self._w2s(xfmr.cx, xfmr.cy - XFMR_CORE / 2)
+            coil_lv_sx, coil_lv_sy = self._w2s(xfmr.cx, xfmr.cy + XFMR_CORE / 2)
+            # HV lead tip: bus tap if connected, else free terminal at top_y
+            if xfmr.hv_bus and xfmr.hv_bus in self._buses:
+                hv_tip = self._buses[xfmr.hv_bus].nearest_tap(xfmr.hv_tap_x, xfmr.hv_tap_y)
+                hv_tip_sx, hv_tip_sy = self._w2s(*hv_tip)
+            else:
+                hv_tip_sx, hv_tip_sy = self._w2s(xfmr.cx, xfmr.top_y)
+            if xfmr.lv_bus and xfmr.lv_bus in self._buses:
+                lv_tip = self._buses[xfmr.lv_bus].nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
+                lv_tip_sx, lv_tip_sy = self._w2s(*lv_tip)
+            else:
+                lv_tip_sx, lv_tip_sy = self._w2s(xfmr.cx, xfmr.bot_y)
+            if math.hypot(sx - hv_tip_sx, sy - hv_tip_sy) <= tol:
+                return ("xfmr_hv", xfmr.id, coil_hv_sx, coil_hv_sy)
+            if math.hypot(sx - lv_tip_sx, sy - lv_tip_sy) <= tol:
+                return ("xfmr_lv", xfmr.id, coil_lv_sx, coil_lv_sy)
+
+        for src in self._sources.values():
+            if src.bus and src.bus in self._buses:
+                tip = self._buses[src.bus].nearest_tap(src.tap_x, src.tap_y)
+                tip_sx, tip_sy = self._w2s(*tip)
+            else:
+                tip_sx, tip_sy = self._w2s(src.cx, src.cy + SRC_R)
+            anchor_sx, anchor_sy = self._w2s(src.cx, src.cy + SRC_R)
+            if math.hypot(sx - tip_sx, sy - tip_sy) <= tol:
+                return ("src_term", src.id, anchor_sx, anchor_sy)
+
+        for ld in self._loads.values():
+            base_w = ld.cy - LOAD_AH
+            if ld.bus and ld.bus in self._buses:
+                tip = self._buses[ld.bus].nearest_tap(ld.tap_x, ld.tap_y)
+                tip_sx, tip_sy = self._w2s(*tip)
+            else:
+                tip_sx, tip_sy = self._w2s(ld.cx, base_w - LOAD_LEAD)
+            anchor_sx, anchor_sy = self._w2s(ld.cx, base_w)
+            if math.hypot(sx - tip_sx, sy - tip_sy) <= tol:
+                return ("load_term", ld.id, anchor_sx, anchor_sy)
+
+        return None
+
     # ── Bus polyline tool helpers ──────────────────────────────────────────
 
     def _snap_90(self, last: tuple, wx: float, wy: float) -> tuple:
@@ -1324,6 +1371,24 @@ class Diagram(tk.Frame):
                             if math.hypot(event.x - sx, event.y - sy) <= seg_tol:
                                 self._bus_insert_node(bus, idx)
                                 return
+
+            # ── Terminal drag: grab a free or connected lead tip ─────────────
+            term_hit = self._hit_terminal(event.x, event.y, wx, wy)
+            if term_hit:
+                kind, elem_id, anchor_sx, anchor_sy = term_hit
+                self._drag_id     = elem_id
+                self._drag_kind   = kind          # "xfmr_hv" | "xfmr_lv" | "src_term" | "load_term"
+                self._drag_origin = (wx, wy)
+                self._term_anchor = (anchor_sx, anchor_sy)
+                if kind == "xfmr_hv":
+                    self._set_selection("transformer", elem_id)
+                elif kind == "xfmr_lv":
+                    self._set_selection("transformer", elem_id)
+                elif kind == "src_term":
+                    self._set_selection("source", elem_id)
+                elif kind == "load_term":
+                    self._set_selection("load", elem_id)
+                return
 
             xfmr_id  = self._hit_transformer(wx, wy)
             src_id   = self._hit_source(wx, wy)
@@ -1585,6 +1650,25 @@ class Diagram(tk.Frame):
                 bus.nodes[ni] = (wx, wy)
                 self.redraw()
                 return
+            elif self._drag_kind in ("xfmr_hv", "xfmr_lv", "src_term", "load_term"):
+                # Terminal rewire drag: show rubber-band + snap highlight
+                self.redraw()
+                snap_id = self._snap_bus(wx, wy)
+                anc_sx, anc_sy = self._term_anchor
+                if snap_id:
+                    bus = self._buses[snap_id]
+                    tap_pt = bus.nearest_tap(wx, wy)
+                    tap_sx, tap_sy = self._w2s(*tap_pt)
+                    self.canvas.create_line(anc_sx, anc_sy, tap_sx, tap_sy,
+                                            fill="#0066CC", width=LINE_WIDTH, dash=(4, 3))
+                    r = 7
+                    self.canvas.create_oval(tap_sx - r, tap_sy - r,
+                                            tap_sx + r, tap_sy + r,
+                                            fill="#0066CC", outline="white", width=2)
+                else:
+                    self.canvas.create_line(anc_sx, anc_sy, event.x, event.y,
+                                            fill="#888888", width=LINE_WIDTH, dash=(4, 3))
+                return
             elif self._drag_kind == "transformer":
                 xfmr = self._transformers[self._drag_id]
                 xfmr.cx += dx;  xfmr.cy += dy
@@ -1598,11 +1682,57 @@ class Diagram(tk.Frame):
             self.redraw()
 
     def _on_release(self, event: tk.Event) -> None:
+        if self._drag_kind in ("xfmr_hv", "xfmr_lv", "src_term", "load_term"):
+            wx, wy = self._s2w(event.x, event.y)
+            snap_id = self._snap_bus(wx, wy)
+            kind    = self._drag_kind
+            eid     = self._drag_id
+            if kind == "xfmr_hv" and eid in self._transformers:
+                xfmr = self._transformers[eid]
+                if snap_id:
+                    tap = self._buses[snap_id].nearest_tap(wx, wy)
+                    xfmr.hv_bus   = snap_id
+                    xfmr.hv_tap_x = tap[0]
+                    xfmr.hv_tap_y = tap[1]
+                    xfmr.hv_kv    = self._buses[snap_id].kv or xfmr.hv_kv
+                else:
+                    xfmr.hv_bus = None
+            elif kind == "xfmr_lv" and eid in self._transformers:
+                xfmr = self._transformers[eid]
+                if snap_id:
+                    tap = self._buses[snap_id].nearest_tap(wx, wy)
+                    xfmr.lv_bus   = snap_id
+                    xfmr.lv_tap_x = tap[0]
+                    xfmr.lv_tap_y = tap[1]
+                    xfmr.lv_kv    = self._buses[snap_id].kv or xfmr.lv_kv
+                else:
+                    xfmr.lv_bus = None
+            elif kind == "src_term" and eid in self._sources:
+                src = self._sources[eid]
+                if snap_id:
+                    tap = self._buses[snap_id].nearest_tap(wx, wy)
+                    src.bus   = snap_id
+                    src.tap_x = tap[0]
+                    src.tap_y = tap[1]
+                else:
+                    src.bus = None
+            elif kind == "load_term" and eid in self._loads:
+                ld = self._loads[eid]
+                if snap_id:
+                    tap = self._buses[snap_id].nearest_tap(wx, wy)
+                    ld.bus   = snap_id
+                    ld.tap_x = tap[0]
+                    ld.tap_y = tap[1]
+                else:
+                    ld.bus = None
+            self.redraw()
+
         self._drag_id       = None
         self._drag_kind     = None
         self._drag_origin   = None
         self._drag_node_idx = None
         self._drag_axis     = None
+        self._term_anchor   = None
 
     def _on_motion(self, event: tk.Event) -> None:
         wx, wy = self._s2w(event.x, event.y)
