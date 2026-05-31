@@ -386,7 +386,17 @@ class DiagramVT:
     bus_id: str
     tap_x: float
     tap_y: float = 0.0
-    ratio: str = "11000/110"
+    # Voltage ratio — enter as "11000:110" or "11000/110" or "100:1"
+    ratio_primary: float = 11000.0
+    ratio_secondary: float = 110.0
+    vt_type: str = "VT"           # "VT" | "CVT"
+    accuracy_class: str = "0.3"   # e.g. "0.1", "0.2", "0.5", "1.0", "3P"
+    burden_va: float = 25.0
+    num_secondaries: int = 1      # 1 or 2 (dual-secondary)
+
+    @property
+    def ratio_str(self) -> str:
+        return f"{self.ratio_primary:.0f}:{self.ratio_secondary:.0f}V"
 
 
 @dataclass
@@ -1411,7 +1421,7 @@ class Diagram(tk.Frame):
                                 fill="#444444",
                                 anchor="w" if pxn >= 0 else "e")
 
-    # ── VT ────────────────────────────────────────────────────────────────
+    # ── VT / CVT ──────────────────────────────────────────────────────────
 
     def _draw_vt(self, vt: DiagramVT) -> None:
         bus = self._buses.get(vt.bus_id)
@@ -1422,48 +1432,64 @@ class Diagram(tk.Frame):
 
         sel    = self._selection == ("vt", vt.id)
         colour = "#0066CC" if sel else "black"
+        canvas = self.canvas
 
-        r    = 6 * self._scale
-        drop = 12 * self._scale
+        R    = 10 * self._scale   # winding circle radius
+        gap  = 2  * self._scale   # gap between primary and secondary circles
+        drop = 10 * self._scale   # wire from bus to top of primary circle
 
-        self.canvas.create_line(sx, sy, sx, sy + drop, fill=colour, width=LINE_WIDTH)
+        # Lead from bus tap down to top of primary winding
+        pri_cy = sy + drop + R
+        canvas.create_line(sx, sy, sx, pri_cy - R, fill=colour, width=LINE_WIDTH)
 
-        winding_top = sy + drop
-        n = 3
-        N = 16
-        for i in range(n):
-            by = winding_top + r + i * 2 * r
-            pts = []
-            for j in range(N + 1):
-                t = -math.pi / 2 + math.pi * j / N
-                pts.extend([sx + r * math.cos(t), by + r * math.sin(t)])
-            if len(pts) >= 4:
-                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
+        # Primary winding — full circle
+        canvas.create_oval(sx - R, pri_cy - R, sx + R, pri_cy + R,
+                           outline=colour, width=LINE_WIDTH)
 
-        winding_bot = winding_top + n * 2 * r
-        r2 = r * 0.75
-        sec_top = winding_bot + r * 0.5
-        for i in range(n):
-            by = sec_top + r2 + i * 2 * r2
-            pts = []
-            for j in range(N + 1):
-                t = -math.pi / 2 + math.pi * j / N
-                pts.extend([sx - r2 * math.cos(t), by + r2 * math.sin(t)])
-            if len(pts) >= 4:
-                self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
+        # CVT gets a capacitor stack above the primary circle
+        if vt.vt_type == "CVT":
+            cap_w = R * 1.2
+            plate_gap = 3 * self._scale
+            for k in (-1, 1):
+                py = sy + drop / 2 + k * plate_gap / 2
+                canvas.create_line(sx - cap_w, py, sx + cap_w, py,
+                                   fill=colour, width=LINE_WIDTH + 1)
 
-        sec_bot = sec_top + n * 2 * r2
-        gy = sec_bot + 4 * self._scale
-        self.canvas.create_line(sx, sec_bot, sx, gy, fill=colour, width=LINE_WIDTH)
+        # Short inter-winding wire
+        sec_cy = pri_cy + R + gap + R
+        canvas.create_line(sx, pri_cy + R, sx, sec_cy - R, fill=colour, width=LINE_WIDTH)
+
+        # Secondary winding — full circle (slightly smaller)
+        Rs = R * 0.85
+        sec_cy2 = pri_cy + R + gap + Rs   # recompute with smaller radius
+        canvas.create_line(sx, pri_cy + R, sx, sec_cy2 - Rs, fill=colour, width=LINE_WIDTH)
+        canvas.create_oval(sx - Rs, sec_cy2 - Rs, sx + Rs, sec_cy2 + Rs,
+                           outline=colour, width=LINE_WIDTH)
+
+        # Second secondary winding for dual-secondary VTs
+        if vt.num_secondaries >= 2:
+            sec2_cy = sec_cy2 + Rs + gap + Rs
+            canvas.create_line(sx, sec_cy2 + Rs, sx, sec2_cy - Rs,
+                               fill=colour, width=LINE_WIDTH)
+            canvas.create_oval(sx - Rs, sec2_cy - Rs, sx + Rs, sec2_cy + Rs,
+                               outline=colour, width=LINE_WIDTH)
+            bottom_y = sec2_cy + Rs
+        else:
+            bottom_y = sec_cy2 + Rs
+
+        # Ground symbol
+        gy = bottom_y + 4 * self._scale
+        canvas.create_line(sx, bottom_y, sx, gy, fill=colour, width=LINE_WIDTH)
         for k, w in enumerate([10, 6, 3]):
             ws = w * self._scale
             yy = gy + k * 4 * self._scale
-            self.canvas.create_line(sx - ws, yy, sx + ws, yy, fill=colour, width=LINE_WIDTH)
+            canvas.create_line(sx - ws, yy, sx + ws, yy, fill=colour, width=LINE_WIDTH)
 
-        self.canvas.create_text(sx + 14 * self._scale,
-                                winding_top + (winding_bot - winding_top) / 2,
-                                text=vt.name, font=("TkDefaultFont", 8),
-                                fill="#444444", anchor="w")
+        # Label
+        label = f"{vt.vt_type}  {vt.ratio_str}\n{vt.name}"
+        canvas.create_text(sx + Rs + 6 * self._scale, pri_cy,
+                           text=label, font=("TkDefaultFont", 8),
+                           fill="#444444", anchor="w")
 
     # ── Helper: nearest connection ────────────────────────────────────────
 

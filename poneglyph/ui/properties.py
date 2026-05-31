@@ -578,22 +578,65 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = vt
         self._clear()
-        tk.Label(self._body, text="Voltage Transformer", font=("TkDefaultFont", 9, "italic"),
+        tk.Label(self._body, text="Voltage Transformer / CVT",
+                 font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        v_name  = tk.StringVar(value=vt.name)
-        v_ratio = tk.StringVar(value=vt.ratio)
-        self._row("ID",    tk.StringVar(value=vt.id), readonly=True, start_row=1)
-        self._row("Name",  v_name,  start_row=2)
-        self._row("Ratio", v_ratio, start_row=3)
+
+        v_name     = tk.StringVar(value=vt.name)
+        v_type     = tk.StringVar(value=vt.vt_type)
+        v_pri      = tk.StringVar(value=str(vt.ratio_primary))
+        v_sec      = tk.StringVar(value=str(vt.ratio_secondary))
+        v_acc      = tk.StringVar(value=vt.accuracy_class)
+        v_burden   = tk.StringVar(value=str(vt.burden_va))
+        v_num_sec  = tk.StringVar(value=str(vt.num_secondaries))
+
+        self._row("ID",   tk.StringVar(value=vt.id), readonly=True, start_row=1)
+        self._row("Name", v_name,  start_row=2)
+
+        # Type dropdown
+        row = 3
+        tk.Label(self._body, text="Type").grid(row=row, column=0, sticky="w", pady=2)
+        tk.OptionMenu(self._body, v_type, "VT", "CVT").grid(
+            row=row, column=1, sticky="ew", pady=2)
+
+        # Voltage ratio
+        row = 4
+        tk.Label(self._body, text="Ratio", font=("TkDefaultFont", 8, "bold"),
+                 fg="#333").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8,2))
+        self._row("Primary (V)",   v_pri,  start_row=5)
+        self._row("Secondary (V)", v_sec,  start_row=6)
+
+        # Protection / metering data
+        row = 7
+        tk.Label(self._body, text="Nameplate", font=("TkDefaultFont", 8, "bold"),
+                 fg="#333").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8,2))
+        self._row("Accuracy Class", v_acc,    start_row=8)
+        self._row("Burden (VA)",    v_burden,  start_row=9)
+
+        row = 10
+        tk.Label(self._body, text="# Secondaries").grid(row=row, column=0, sticky="w", pady=2)
+        tk.OptionMenu(self._body, v_num_sec, "1", "2").grid(
+            row=row, column=1, sticky="ew", pady=2)
 
         def apply():
             vt.name  = v_name.get().strip() or vt.name
-            vt.ratio = v_ratio.get().strip() or vt.ratio
+            vt.vt_type = v_type.get()
+            try:
+                vt.ratio_primary   = float(v_pri.get())
+                vt.ratio_secondary = float(v_sec.get())
+            except ValueError:
+                pass
+            vt.accuracy_class  = v_acc.get().strip() or vt.accuracy_class
+            try:
+                vt.burden_va      = float(v_burden.get())
+                vt.num_secondaries = int(v_num_sec.get())
+            except ValueError:
+                pass
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=12, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_breaker(self, br: DiagramBreaker) -> None:
