@@ -267,6 +267,10 @@ class DiagramLoad:
     # ─────────────────────────────────────────────────────────────────────
     label_ox: float = 0.0
     label_oy: float = 0.0
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    notes: str = ""
 
     # ── Helpers ───────────────────────────────────────────────────────────
     @staticmethod
@@ -375,6 +379,12 @@ class DiagramCT:
     xfmr_lead: str = ""      # "hv" or "lv"
     label_ox: float = 0.0
     label_oy: float = 0.0
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
 
     @property
     def ratio_str(self) -> str:
@@ -398,6 +408,13 @@ class DiagramVT:
     # First point is auto-computed from the symbol bottom; user adds more.
     sec_waypoints: list = None     # list of (x, y) world tuples
 
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
+
     def __post_init__(self):
         if self.sec_waypoints is None:
             self.sec_waypoints = []
@@ -418,6 +435,12 @@ class DiagramCTTB:
     offset_y: float = 40.0
     mode: str = "Pass"          # "Pass" | "Sum" | "Subtract"
     num_circuits: int = 1
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
 
 @dataclass
 class DiagramTestBlock:
@@ -430,6 +453,12 @@ class DiagramTestBlock:
     offset_x: float = 0.0
     offset_y: float = 50.0
     fused: bool = True
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
 
 
 @dataclass
@@ -440,6 +469,12 @@ class DiagramRelay:
     cy: float
     function_code: str = "51"       # ANSI function number e.g. "21", "50/51", "87T"
     windings: list = None           # list of winding label strings e.g. ["W1","W2"]
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
 
     def __post_init__(self):
         if self.windings is None:
@@ -454,6 +489,7 @@ class DiagramRelayWire:
     relay_id: str
     winding: int = 1    # index into relay.windings
     waypoints: list = None
+    wire_type: str = "current"   # "current" | "voltage"
 
     def __post_init__(self):
         if self.waypoints is None:
@@ -467,6 +503,12 @@ class DiagramBreaker:
     connection_id: str   # which DiagramConnection this lives on
     t: float = 0.5       # position along the connection (0=start, 1=end)
     closed: bool = True
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
 
 
 @dataclass
@@ -476,6 +518,27 @@ class DiagramDisconnect:
     connection_id: str
     t: float = 0.5
     closed: bool = True
+    # ── Extended device fields ────────────────────────────────────────────
+    location: str = ""
+    panel: str = ""
+    drawing: str = ""
+    drawing_cell: str = ""
+    notes: str = ""
+
+
+@dataclass
+class DiagramDrawing:
+    """Entry in the project drawing registry."""
+    name: str                   # XXXX-YZZ-NNNNN-N convention
+    url: str = ""               # download URL
+    rev: str = ""               # revision letter e.g. "C"
+    description: str = ""
+    is_h_type: bool = False     # auto-set when second segment starts with H
+
+    def __post_init__(self):
+        parts = self.name.split("-")
+        if len(parts) >= 2 and parts[1].upper().startswith("H"):
+            self.is_h_type = True
 
 
 # ── Tool constants ────────────────────────────────────────────────────────────
@@ -496,6 +559,8 @@ TOOL_BREAKER     = "breaker"
 TOOL_DISCONNECT  = "disconnect"
 TOOL_RELAY       = "relay"
 TOOL_RELAY_WIRE  = "relay_wire"
+TOOL_RELAY_WIRE_I = "relay_wire_i"   # current only: CT / CTTB sources
+TOOL_RELAY_WIRE_V = "relay_wire_v"   # voltage only: VT / TestBlock sources
 
 TOOL_HINTS = {
     TOOL_SELECT:      "Select: click to select; drag a bus, transformer, source or load to move it.",
@@ -514,6 +579,8 @@ TOOL_HINTS = {
     TOOL_DISCONNECT:  "Disconnect Switch: click on an existing connection line to place a disconnect switch.",
     TOOL_RELAY:       "Relay: click anywhere to place a protection relay.",
     TOOL_RELAY_WIRE:  "Relay Wire: click a CT/VT/CTTB/FT source, then click a relay winding.",
+    TOOL_RELAY_WIRE_I: "Current Relay Wire: click a CT or CTTB, then click a relay winding.",
+    TOOL_RELAY_WIRE_V: "Voltage Relay Wire: click a VT or FT/ISO block, then click a relay winding.",
 }
 
 BUS_WIDTH  = 4
@@ -567,6 +634,7 @@ class Diagram(tk.Frame):
         self._relays:       dict = {}
         self._relay_wires:  dict = {}
         self._relay_wire_from: Optional[tuple] = None  # (source_type, source_id) during relay wire placement
+        self._drawings:     dict = {}
 
         self._volt_colours: dict = dict(DEFAULT_VOLT_COLOURS)
 
@@ -655,6 +723,7 @@ class Diagram(tk.Frame):
     def get_disconnects(self)  -> dict: return self._disconnects
     def get_relays(self)       -> dict: return self._relays
     def get_relay_wires(self)  -> dict: return self._relay_wires
+    def get_drawings(self)     -> dict: return self._drawings
     def get_selection(self)    -> Optional[tuple]: return self._selection
 
     def get_volt_colours(self) -> dict:
@@ -691,6 +760,7 @@ class Diagram(tk.Frame):
         self._disconnects.clear()
         self._relays.clear()
         self._relay_wires.clear()
+        self._drawings.clear()
         self._selection = None
         self._bus_draw_nodes = []
         self._preview_point  = None
@@ -726,6 +796,7 @@ class Diagram(tk.Frame):
             "disconnects":  {k: _ser(v) for k, v in self._disconnects.items()},
             "relays":       {k: _ser(v) for k, v in self._relays.items()},
             "relay_wires":  {k: _ser(v) for k, v in self._relay_wires.items()},
+            "drawings":     {k: _ser(v) for k, v in self._drawings.items()},
             "volt_colours": {str(k): v for k, v in self._volt_colours.items()},
         }
 
@@ -763,6 +834,7 @@ class Diagram(tk.Frame):
         for k, v in data.get("disconnects",  {}).items(): self._disconnects[k]  = _mk(DiagramDisconnect, v)
         for k, v in data.get("relays",       {}).items(): self._relays[k]       = _mk(DiagramRelay,      v)
         for k, v in data.get("relay_wires",  {}).items(): self._relay_wires[k]  = _mk(DiagramRelayWire,  v)
+        for k, v in data.get("drawings",     {}).items(): self._drawings[k]     = _mk(DiagramDrawing,    v)
         if "volt_colours" in data:
             self._volt_colours = {float(k): v for k, v in data["volt_colours"].items()}
         self.redraw()
@@ -1902,7 +1974,8 @@ class Diagram(tk.Frame):
             src = self._device_output_world(cttb.source_type, cttb.source_id)
             if src is None:
                 return None
-            return (src[0] + cttb.offset_x, src[1] + cttb.offset_y)
+            # Right edge of CTTB box (W_world = 20)
+            return (src[0] + cttb.offset_x + 20, src[1] + cttb.offset_y)
         elif source_type == "testblock":
             tb = self._testblocks.get(source_id)
             if tb is None:
@@ -1910,7 +1983,8 @@ class Diagram(tk.Frame):
             src = self._device_output_world(tb.source_type, tb.source_id)
             if src is None:
                 return None
-            return (src[0] + tb.offset_x, src[1] + tb.offset_y)
+            # Bottom edge of TestBlock box (H_world half = 11)
+            return (src[0] + tb.offset_x, src[1] + tb.offset_y + 11)
         return None
 
     # ── CTTB draw ─────────────────────────────────────────────────────────
@@ -2048,7 +2122,12 @@ class Diagram(tk.Frame):
         hop_r = 5 * self._scale
         dash  = (6, 4)
         lw    = LINE_WIDTH
-        colour = "#0066CC" if self._selection == ("relay_wire", rw.id) else "#880000"
+        if self._selection == ("relay_wire", rw.id):
+            colour = "#0066CC"
+        elif rw.wire_type == "voltage":
+            colour = "#CC2200"
+        else:
+            colour = "#E6A817"
 
         for k in range(len(spts) - 1):
             ax, ay = spts[k]
@@ -2886,6 +2965,41 @@ class Diagram(tk.Frame):
                 else:
                     if self._on_status:
                         self._on_status("Relay Wire: click on a relay symbol to connect.")
+
+        elif self._tool in (TOOL_RELAY_WIRE_I, TOOL_RELAY_WIRE_V):
+            is_current = self._tool == TOOL_RELAY_WIRE_I
+            if self._relay_wire_from is None:
+                if is_current:
+                    ct_id   = self._hit_ct(event.x, event.y)
+                    cttb_id = self._hit_cttb(event.x, event.y) if not ct_id else None
+                    src = ("ct", ct_id) if ct_id else (("cttb", cttb_id) if cttb_id else None)
+                    hint = "Current wire: click a CT or CTTB first."
+                else:
+                    vt_id = self._hit_vt(wx, wy)
+                    tb_id = self._hit_testblock(event.x, event.y) if not vt_id else None
+                    src = ("vt", vt_id) if vt_id else (("testblock", tb_id) if tb_id else None)
+                    hint = "Voltage wire: click a VT or FT/ISO block first."
+                if src:
+                    self._relay_wire_from = src
+                    if self._on_status:
+                        self._on_status(
+                            f"{'Current' if is_current else 'Voltage'} wire: source selected — click a relay."
+                        )
+                elif self._on_status:
+                    self._on_status(hint)
+            else:
+                relay_id = self._hit_relay(wx, wy)
+                if relay_id:
+                    src_type, src_id = self._relay_wire_from
+                    wtype = "current" if is_current else "voltage"
+                    rwid = f"RW-{len(self._relay_wires) + 1}"
+                    self._relay_wires[rwid] = DiagramRelayWire(
+                        rwid, src_id, src_type, relay_id, wire_type=wtype)
+                    self._relay_wire_from = None
+                    self._set_selection("relay_wire", rwid)
+                    self._revert_to_select(event)
+                elif self._on_status:
+                    self._on_status("Click on a relay symbol to connect.")
 
         elif self._tool == TOOL_DELETE:
             self._delete_at(event, wx, wy)

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import tkinter as tk
-from tkinter import ttk, colorchooser, filedialog, messagebox
+from pathlib import Path
+from tkinter import ttk, colorchooser, filedialog, messagebox, simpledialog
+from typing import Optional
 
 from poneglyph.ui.diagram import (
     Diagram,
@@ -12,8 +14,10 @@ from poneglyph.ui.diagram import (
     TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD, TOOL_CT, TOOL_VT,
     TOOL_CTTB, TOOL_TESTBLOCK, TOOL_DELETE,
     TOOL_BREAKER, TOOL_DISCONNECT,
-    TOOL_RELAY, TOOL_RELAY_WIRE,
+    TOOL_RELAY, TOOL_RELAY_WIRE, TOOL_RELAY_WIRE_I, TOOL_RELAY_WIRE_V,
 )
+from poneglyph.io.project import save as project_save, load as project_load
+from poneglyph.io.project import sanitize_name, create_project_folders
 from poneglyph.ui.properties import PropertiesPanel
 
 
@@ -26,6 +30,8 @@ class MainWindow:
 
         self._lines_tool = TOOL_BUS
         self._xfmr_tool  = TOOL_TRANSFORMER
+        self._current_file: Optional[Path] = None
+        self._project_name: str = "Untitled"
 
         self._build_menu()
         self._build_toolbar()
@@ -130,6 +136,9 @@ class MainWindow:
         protect_menu = tk.Menu(self._btn_protect, tearoff=0)
         protect_menu.add_command(label="Relay",      command=lambda: self._set_protect_tool(TOOL_RELAY))
         protect_menu.add_command(label="Relay Wire", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE))
+        protect_menu.add_separator()
+        protect_menu.add_command(label="Current Relay Wire (CT/CTTB)", command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_I))
+        protect_menu.add_command(label="Voltage Relay Wire (VT/FT)",   command=lambda: self._set_protect_tool(TOOL_RELAY_WIRE_V))
         self._btn_protect["menu"] = protect_menu
         self._btn_protect.pack(side=tk.LEFT, padx=2, pady=2)
 
@@ -213,7 +222,7 @@ class MainWindow:
     _SRC_TOOLS     = {TOOL_SOURCE, TOOL_LOAD}
     _INSTR_TOOLS   = {TOOL_CT, TOOL_VT, TOOL_CTTB, TOOL_TESTBLOCK}
     _SWITCH_TOOLS  = {TOOL_BREAKER, TOOL_DISCONNECT}
-    _PROTECT_TOOLS = {TOOL_RELAY, TOOL_RELAY_WIRE}
+    _PROTECT_TOOLS = {TOOL_RELAY, TOOL_RELAY_WIRE, TOOL_RELAY_WIRE_I, TOOL_RELAY_WIRE_V}
 
     def _set_lines_tool(self, tool: str) -> None:
         self._lines_tool = tool
@@ -243,7 +252,8 @@ class MainWindow:
         self._set_tool(tool)
 
     def _set_protect_tool(self, tool: str) -> None:
-        labels = {TOOL_RELAY: "Relay ▾", TOOL_RELAY_WIRE: "Relay Wire ▾"}
+        labels = {TOOL_RELAY: "Relay ▾", TOOL_RELAY_WIRE: "Relay Wire ▾",
+                  TOOL_RELAY_WIRE_I: "I-Wire ▾", TOOL_RELAY_WIRE_V: "V-Wire ▾"}
         self._btn_protect.config(text=labels.get(tool, "Protection ▾"))
         self._set_tool(tool)
 
@@ -314,48 +324,61 @@ class MainWindow:
         self.diagram.clear()
         self.props.clear()
         self._current_file = None
+        self._project_name = "Untitled"
         self._set_status("New diagram — select a tool and start drawing.")
 
     # ── File I/O ──────────────────────────────────────────────────────────
 
     def _save(self) -> None:
-        if not hasattr(self, "_current_file") or not self._current_file:
+        if not self._current_file:
             self._save_as()
         else:
             self._write_file(self._current_file)
 
     def _save_as(self) -> None:
-        fname = filedialog.asksaveasfilename(
-            defaultextension=".poneglyph",
-            filetypes=[("Poneglyph diagram", "*.poneglyph"), ("JSON", "*.json"), ("All files", "*")],
-            title="Save diagram",
+        name = simpledialog.askstring(
+            "Project Name", "Enter project name:",
+            initialvalue=self._project_name, parent=self.root
         )
-        if fname:
-            self._current_file = fname
-            self._write_file(fname)
+        if not name:
+            return
+        self._project_name = name.strip() or "Untitled"
+        safe = sanitize_name(self._project_name)
 
-    def _write_file(self, fname: str) -> None:
+        # Ask where to put the project folder
+        parent_dir = filedialog.askdirectory(title="Choose location for project folder")
+        if not parent_dir:
+            return
+
+        project_folder = Path(parent_dir) / safe
+        project_folder.mkdir(exist_ok=True)
+        create_project_folders(project_folder)
+
+        filepath = project_folder / f"{safe}.poneglyph"
+        self._current_file = filepath
+        self._write_file(filepath)
+
+    def _write_file(self, filepath: Path) -> None:
         try:
-            data = self.diagram.to_dict()
-            with open(fname, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            self._set_status(f"Saved → {fname}")
+            project_save(self.diagram, filepath, self._project_name)
+            self.root.title(f"Poneglyph — {self._project_name}")
+            self._set_status(f"Saved → {filepath}")
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))
 
     def _open(self) -> None:
         fname = filedialog.askopenfilename(
-            filetypes=[("Poneglyph diagram", "*.poneglyph"), ("JSON", "*.json"), ("All files", "*")],
+            filetypes=[("Poneglyph diagram", "*.poneglyph"), ("All files", "*")],
             title="Open diagram",
         )
         if not fname:
             return
         try:
-            with open(fname, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.diagram.load_dict(data)
+            pname = project_load(self.diagram, fname)
             self.props.clear()
-            self._current_file = fname
+            self._current_file = Path(fname)
+            self._project_name = pname
+            self.root.title(f"Poneglyph — {pname}")
             self._set_status(f"Opened {fname}")
         except Exception as exc:
             messagebox.showerror("Open failed", str(exc))

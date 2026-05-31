@@ -15,7 +15,7 @@ from poneglyph.ui.diagram import (
     DiagramTransformer, DiagramSource, DiagramLoad,
     DiagramBreaker, DiagramDisconnect,
     DiagramCTTB, DiagramTestBlock,
-    DiagramRelay, DiagramRelayWire,
+    DiagramRelay, DiagramRelayWire, DiagramDrawing,
 )
 
 
@@ -561,6 +561,8 @@ class PropertiesPanel(tk.Frame):
                        variable=v_flipped).grid(
             row=18, column=0, columnspan=2, sticky="w")
 
+        next_row, dev_vars = self._device_fields(ct, 19)
+
         def apply():
             ct.name  = v_name.get().strip() or ct.name
             try: ct.ratio_primary   = int(v_pri.get())
@@ -580,11 +582,13 @@ class PropertiesPanel(tk.Frame):
             ct.secondary_config = v_sec_cfg.get()
             ct.polarity_standard = v_polarity.get()
             ct.polarity_flipped  = v_flipped.get()
+            for attr, var in dev_vars.items():
+                setattr(ct, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=19, column=0, columnspan=2, sticky="w", pady=(10, 0)
+            row=next_row, column=0, columnspan=2, sticky="w", pady=(10, 0)
         )
 
     def show_vt(self, vt: DiagramVT) -> None:
@@ -632,6 +636,8 @@ class PropertiesPanel(tk.Frame):
         tk.OptionMenu(self._body, v_num_sec, "1", "2").grid(
             row=row, column=1, sticky="ew", pady=2)
 
+        next_row, dev_vars = self._device_fields(vt, 12)
+
         def apply():
             vt.name  = v_name.get().strip() or vt.name
             vt.vt_type = v_type.get()
@@ -646,11 +652,13 @@ class PropertiesPanel(tk.Frame):
                 vt.num_secondaries = int(v_num_sec.get())
             except ValueError:
                 pass
+            for attr, var in dev_vars.items():
+                setattr(vt, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=12, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=next_row, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_cttb(self, cttb: DiagramCTTB) -> None:
@@ -676,6 +684,8 @@ class PropertiesPanel(tk.Frame):
 
         self._row("# CT Circuits", v_circuits, start_row=5)
 
+        next_row, dev_vars = self._device_fields(cttb, 6)
+
         def apply():
             cttb.name         = v_name.get().strip() or cttb.name
             cttb.mode         = v_mode.get()
@@ -683,11 +693,13 @@ class PropertiesPanel(tk.Frame):
                 cttb.num_circuits = int(v_circuits.get())
             except ValueError:
                 pass
+            for attr, var in dev_vars.items():
+                setattr(cttb, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=next_row, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_testblock(self, tb: DiagramTestBlock) -> None:
@@ -714,15 +726,19 @@ class PropertiesPanel(tk.Frame):
         tk.Checkbutton(self._body, text="Fused", variable=v_fused).grid(
             row=5, column=0, columnspan=2, sticky="w", pady=2)
 
+        next_row, dev_vars = self._device_fields(tb, 6)
+
         def apply():
             tb.name       = v_name.get().strip() or tb.name
             tb.block_type = v_type.get()
             tb.fused      = v_fused.get()
+            for attr, var in dev_vars.items():
+                setattr(tb, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=next_row, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_breaker(self, br: DiagramBreaker) -> None:
@@ -741,14 +757,18 @@ class PropertiesPanel(tk.Frame):
         tk.Checkbutton(self._body, text="Closed", variable=v_closed).grid(
             row=5, column=0, columnspan=2, sticky="w", pady=2)
 
+        next_row, dev_vars = self._device_fields(br, 6)
+
         def apply():
             br.name   = v_name.get().strip() or br.name
             br.closed = v_closed.get()
+            for attr, var in dev_vars.items():
+                setattr(br, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=next_row, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_disconnect(self, dc: DiagramDisconnect) -> None:
@@ -767,14 +787,18 @@ class PropertiesPanel(tk.Frame):
         tk.Checkbutton(self._body, text="Closed", variable=v_closed).grid(
             row=5, column=0, columnspan=2, sticky="w", pady=2)
 
+        next_row, dev_vars = self._device_fields(dc, 6)
+
         def apply():
             dc.name   = v_name.get().strip() or dc.name
             dc.closed = v_closed.get()
+            for attr, var in dev_vars.items():
+                setattr(dc, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=next_row, column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     def show_relay(self, relay: "DiagramRelay") -> None:
@@ -831,6 +855,9 @@ class PropertiesPanel(tk.Frame):
         tk.Button(self._body, text="+ Add winding", command=_add_winding).grid(
             row=row.next(), column=0, columnspan=2, sticky="w", pady=(4, 0))
 
+        dev_start = row.next()
+        dev_next, dev_vars = self._device_fields(relay, dev_start)
+
         def apply():
             relay.name          = v_name.get().strip() or relay.name
             relay.function_code = v_func.get().strip() or relay.function_code
@@ -838,11 +865,13 @@ class PropertiesPanel(tk.Frame):
                 lbl = v.get().strip()
                 if lbl and wi < len(relay.windings):
                     relay.windings[wi] = lbl
+            for attr, var in dev_vars.items():
+                setattr(relay, attr, var.get())
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=row.next(), column=0, columnspan=2, sticky="w", pady=(10, 0))
+            row=dev_next, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
     def show_relay_wire(self, rw: "DiagramRelayWire") -> None:
         if rw is None:
@@ -881,6 +910,32 @@ class PropertiesPanel(tk.Frame):
     def clear(self) -> None:
         self._current = None
         self._show_empty()
+
+    def _device_fields(self, obj, start_row: int):
+        """Add extended location/drawing fields. Returns (next_row, vars_dict)."""
+        row = start_row
+        fields = []
+        if hasattr(obj, "location"):    fields.append(("Location",     "location"))
+        if hasattr(obj, "panel"):       fields.append(("Panel",        "panel"))
+        if hasattr(obj, "drawing"):     fields.append(("Drawing",      "drawing"))
+        if hasattr(obj, "drawing_cell") and getattr(obj, "drawing_cell", None) is not None:
+            fields.append(("Drawing cell", "drawing_cell"))
+        if hasattr(obj, "notes"):       fields.append(("Notes",        "notes"))
+        vars_: dict = {}
+        if fields:
+            ttk.Separator(self._body, orient="horizontal").grid(
+                row=row, column=0, columnspan=2, sticky="ew", pady=4)
+            row += 1
+            tk.Label(self._body, text="Location & Drawing",
+                     font=("TkDefaultFont", 8, "bold"), fg="#333").grid(
+                row=row, column=0, columnspan=2, sticky="w")
+            row += 1
+        for label, attr in fields:
+            v = tk.StringVar(value=getattr(obj, attr, ""))
+            vars_[attr] = v
+            self._row(label, v, start_row=row)
+            row += 1
+        return row, vars_
 
     # ── Internal ──────────────────────────────────────────────────────────
 
