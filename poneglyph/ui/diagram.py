@@ -1296,65 +1296,61 @@ class Diagram(tk.Frame):
         alx, aly = raw[0]/aln, raw[1]/aln   # along-wire unit (screen)
         pxn, pyn = -aly, alx                 # perpendicular (90° CCW)
 
-        R      = 9 * self._scale    # ring radius
-        sp     = 3 * self._scale    # gap between rings (along wire)
-        tk_len = 7 * self._scale    # secondary terminal tick
+        R      = 11 * self._scale   # semicircle radius
+        tk_len =  7 * self._scale   # secondary tick / lead length
         lw     = LINE_WIDTH
 
-        # Two toroidal rings: white-filled circles centered ON the wire.
-        # After drawing each ring, redraw the wire through it so the primary
-        # appears to thread through the core.
+        # IEC CT symbol: one D-shaped semicircle whose flat diameter lies along
+        # the primary wire.  The wire enters the flat side at the midpoint and
+        # exits the other side — i.e. it threads through the opening of the D.
+        #
+        # Geometry:
+        #   arc centre = sx, sy  (the CT point on the wire)
+        #   flat diameter = along-wire axis, length 2R
+        #   arc bulge = +perp direction
+        #   wire is redrawn R units either side so it visually continues
+        #   straight through the opening.
+
         wire_angle_deg = math.degrees(math.atan2(-aly, alx))
-        # Semicircle arc: opens in +perp direction (one side only per ring)
-        arc_start = wire_angle_deg   # flat chord coincides with wire; arc opens perpendicular
+        # arc opens in +perp: start at wire_angle-90, sweep +180
+        arc_start  = wire_angle_deg - 90
+        arc_extent = 180
 
-        for sign in (-1, +1):
-            cx = sx + alx * sign * (R + sp / 2)
-            cy = sy + aly * sign * (R + sp / 2)
+        # Semicircle
+        self.canvas.create_arc(sx-R, sy-R, sx+R, sy+R,
+                               start=arc_start, extent=arc_extent,
+                               outline=colour, style="arc", width=lw)
 
-            # White-filled ring so the canvas background is masked inside the circle
-            self.canvas.create_oval(cx-R, cy-R, cx+R, cy+R,
-                                    outline=colour, fill="white", width=lw)
-            # Redraw primary wire through the ring (appears to thread through)
-            ex0, ey0 = cx - alx*R, cy - aly*R
-            ex1_, ey1_ = cx + alx*R, cy + aly*R
-            self.canvas.create_line(ex0, ey0, ex1_, ey1_, fill=colour, width=lw)
-            # Polarity dot (top of ring, +perp side)
-            if ct.polarity_standard:
-                dr = max(2, 2.5 * self._scale)
-                dx_ = cx + pxn * (R - 3*self._scale)
-                dy_ = cy + pyn * (R - 3*self._scale)
-                self.canvas.create_oval(dx_-dr, dy_-dr, dx_+dr, dy_+dr,
-                                        fill=colour, outline=colour)
-            # Secondary terminal stub (perpendicular from ring centre)
-            tx0, ty0 = cx + pxn * R, cy + pyn * R
-            tx1_, ty1_ = cx + pxn * (R + tk_len), cy + pyn * (R + tk_len)
-            self.canvas.create_line(tx0, ty0, tx1_, ty1_, fill=colour, width=lw)
+        # Redraw primary wire through the opening of the D
+        self.canvas.create_line(sx - alx*R, sy - aly*R,
+                                sx + alx*R, sy + aly*R,
+                                fill=colour, width=lw)
 
-        # Connecting bus between the two secondary stubs → runs to terminal
-        stub_top = (sx + alx*(-R - sp/2) + pxn*(R + tk_len),
-                    sy + aly*(-R - sp/2) + pyn*(R + tk_len))
-        stub_bot = (sx + alx*(R + sp/2)  + pxn*(R + tk_len),
-                    sy + aly*(R + sp/2)  + pyn*(R + tk_len))
-        self.canvas.create_line(*stub_top, *stub_bot, fill=colour, width=lw)
+        # Polarity dot near the top of the arc (+along-wire side, +perp)
+        if ct.polarity_standard:
+            pr = max(2, 2.5 * self._scale)
+            pdx = sx + alx*R*0.7 + pxn*R*0.7
+            pdy = sy + aly*R*0.7 + pyn*R*0.7
+            self.canvas.create_oval(pdx-pr, pdy-pr, pdx+pr, pdy+pr,
+                                    fill=colour, outline=colour)
 
-        # Secondary lead from midpoint out to terminal crossbar
-        mid_stub = ((stub_top[0]+stub_bot[0])/2, (stub_top[1]+stub_bot[1])/2)
-        lead_len = 14 * self._scale
-        ex = mid_stub[0] + pxn * lead_len
-        ey = mid_stub[1] + pyn * lead_len
-        self.canvas.create_line(*mid_stub, ex, ey, fill=colour, width=lw)
-        self.canvas.create_line(ex - alx*tk_len/2, ey - aly*tk_len/2,
-                                ex + alx*tk_len/2, ey + aly*tk_len/2,
+        # Secondary terminal: stub from arc tip outward, with crossbar
+        tip_x = sx + pxn * R
+        tip_y = sy + pyn * R
+        end_x = tip_x + pxn * tk_len * 2
+        end_y = tip_y + pyn * tk_len * 2
+        self.canvas.create_line(tip_x, tip_y, end_x, end_y, fill=colour, width=lw)
+        self.canvas.create_line(end_x - alx*tk_len/2, end_y - aly*tk_len/2,
+                                end_x + alx*tk_len/2, end_y + aly*tk_len/2,
                                 fill=colour, width=lw)
 
         # Label: ratio + name
         label = f"{ct.ratio_str}\n{ct.name}"
-        self.canvas.create_text(ex + pxn*5 + ct.label_ox*self._scale,
-                                ey + pyn*5 + ct.label_oy*self._scale,
+        lbl_anchor = "w" if pxn >= 0 else "e"
+        self.canvas.create_text(end_x + pxn*4 + ct.label_ox*self._scale,
+                                end_y + pyn*4 + ct.label_oy*self._scale,
                                 text=label, font=("TkDefaultFont", 8),
-                                fill="#444444",
-                                anchor=("w" if pxn >= 0 else "e"))
+                                fill="#444444", anchor=lbl_anchor)
 
     # ── VT ────────────────────────────────────────────────────────────────
 
@@ -1845,6 +1841,7 @@ class Diagram(tk.Frame):
                 self._begin_drag("load", load_id, wx, wy)
             elif ct_id:
                 self._set_selection("ct", ct_id)
+                self._begin_drag("ct", ct_id, wx, wy)
             elif vt_id:
                 self._set_selection("vt", vt_id)
             elif br_id:
@@ -2140,12 +2137,37 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "transformer":
                 xfmr = self._transformers[self._drag_id]
                 xfmr.cx += dx;  xfmr.cy += dy
+                # Keep tap points updated and re-snap to bus so lead stays straight
+                for attr_bus, attr_tx, attr_ty in (
+                        ("hv_bus", "hv_tap_x", "hv_tap_y"),
+                        ("lv_bus", "lv_tap_x", "lv_tap_y")):
+                    bid = getattr(xfmr, attr_bus)
+                    if bid and bid in self._buses:
+                        tap = self._buses[bid].nearest_tap(
+                            getattr(xfmr, attr_tx), getattr(xfmr, attr_ty))
+                        setattr(xfmr, attr_tx, tap[0])
+                        setattr(xfmr, attr_ty, tap[1])
             elif self._drag_kind == "source":
                 src = self._sources[self._drag_id]
                 src.cx += dx;  src.cy += dy
             elif self._drag_kind == "load":
                 ld = self._loads[self._drag_id]
                 ld.cx += dx;  ld.cy += dy
+            elif self._drag_kind == "ct":
+                ct = self._cts.get(self._drag_id)
+                if ct:
+                    pts = self._ct_wire_endpoints(ct)
+                    if pts:
+                        wx1, wy1, wx2, wy2, _, _ = pts
+                        # Project cursor onto the wire segment and update t
+                        sdx, sdy = wx2-wx1, wy2-wy1
+                        seg_len = math.hypot(sdx, sdy)
+                        if seg_len > 1e-6:
+                            t_raw = ((wx - wx1)*sdx + (wy - wy1)*sdy) / (seg_len**2)
+                            if ct.xfmr_id:
+                                ct.t = max(0.20, min(0.80, t_raw))
+                            else:
+                                ct.t = max(0.10, min(0.90, t_raw))
             self._drag_origin = (gx, gy)
             self.redraw()
 
