@@ -1294,49 +1294,83 @@ class Diagram(tk.Frame):
         raw = (s2[0]-s1[0], s2[1]-s1[1])
         aln = math.hypot(*raw) or 1
         alx, aly = raw[0]/aln, raw[1]/aln   # along-wire unit (screen)
-        pxn, pyn = -aly, alx                 # perpendicular (90° CCW)
+        pxn, pyn = -aly, alx                 # perpendicular (90° CCW) = "left" of downward wire
 
-        R      = 11 * self._scale   # semicircle radius
-        tk_len =  7 * self._scale   # secondary tick / lead length
-        lw     = LINE_WIDTH
+        R   = 10 * self._scale   # arc radius
+        gap =  2 * self._scale   # gap between the two C-arc centres
+        tk  =  7 * self._scale   # secondary tick length
+        lw  = LINE_WIDTH
 
-        # IEC CT symbol: one D-shaped semicircle whose flat diameter lies along
-        # the primary wire.  The wire enters the flat side at the midpoint and
-        # exits the other side — i.e. it threads through the opening of the D.
+        # Two C-arcs stacked along the wire, both opening in the same (+pxn) direction.
+        # Flat diameters are perpendicular to wire; wire threads through each centre.
         #
-        # Geometry:
-        #   arc centre = sx, sy  (the CT point on the wire)
-        #   flat diameter = along-wire axis, length 2R
-        #   arc bulge = +perp direction
-        #   wire is redrawn R units either side so it visually continues
-        #   straight through the opening.
+        #   centre_upper = (sx, sy) − along*(R+gap/2)
+        #   centre_lower = (sx, sy) + along*(R+gap/2)
+        #
+        # In tkinter: arc_start = wire_angle_deg − 90, extent = 180
+        # opens arc toward +pxn (perpendicular left of wire).
 
         wire_angle_deg = math.degrees(math.atan2(-aly, alx))
-        # arc opens in +perp: start at wire_angle-90, sweep +180
-        arc_start  = wire_angle_deg - 90
-        arc_extent = 180
+        arc_start = wire_angle_deg - 90   # opens in +pxn direction
+        half      = R + gap / 2
 
-        # Semicircle
-        self.canvas.create_arc(sx-R, sy-R, sx+R, sy+R,
-                               start=arc_start, extent=arc_extent,
-                               outline=colour, style="arc", width=lw)
+        for sign in (-1, +1):             # upper (−1) then lower (+1) arc
+            cx = sx + alx * sign * half
+            cy = sy + aly * sign * half
+            # C-arc
+            self.canvas.create_arc(cx-R, cy-R, cx+R, cy+R,
+                                   start=arc_start, extent=180,
+                                   outline=colour, style="arc", width=lw)
+            # Primary wire redrawn through the opening (the flat diameter)
+            self.canvas.create_line(cx - alx*R, cy - aly*R,
+                                    cx + alx*R, cy + aly*R,
+                                    fill=colour, width=lw)
 
-        # Redraw primary wire through the opening of the D
-        self.canvas.create_line(sx - alx*R, sy - aly*R,
-                                sx + alx*R, sy + aly*R,
-                                fill=colour, width=lw)
-
-        # Polarity dot near the top of the arc (+along-wire side, +perp)
+        # Polarity dot: near arc tip of upper C (+pxn side, upper centre)
         if ct.polarity_standard:
             pr = max(2, 2.5 * self._scale)
-            pdx = sx + alx*R*0.7 + pxn*R*0.7
-            pdy = sy + aly*R*0.7 + pyn*R*0.7
-            self.canvas.create_oval(pdx-pr, pdy-pr, pdx+pr, pdy+pr,
+            uc_x = sx - alx * half
+            uc_y = sy - aly * half
+            dot_x = uc_x + pxn * (R - 2*self._scale)
+            dot_y = uc_y + pyn * (R - 2*self._scale)
+            self.canvas.create_oval(dot_x-pr, dot_y-pr, dot_x+pr, dot_y+pr,
                                     fill=colour, outline=colour)
 
-        # Secondary terminal: stub from arc tip outward, with crossbar
-        tip_x = sx + pxn * R
-        tip_y = sy + pyn * R
+        # Terminal ticks at the 4 diameter endpoints (outer ends + inner shared ends)
+        # Outer top end (above upper arc)
+        top_x = sx - alx*(half + R);  top_y = sy - aly*(half + R)
+        # Inner shared end between the two arcs (two ticks, one per arc)
+        mid_x = sx;                    mid_y = sy
+        # Outer bottom end (below lower arc)
+        bot_x = sx + alx*(half + R);  bot_y = sy + aly*(half + R)
+
+        def _tick(px, py):
+            # Short tick perpendicular to wire (on the +pxn side only)
+            self.canvas.create_line(px, py,
+                                    px + pxn*tk*0.7, py + pyn*tk*0.7,
+                                    fill=colour, width=lw)
+
+        _tick(top_x, top_y)
+        _tick(mid_x, mid_y)
+        _tick(bot_x, bot_y)
+
+        # Secondary lead from the bottom outer end going +pxn, with crossbar
+        lead_end_x = bot_x + pxn * tk * 2.5
+        lead_end_y = bot_y + pyn * tk * 2.5
+        self.canvas.create_line(bot_x, bot_y, lead_end_x, lead_end_y,
+                                fill=colour, width=lw)
+        # Crossbar at terminal
+        self.canvas.create_line(lead_end_x - alx*tk/2, lead_end_y - aly*tk/2,
+                                lead_end_x + alx*tk/2, lead_end_y + aly*tk/2,
+                                fill=colour, width=lw)
+
+        # Label
+        label = f"{ct.ratio_str}\n{ct.name}"
+        lbl_anchor = "w" if pxn >= 0 else "e"
+        self.canvas.create_text(lead_end_x + pxn*4 + ct.label_ox*self._scale,
+                                lead_end_y + pyn*4 + ct.label_oy*self._scale,
+                                text=label, font=("TkDefaultFont", 8),
+                                fill="#444444", anchor=lbl_anchor)
         end_x = tip_x + pxn * tk_len * 2
         end_y = tip_y + pyn * tk_len * 2
         self.canvas.create_line(tip_x, tip_y, end_x, end_y, fill=colour, width=lw)
@@ -2137,7 +2171,7 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "transformer":
                 xfmr = self._transformers[self._drag_id]
                 xfmr.cx += dx;  xfmr.cy += dy
-                # Keep tap points updated and re-snap to bus so lead stays straight
+                # Re-snap taps and straighten leads when centre aligns with tap axis
                 for attr_bus, attr_tx, attr_ty in (
                         ("hv_bus", "hv_tap_x", "hv_tap_y"),
                         ("lv_bus", "lv_tap_x", "lv_tap_y")):
@@ -2147,6 +2181,13 @@ class Diagram(tk.Frame):
                             getattr(xfmr, attr_tx), getattr(xfmr, attr_ty))
                         setattr(xfmr, attr_tx, tap[0])
                         setattr(xfmr, attr_ty, tap[1])
+                        # If transformer centre is within one grid cell of the tap
+                        # axis, snap it onto that axis for a perfectly straight lead
+                        snap_tol = GRID_SIZE * 1.2
+                        if abs(xfmr.cx - tap[0]) < snap_tol:
+                            xfmr.cx = tap[0]
+                        if abs(xfmr.cy - tap[1]) < snap_tol:
+                            xfmr.cy = tap[1]
             elif self._drag_kind == "source":
                 src = self._sources[self._drag_id]
                 src.cx += dx;  src.cy += dy
