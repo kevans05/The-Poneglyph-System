@@ -947,20 +947,22 @@ class Diagram(tk.Frame):
         return wx, wy
 
     def _draw_elbow_lead(self, ax, ay, bx, by, vert_exit: bool, colour: str) -> None:
-        """Draw an L-shaped 90° lead from (ax,ay) to (bx,by).
-        vert_exit=True  → corner at (ax, by)  [go vertical from A, then horizontal]
-        vert_exit=False → corner at (bx, ay)  [go horizontal from A, then vertical]
+        """Draw a Z-shaped 90° lead from (ax,ay) to (bx,by) with the bend at midpoint.
+        vert_exit=True  → exit vertically, bend halfway along Y, then go horizontal
+        vert_exit=False → exit horizontally, bend halfway along X, then go vertical
         Collapses to a straight line when already aligned.
         """
         if vert_exit:
-            mx, my = ax, by
+            my = (ay + by) / 2
+            mx1, my1 = ax, my
+            mx2, my2 = bx, my
         else:
-            mx, my = bx, ay
-        ax_s, ay_s = self._w2s(ax, ay)
-        mx_s, my_s = self._w2s(mx, my)
-        bx_s, by_s = self._w2s(bx, by)
-        pts = [(ax_s, ay_s), (mx_s, my_s), (bx_s, by_s)]
-        # Remove consecutive near-duplicates
+            mx = (ax + bx) / 2
+            mx1, my1 = mx, ay
+            mx2, my2 = mx, by
+        raw = [(ax, ay), (mx1, my1), (mx2, my2), (bx, by)]
+        pts = [self._w2s(wx, wy) for wx, wy in raw]
+        # Remove consecutive near-duplicates (collapsed segments)
         uniq = [pts[0]]
         for p in pts[1:]:
             if abs(p[0] - uniq[-1][0]) > 0.5 or abs(p[1] - uniq[-1][1]) > 0.5:
@@ -1736,12 +1738,12 @@ class Diagram(tk.Frame):
             tid = f"XFMR-{len(self._transformers) + 1}"
             if snap_id:
                 bus = self._buses[snap_id]
-                tap_pt = bus.nearest_tap(wx, wy)
-                tap_x, tap_y = tap_pt
+                tap_pt = bus.nearest_tap(*self._sg(wx, wy))
+                tap_x, tap_y = self._sg(*tap_pt)
                 xfmr = DiagramTransformer(
                     id=tid, name=tid,
                     cx=tap_x,
-                    cy=tap_y + XFMR_HALF,   # top_y == tap point: HV terminal on the bus
+                    cy=tap_y + XFMR_HALF,
                     hv_bus=snap_id, hv_tap_x=tap_x, hv_tap_y=tap_y,
                     hv_kv=bus.kv or 0.0,
                 )
@@ -1757,8 +1759,8 @@ class Diagram(tk.Frame):
             sid = f"SRC-{len(self._sources) + 1}"
             if snap_id:
                 bus = self._buses[snap_id]
-                tap_pt = bus.nearest_tap(wx, wy)
-                tap_x, tap_y = tap_pt
+                tap_pt = bus.nearest_tap(*self._sg(wx, wy))
+                tap_x, tap_y = self._sg(*tap_pt)
                 src = DiagramSource(sid, sid, cx=tap_x, cy=tap_y - SRC_OFFSET,
                                     bus=snap_id, tap_x=tap_x, tap_y=tap_y,
                                     base_kv=bus.kv or 0.0)
@@ -1774,8 +1776,8 @@ class Diagram(tk.Frame):
             lid = f"LOAD-{len(self._loads) + 1}"
             if snap_id:
                 bus = self._buses[snap_id]
-                tap_pt = bus.nearest_tap(wx, wy)
-                tap_x, tap_y = tap_pt
+                tap_pt = bus.nearest_tap(*self._sg(wx, wy))
+                tap_x, tap_y = self._sg(*tap_pt)
                 ld = DiagramLoad(lid, lid, cx=tap_x,
                                  cy=tap_y + LOAD_LEAD + LOAD_AH,
                                  bus=snap_id, tap_x=tap_x, tap_y=tap_y)
