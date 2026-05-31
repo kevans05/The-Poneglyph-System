@@ -328,15 +328,17 @@ class Diagram(tk.Frame):
         self._volt_colours = dict(mapping)
         self.redraw()
 
+    _UNSET_COLOUR = "#333333"   # neutral dark for elements with no voltage level set
+
     def _voltage_colour(self, kv: float, selected: bool = False) -> str:
-        """Return the colour for a given voltage level (kV), or black if unset."""
+        """Return the colour for a given voltage level (kV)."""
         if selected:
             return "#0066CC"
         if not self._volt_colours or kv <= 0:
-            return "black"
+            return self._UNSET_COLOUR
         nearest = min(self._volt_colours, key=lambda v: abs(v - kv))
         if abs(nearest - kv) / max(nearest, 1) > 0.25:
-            return "black"   # no close match — don't mis-colour
+            return self._UNSET_COLOUR   # no close match — don't mis-colour
         return self._volt_colours[nearest]
 
     def clear(self) -> None:
@@ -465,10 +467,10 @@ class Diagram(tk.Frame):
     # ── Transformer (standalone, world-space IEC coupled-coil symbol) ─────
 
     def _draw_transformer(self, xfmr: DiagramTransformer) -> None:
-        sel     = self._selection == ("transformer", xfmr.id)
-        hv_col  = self._voltage_colour(xfmr.hv_kv, selected=sel)
-        lv_col  = self._voltage_colour(xfmr.lv_kv, selected=sel)
-        core_col = "#0066CC" if sel else "black"
+        sel      = self._selection == ("transformer", xfmr.id)
+        hv_col   = self._voltage_colour(xfmr.hv_kv, selected=sel)
+        lv_col   = self._voltage_colour(xfmr.lv_kv, selected=sel)
+        core_col = "#0066CC" if sel else self._UNSET_COLOUR
         r    = XFMR_BR
         n    = XFMR_NB
         span = _WIND_SPAN   # horizontal span of each coil row
@@ -503,9 +505,10 @@ class Diagram(tk.Frame):
                                     fill=lv_col, width=LINE_WIDTH)
             self._terminal_dot(b_sx, b_sy, lv_col)
 
-        # ── Centre conductor through both coil rows ────────────────────────
-        self.canvas.create_line(ct_sx, ct_sy, cb_sx, cb_sy,
-                                fill=core_col, width=LINE_WIDTH)
+        # ── Centre conductor: HV colour top half, LV colour bottom half ──────
+        cm_sx, cm_sy = self._w2s(xfmr.cx, xfmr.cy)
+        self.canvas.create_line(ct_sx, ct_sy, cm_sx, cm_sy, fill=hv_col, width=LINE_WIDTH)
+        self.canvas.create_line(cm_sx, cm_sy, cb_sx, cb_sy, fill=lv_col, width=LINE_WIDTH)
 
         # ── HV coil row (bumps inward / downward) ─────────────────────────
         self._draw_coil_h(x_left, hv_y, n, r, bulge_up=False, colour=hv_col)
