@@ -240,30 +240,108 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = ld
         self._clear()
-        tk.Label(self._body, text="Load (PQ)", font=("TkDefaultFont", 9, "italic"),
-                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        MODES = ["P+Q", "P+PF", "kVAR+PF", "kVA+PF", "V+I+PF"]
+        # Fields shown per mode: list of (label, attr, unit_hint)
+        MODE_FIELDS = {
+            "P+Q":     [("P",   "p_kw",   "kW"),   ("Q",   "q_kvar", "kVAR")],
+            "P+PF":    [("P",   "p_kw",   "kW"),   ("PF",  "pf",     "0–1")],
+            "kVAR+PF": [("Q",   "q_kvar", "kVAR"), ("PF",  "pf",     "0–1")],
+            "kVA+PF":  [("kVA", "s_kva",  "kVA"),  ("PF",  "pf",     "0–1")],
+            "V+I+PF":  [("V",   "v_kv",   "kV"),   ("I",   "i_amps", "A"),
+                        ("PF",  "pf",     "0–1")],
+        }
+
+        tk.Label(self._body, text="Load", font=("TkDefaultFont", 9, "italic"),
+                 fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
         v_name = tk.StringVar(value=ld.name)
-        v_p    = tk.StringVar(value=str(ld.p_mw))
-        v_q    = tk.StringVar(value=str(ld.q_mvar))
-        self._row("ID",       tk.StringVar(value=ld.id), readonly=True, start_row=1)
-        self._row("Name",     v_name, start_row=2)
-        self._row("P (MW)",   v_p,    start_row=3)
-        self._row("Q (MVAr)", v_q,    start_row=4)
+        self._row("ID",   tk.StringVar(value=ld.id), readonly=True, start_row=1)
+        self._row("Name", v_name, start_row=2)
+
+        # Mode selector
+        tk.Label(self._body, text="Spec mode", anchor="e").grid(
+            row=3, column=0, sticky="e", padx=(0, 4))
+        v_mode = tk.StringVar(value=ld.spec_mode)
+        mode_cb = ttk.Combobox(self._body, textvariable=v_mode,
+                               values=MODES, state="readonly", width=12)
+        mode_cb.grid(row=3, column=1, sticky="w")
+
+        # Lagging/leading
+        tk.Label(self._body, text="Q sign", anchor="e").grid(
+            row=4, column=0, sticky="e", padx=(0, 4))
+        v_lag = tk.StringVar(value="Lagging (ind)" if ld.lagging else "Leading (cap)")
+        lag_cb = ttk.Combobox(self._body, textvariable=v_lag,
+                              values=["Lagging (ind)", "Leading (cap)"],
+                              state="readonly", width=14)
+        lag_cb.grid(row=4, column=1, sticky="w")
+
+        # Dynamic input rows — rebuilt when mode changes
+        _input_frame = tk.Frame(self._body)
+        _input_frame.grid(row=5, column=0, columnspan=2, sticky="ew")
+        _input_frame.columnconfigure(1, weight=1)
+
+        # Solved summary (read-only)
+        tk.Label(self._body, text="Solved", font=("TkDefaultFont", 8, "bold"),
+                 fg="#444").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        v_solved = tk.StringVar()
+        tk.Label(self._body, textvariable=v_solved, justify="left",
+                 font=("TkFixedFont", 8), fg="#0044AA").grid(
+            row=7, column=0, columnspan=2, sticky="w")
+
         bus_txt = ld.bus if ld.bus else "(not attached)"
-        self._row("Bus",      tk.StringVar(value=bus_txt), readonly=True, start_row=5)
+        self._row("Bus", tk.StringVar(value=bus_txt), readonly=True, start_row=8)
+
+        # Store input var widgets so apply() can read them
+        _input_vars: dict = {}
+
+        def _refresh_solved():
+            import math
+            p, q = ld._resolved()
+            s = math.sqrt(p**2 + q**2)
+            pf_val = p / s if s > 0 else 0.0
+            lag = "lag" if q >= 0 else "lead"
+            v_solved.set(
+                f"P  = {p:>9.1f} kW\n"
+                f"Q  = {q:>9.1f} kVAR\n"
+                f"S  = {s:>9.1f} kVA\n"
+                f"PF = {pf_val:>9.3f} {lag}"
+            )
+
+        def _rebuild_inputs(*_):
+            for w in _input_frame.winfo_children():
+                w.destroy()
+            _input_vars.clear()
+            mode = v_mode.get()
+            fields = MODE_FIELDS.get(mode, [])
+            for r, (lbl, attr, hint) in enumerate(fields):
+                tk.Label(_input_frame, text=f"{lbl} ({hint})", anchor="e").grid(
+                    row=r, column=0, sticky="e", padx=(0, 4), pady=1)
+                var = tk.StringVar(value=str(getattr(ld, attr)))
+                tk.Entry(_input_frame, textvariable=var, width=12).grid(
+                    row=r, column=1, sticky="w", pady=1)
+                _input_vars[attr] = var
+            _refresh_solved()
+
+        v_mode.trace_add("write", _rebuild_inputs)
+        _rebuild_inputs()  # initial build
 
         def apply():
-            ld.name = v_name.get().strip() or ld.name
-            try:
-                ld.p_mw   = float(v_p.get())
-                ld.q_mvar = float(v_q.get())
-            except ValueError:
-                pass
+            ld.name     = v_name.get().strip() or ld.name
+            ld.spec_mode = v_mode.get()
+            ld.lagging  = v_lag.get().startswith("Lagging")
+            for attr, var in _input_vars.items():
+                try:
+                    val = float(var.get())
+                    setattr(ld, attr, val)
+                except ValueError:
+                    pass
+            _refresh_solved()
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=9, column=0, columnspan=2, sticky="w", pady=(10, 0)
         )
 
     def show_ct(self, ct: DiagramCT) -> None:

@@ -241,10 +241,59 @@ class DiagramLoad:
     bus: Optional[str] = None
     tap_x: float = 0.0
     tap_y: float = 0.0
-    p_mw: float = 1.0
-    q_mvar: float = 0.5
+    # ── Spec mode and raw inputs ──────────────────────────────────────────
+    spec_mode: str = "P+Q"     # "P+Q" | "P+PF" | "kVA+PF" | "V+I+PF" | "kVAR+PF"
+    p_kw:   float = 1000.0     # real power kW
+    q_kvar: float = 500.0      # reactive power kVAR
+    s_kva:  float = 0.0        # apparent power kVA  (used by kVA+PF)
+    pf:     float = 0.9        # power factor 0–1    (used by *+PF modes)
+    v_kv:   float = 13.8       # voltage kV          (used by V+I+PF)
+    i_amps: float = 50.0       # current amps        (used by V+I+PF)
+    lagging: bool = True       # True = inductive (lagging Q > 0)
     label_ox: float = 0.0
     label_oy: float = 0.0
+
+    # ── Derived values ────────────────────────────────────────────────────
+    def _resolved(self) -> tuple:
+        """Return (p_kw, q_kvar) from current spec_mode and inputs."""
+        pf = max(1e-4, min(1.0, self.pf))
+        sign = 1.0 if self.lagging else -1.0
+        m = self.spec_mode
+        if m == "P+Q":
+            return self.p_kw, self.q_kvar
+        if m == "P+PF":
+            q = self.p_kw * math.sqrt(1 - pf**2) / pf
+            return self.p_kw, sign * abs(q)
+        if m == "kVAR+PF":
+            p = abs(self.q_kvar) * pf / math.sqrt(max(1e-9, 1 - pf**2))
+            return p, sign * abs(self.q_kvar)
+        if m == "kVA+PF":
+            p = self.s_kva * pf
+            q = self.s_kva * math.sqrt(1 - pf**2)
+            return p, sign * q
+        if m == "V+I+PF":
+            # 3-phase: S(kVA) = √3 × V_LL(kV) × I(A)
+            s = math.sqrt(3) * self.v_kv * self.i_amps
+            p = s * pf
+            q = s * math.sqrt(1 - pf**2)
+            return p, sign * q
+        return self.p_kw, self.q_kvar
+
+    @property
+    def p_mw(self) -> float:
+        return self._resolved()[0] / 1000.0
+
+    @property
+    def q_mvar(self) -> float:
+        return self._resolved()[1] / 1000.0
+
+    def summary_str(self) -> str:
+        """Short label for the canvas."""
+        p, q = self._resolved()
+        s = math.sqrt(p**2 + q**2)
+        pf = p / s if s > 0 else 0.0
+        lag = "lag" if q >= 0 else "lead"
+        return f"{p:g} kW  {q:g} kVAR\n{s:.0f} kVA  PF={pf:.3f} {lag}"
 
 
 @dataclass
@@ -1107,8 +1156,8 @@ class Diagram(tk.Frame):
                                    fill=colour, outline=colour)
 
         lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6 + ld.label_ox, ld.cy - LOAD_AH / 2 + ld.label_oy)
-        label = f"{ld.name}\n{ld.p_mw:g} MW / {ld.q_mvar:g} MVAr"
-        self.canvas.create_text(lsx, lsy, text=label, justify="left",
+        self.canvas.create_text(lsx, lsy, text=f"{ld.name}\n{ld.summary_str()}",
+                                justify="left",
                                 font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── CT ────────────────────────────────────────────────────────────────
