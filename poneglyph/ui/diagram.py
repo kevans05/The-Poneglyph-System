@@ -346,6 +346,7 @@ class Diagram(tk.Frame):
         self._drag_kind:      Optional[str]   = None
         self._drag_origin:    Optional[tuple] = None
         self._drag_node_idx:  Optional[int]   = None   # bus-node being dragged
+        self._drag_axis:      Optional[str]   = None   # "h" | "v" | "free" — locked at drag start
         self._conn_from_bus:  Optional[str]   = None
         self._conn_from_tap:  tuple           = (0.0, 0.0)
         self._pan_start_pt:   Optional[tuple] = None
@@ -1546,25 +1547,42 @@ class Diagram(tk.Frame):
             elif self._drag_kind == "bus_node":
                 bus = self._buses[self._drag_id]
                 ni  = self._drag_node_idx
-                nx, ny = bus.nodes[ni]
-                # Constrain to axis-aligned from neighbouring nodes
+                ox, oy = bus.nodes[ni]   # original node position at drag start
                 neighbours = [j for i,j in bus.edges if i==ni] + [i for i,j in bus.edges if j==ni]
-                if len(neighbours) == 1:
-                    # End node: free movement but snapped to 90° from its neighbour
-                    nbx, nby = bus.nodes[neighbours[0]]
-                    wx, wy = self._snap_90((nbx, nby), wx, wy)
-                elif len(neighbours) == 2:
-                    # Mid node: keep it on the axis between its two neighbours
-                    # Allow both H and V movement but snap to one axis at a time
-                    nbx0, nby0 = bus.nodes[neighbours[0]]
-                    nbx1, nby1 = bus.nodes[neighbours[1]]
-                    # Prefer the axis that keeps segments rectilinear
-                    if abs(nbx0 - nbx1) < 1:    # both neighbours same X → node must stay on H axis
-                        wy = ny                  # lock Y, allow X
-                    elif abs(nby0 - nby1) < 1:  # both neighbours same Y → lock X, allow Y
-                        wx = nx
+
+                # Determine & lock the allowed axis on the first movement
+                if self._drag_axis is None:
+                    if len(neighbours) == 1:
+                        # End node: lock to the existing segment's axis
+                        nbx, nby = bus.nodes[neighbours[0]]
+                        self._drag_axis = "v" if abs(nbx - ox) < 1 else "h"
+                    elif len(neighbours) == 2:
+                        nbx0, nby0 = bus.nodes[neighbours[0]]
+                        nbx1, nby1 = bus.nodes[neighbours[1]]
+                        if abs(nby0 - oy) < 1 and abs(nby1 - oy) < 1:
+                            # Both neighbours on same Y → straight horizontal run → slide H
+                            self._drag_axis = "h"
+                        elif abs(nbx0 - ox) < 1 and abs(nbx1 - ox) < 1:
+                            # Both neighbours on same X → straight vertical run → slide V
+                            self._drag_axis = "v"
+                        else:
+                            # Corner node (one H, one V neighbour):
+                            # lock to whichever axis the user first drags more
+                            ddx = abs(wx - self._drag_origin[0])
+                            ddy = abs(wy - self._drag_origin[1])
+                            if ddx < 2 and ddy < 2:
+                                return   # haven't moved enough yet — wait
+                            self._drag_axis = "h" if ddx >= ddy else "v"
+                    else:
+                        self._drag_axis = "free"
+
+                # Apply the locked axis constraint
+                if self._drag_axis == "h":
+                    wy = oy
+                elif self._drag_axis == "v":
+                    wx = ox
+
                 bus.nodes[ni] = (wx, wy)
-                self._drag_origin = (wx, wy)
                 self.redraw()
                 return
             elif self._drag_kind == "transformer":
@@ -1584,6 +1602,7 @@ class Diagram(tk.Frame):
         self._drag_kind     = None
         self._drag_origin   = None
         self._drag_node_idx = None
+        self._drag_axis     = None
 
     def _on_motion(self, event: tk.Event) -> None:
         wx, wy = self._s2w(event.x, event.y)
