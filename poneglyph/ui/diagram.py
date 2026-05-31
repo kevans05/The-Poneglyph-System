@@ -1350,14 +1350,6 @@ class Diagram(tk.Frame):
                                     cx + alx*R, cy + aly*R,
                                     fill=colour, width=lw)
 
-        # Polarity dot near tip of upper arc (+pxn side)
-        if ct.polarity_standard:
-            pr = max(2, 2.5 * self._scale)
-            uc_x = sx - alx*R + pxn*R*0.85
-            uc_y = sy - aly*R + pyn*R*0.85
-            self.canvas.create_oval(uc_x-pr, uc_y-pr, uc_x+pr, uc_y+pr,
-                                    fill=colour, outline=colour)
-
         # Terminal ticks at ends of each flat diameter (along wire):
         # outer top, shared centre, outer bottom
         top_x = sx - alx*2*R;  top_y = sy - aly*2*R
@@ -1368,16 +1360,22 @@ class Diagram(tk.Frame):
                                     px + pxn*tk*0.6, py + pyn*tk*0.6,
                                     fill=colour, width=lw)
 
-        # Secondary lead from the tip of the upper arc (top outer end of the C),
-        # going perpendicular — no crossbar, just a clean open end.
+        # Secondary lead from the top outer end, going perpendicular.
         lead_ex = top_x + pxn * tk * 2.5
         lead_ey = top_y + pyn * tk * 2.5
         self.canvas.create_line(top_x, top_y, lead_ex, lead_ey,
                                 fill=colour, width=lw)
 
+        # Polarity dot at the tip of the secondary lead — outside and obvious.
+        if ct.polarity_standard:
+            pr = max(3, 3.5 * self._scale)
+            self.canvas.create_oval(lead_ex - pr, lead_ey - pr,
+                                    lead_ex + pr, lead_ey + pr,
+                                    fill=colour, outline=colour)
+
         label = f"{ct.ratio_str}\n{ct.name}"
-        self.canvas.create_text(lead_ex + pxn*4 + ct.label_ox*self._scale,
-                                lead_ey + pyn*4 + ct.label_oy*self._scale,
+        self.canvas.create_text(lead_ex + pxn*(pr+4) + ct.label_ox*self._scale,
+                                lead_ey + pyn*(pr+4) + ct.label_oy*self._scale,
                                 text=label, font=("TkDefaultFont", 8),
                                 fill="#444444",
                                 anchor="w" if pxn >= 0 else "e")
