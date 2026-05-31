@@ -289,7 +289,7 @@ TOOL_HINTS = {
 BUS_WIDTH  = 4
 LINE_WIDTH = 2
 SNAP_TOL   = 16      # pixels for bus hit-tests
-XFMR_SNAP  = 32      # pixels of Y tolerance for transformer/source/load bus-snap
+XFMR_SNAP  = 56      # pixels tolerance for transformer/source/load bus-snap
 
 # Default voltage-level colour map (kV → hex colour).
 # Keys are nominal kV values; _voltage_colour() picks the nearest one.
@@ -1623,15 +1623,30 @@ class Diagram(tk.Frame):
 
         elif self._tool in (TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD):
             snap_id = self._snap_bus(wx, wy)
+            self.redraw()
             if snap_id:
-                self.redraw()
                 bus = self._buses[snap_id]
                 tap_pt = bus.nearest_tap(wx, wy)
                 tap_sx, tap_sy = self._w2s(*tap_pt)
-                r = 6
+                # Snap dot on the bus
+                r = 7
                 self.canvas.create_oval(tap_sx - r, tap_sy - r,
                                         tap_sx + r, tap_sy + r,
-                                        fill="#0066CC", outline="")
+                                        fill="#0066CC", outline="white", width=2)
+                # For transformers, draw a dashed ghost showing where it will land
+                if self._tool == TOOL_TRANSFORMER:
+                    tap_x, tap_y = tap_pt
+                    ghost_cy = tap_y + XFMR_HALF
+                    ghost_bot_sx, ghost_bot_sy = self._w2s(tap_x, ghost_cy + XFMR_HALF)
+                    self.canvas.create_line(tap_sx, tap_sy, tap_sx, ghost_bot_sy,
+                                            fill="#0066CC", width=1, dash=(4, 3))
+            else:
+                # Show a subtle X when not over a bus so user knows snap is needed
+                r = 5
+                self.canvas.create_line(event.x-r, event.y-r, event.x+r, event.y+r,
+                                        fill="#AAAAAA", width=1)
+                self.canvas.create_line(event.x-r, event.y+r, event.x+r, event.y-r,
+                                        fill="#AAAAAA", width=1)
 
     def _finish_connection(self, wx: float, wy: float, to_bus_id: Optional[str]) -> None:
         kind = "tline" if self._tool == TOOL_TLINE else "feeder"
