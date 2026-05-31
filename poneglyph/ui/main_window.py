@@ -19,6 +19,7 @@ from poneglyph.ui.diagram import (
 from poneglyph.io.project import save as project_save, load as project_load
 from poneglyph.io.project import sanitize_name, create_project_folders
 from poneglyph.ui.properties import PropertiesPanel
+from poneglyph.loadtest.log_pose import LogPosePanel
 
 
 class MainWindow:
@@ -235,6 +236,16 @@ class MainWindow:
         self._drw_tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
+        # ── Tab 3: Load Test ─────────────────────────────────────────────────
+        lt_frame = tk.Frame(nb)
+        nb.add(lt_frame, text="Load Test")
+        self._load_test = LogPosePanel(
+            lt_frame,
+            diagram=self.diagram,
+            project_name=self._project_name,
+        )
+        self._load_test.pack(fill=tk.BOTH, expand=True)
+
     def _on_props_change(self):
         self.diagram.redraw()
 
@@ -242,6 +253,11 @@ class MainWindow:
         tab = self._main_nb.index(self._main_nb.select())
         if tab == 1:
             self._refresh_drawings_tab()
+        elif tab == 2:
+            self._load_test.set_project(
+                project_name=self._project_name,
+                project_path=self._current_file,
+            )
 
     def _refresh_drawings_tab(self):
         tree = self._drw_tree

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS elements (type TEXT NOT NULL, id TEXT NOT NULL, data 
                                      PRIMARY KEY (type, id));
 CREATE TABLE IF NOT EXISTS drawings (name TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS volt_colours (kv REAL PRIMARY KEY, colour TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS load_tests (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 """
 
 TABLES = [
@@ -87,6 +88,37 @@ def save(diagram, filepath: str | Path, project_name: str) -> None:
             con.execute("INSERT INTO volt_colours VALUES (?, ?)", (float(kv), colour))
 
         con.commit()
+    finally:
+        con.close()
+
+
+def save_load_test(filepath: Path, record: dict) -> None:
+    """Insert or replace a LoadTestRecord dict."""
+    filepath = Path(filepath)
+    con = sqlite3.connect(filepath)
+    try:
+        con.executescript(SCHEMA)
+        con.execute(
+            "INSERT OR REPLACE INTO load_tests (id, data) VALUES (?, ?)",
+            (record["id"], json.dumps(record)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def list_load_tests(filepath: Path) -> list[dict]:
+    """Return all load test records, ordered by timestamp desc."""
+    filepath = Path(filepath)
+    if not filepath.exists():
+        return []
+    con = sqlite3.connect(filepath)
+    try:
+        con.executescript(SCHEMA)
+        rows = con.execute(
+            "SELECT data FROM load_tests ORDER BY json_extract(data, '$.timestamp') DESC"
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
     finally:
         con.close()
 
