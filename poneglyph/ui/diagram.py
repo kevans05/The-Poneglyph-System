@@ -2337,10 +2337,21 @@ class Diagram(tk.Frame):
             pts = self._ct_wire_endpoints(ct)
             if pts is None:
                 continue
-            _, _, _, _, wx, wy = pts
+            ax, ay, bx, by, wx, wy = pts
+            # Primary check: near symbol centre
             csx, csy = self._w2s(wx, wy)
             if math.hypot(sx - csx, sy - csy) < 20 * self._scale:
                 return ct.id
+            # Secondary check: near any point on the wire segment (for wire-tool clicks)
+            x1, y1 = self._w2s(ax, ay)
+            x2, y2 = self._w2s(bx, by)
+            dx, dy = x2 - x1, y2 - y1
+            seg_len2 = dx*dx + dy*dy
+            if seg_len2 > 1:
+                t = max(0.0, min(1.0, ((sx-x1)*dx + (sy-y1)*dy) / seg_len2))
+                px, py = x1 + t*dx, y1 + t*dy
+                if math.hypot(sx - px, sy - py) < 10 * self._scale:
+                    return ct.id
         return None
 
     def _hit_vt(self, wx: float, wy: float) -> Optional[str]:
