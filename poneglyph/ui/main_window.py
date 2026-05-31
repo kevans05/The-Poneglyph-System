@@ -35,9 +35,8 @@ class MainWindow:
         self._project_name: str = "Untitled"
 
         self._build_menu()
-        self._build_toolbar()
-        self._build_body()
         self._build_status()
+        self._build_body()
         self._set_tool(TOOL_SELECT)
 
     # ── Menu ──────────────────────────────────────────────────────────────
@@ -70,8 +69,9 @@ class MainWindow:
 
     # ── Toolbar ───────────────────────────────────────────────────────────
 
-    def _build_toolbar(self) -> None:
-        bar = tk.Frame(self.root, bd=1, relief="raised")
+    def _build_toolbar(self, parent: tk.Widget) -> None:
+        """Build the SLD toolbar inside the given parent frame."""
+        bar = tk.Frame(parent, bd=1, relief="raised")
         bar.pack(side=tk.TOP, fill=tk.X)
 
         # Select (standalone)
@@ -205,6 +205,9 @@ class MainWindow:
         sld_frame = tk.Frame(nb)
         nb.add(sld_frame, text="SLD")
 
+        # SLD-specific toolbar sits at the top of this tab only
+        self._build_toolbar(sld_frame)
+
         pane = tk.PanedWindow(sld_frame, orient=tk.HORIZONTAL,
                               sashwidth=4, sashrelief="flat")
         pane.pack(fill=tk.BOTH, expand=True)
@@ -220,6 +223,11 @@ class MainWindow:
         # ── Tab 2: Drawings ─────────────────────────────────────────────────
         drw_frame = tk.Frame(nb)
         nb.add(drw_frame, text="Drawings")
+
+        # Drawings toolbar (stub — drawing-specific tools go here later)
+        drw_bar = tk.Frame(drw_frame, bd=1, relief="raised")
+        drw_bar.pack(side=tk.TOP, fill=tk.X)
+        self._drw_toolbar = drw_bar   # kept for future tool buttons
         drw_frame.columnconfigure(0, weight=1)
         drw_frame.rowconfigure(0, weight=1)
 
