@@ -254,8 +254,8 @@ DEFAULT_VOLT_COLOURS: dict[float, str] = {
     115:  "#FFA500",   # orange
     69:   "#DAA520",   # goldenrod
     34.5: "#8B4513",   # saddle brown
-    13.8: "#228B22",   # forest green
-    4.16: "#90EE90",   # light green
+    13.8: "#00CED1",   # dark turquoise  (green reserved for closed devices)
+    4.16: "#40C4FF",   # light blue      (green reserved for closed devices)
     0.48: "#808080",   # gray
 }
 
@@ -499,16 +499,18 @@ class Diagram(tk.Frame):
                     self._draw_legacy_breaker_square(dx_seg, dy_seg, colour)
                     prev_sx, prev_sy = dx_seg, dy_seg
                 elif dev_kind == "breaker":
+                    sw_col = "#00AA00" if dev_obj.closed else "#CC0000"
                     self._draw_breaker_symbol(prev_sx, prev_sy, x1, y1, x2, y2,
-                                              t_dev, colour, dev_obj, gap)
+                                              t_dev, sw_col, dev_obj, gap)
                     # Advance past gap
                     length = math.hypot(x2 - x1, y2 - y1) or 1
                     dt = gap / length
                     prev_sx = x1 + (x2 - x1) * min(1.0, t_dev + dt)
                     prev_sy = y1 + (y2 - y1) * min(1.0, t_dev + dt)
                 elif dev_kind == "disconnect":
+                    sw_col = "#00AA00" if dev_obj.closed else "#CC0000"
                     self._draw_disconnect_symbol(prev_sx, prev_sy, x1, y1, x2, y2,
-                                                 t_dev, colour, dev_obj, gap)
+                                                 t_dev, sw_col, dev_obj, gap)
                     length = math.hypot(x2 - x1, y2 - y1) or 1
                     dt = gap / length
                     prev_sx = x1 + (x2 - x1) * min(1.0, t_dev + dt)
