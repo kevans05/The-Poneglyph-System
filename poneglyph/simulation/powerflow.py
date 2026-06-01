@@ -34,7 +34,7 @@ class PowerFlowResult:
 
 
 class PowerFlowSolver:
-    """Newton-Raphson AC power flow for balanced 3-phase networks.
+    """AC power flow for balanced 3-phase networks (Gauss-Seidel method).
 
     The single-phase per-unit model is used; all quantities are
     per-phase positive-sequence. Full 3-phase quantities are recovered
@@ -80,10 +80,24 @@ class PowerFlowSolver:
                 continue
             i, j = idx[branch.from_bus], idx[branch.to_bus]
             y = 1.0 / branch.z_pu if branch.z_pu != 0 else 0.0
-            Y[i, i] += y
-            Y[j, j] += y
-            Y[i, j] -= y
-            Y[j, i] -= y
+            phi = getattr(branch, "phase_shift_rad", 0.0)
+            if abs(phi) < 1e-9:
+                # Symmetric: plain line or Yy/Dd transformer
+                Y[i, i] += y
+                Y[j, j] += y
+                Y[i, j] -= y
+                Y[j, i] -= y
+            else:
+                # Asymmetric complex-tap model: a = e^(jφ), HV at i, LV at j
+                # Y[i,i] = y/|a|² = y  (|a|=1)
+                # Y[j,j] = y
+                # Y[i,j] = -y / conj(a)
+                # Y[j,i] = -y / a
+                a = cmath.rect(1.0, phi)
+                Y[i, i] += y
+                Y[j, j] += y
+                Y[i, j] -= y / a.conjugate()
+                Y[j, i] -= y / a
 
         # Initial voltage vector
         V = np.array([b.v_pu for b in buses], dtype=complex)
@@ -123,13 +137,12 @@ class PowerFlowSolver:
                 converged = True
                 break
 
-            # Simple Jacobian-free update (fast-decoupled approximation)
+            # Gauss-Seidel voltage update: V_i = (I_spec - sum_{j≠i}(Y_ij*V_j)) / Y_ii
             for bi in pq_idx:
                 bus = buses[bi]
                 sched = self._schedule.get(bus.id, {"type": "pq", "P": 0.0, "Q": 0.0})
                 S_spec = complex(sched.get("P", 0.0), sched.get("Q", 0.0))
                 I_inj = np.conj(S_spec / V[bi]) if abs(V[bi]) > 1e-9 else 0.0
-                # Voltage correction via Gauss-Seidel step
                 off_diag = sum(Y[bi, j] * V[j] for j in range(n) if j != bi)
                 if abs(Y[bi, bi]) > 1e-12:
                     V[bi] = (I_inj - off_diag) / Y[bi, bi]
@@ -167,13 +180,20 @@ class PowerFlowSolver:
             if from_bus is None or to_bus is None:
                 continue
 
-            dV = from_bus.v_pu - to_bus.v_pu
+            # For phase-shifted branches (Yd/Dy transformers) the HV-side current
+            # is I = y*(V_HV - a*V_LV) where a = e^(jφ), matching the Y-bus model.
+            phi = getattr(branch, "phase_shift_rad", 0.0)
+            if abs(phi) > 1e-9:
+                a = cmath.rect(1.0, phi)
+                dV = from_bus.v_pu - a * to_bus.v_pu
+            else:
+                dV = from_bus.v_pu - to_bus.v_pu
             if abs(branch.z_pu) < 1e-12:
                 i_pu = 0.0 + 0.0j
             else:
                 i_pu = dV / branch.z_pu
 
-            # Convert from per-unit to amps on the HV side base
+            # Convert from per-unit to amps on the from_bus (HV) side base
             base_kv = from_bus.base_kv
             base_i = (net.base_mva * 1e6) / (base_kv * 1e3 * 3 ** 0.5)
             i_mag = abs(i_pu) * base_i
