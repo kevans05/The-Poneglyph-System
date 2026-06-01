@@ -461,6 +461,7 @@ class DiagramCTTB:
     cy: float = 0.0             # world-space box centre Y
     mode: str = "Pass"          # "Pass" | "Sum" | "Subtract"
     num_circuits: int = 1
+    meas_points: list = None    # list of {pred_mag, pred_ang, meas_mag, meas_ang} per circuit
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
@@ -469,6 +470,8 @@ class DiagramCTTB:
     notes: str = ""
 
     def __post_init__(self):
+        if self.meas_points is None:
+            self.meas_points = []
         if self.device_drawings is None:
             self.device_drawings = []
 
@@ -483,6 +486,7 @@ class DiagramTestBlock:
     cy: float = 0.0             # world-space box centre Y
     block_type: str = "FT"      # "FT" | "ISO"
     fused: bool = True
+    meas_points: list = None    # list of {pred_mag, pred_ang, meas_mag, meas_ang}
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
@@ -491,6 +495,8 @@ class DiagramTestBlock:
     notes: str = ""
 
     def __post_init__(self):
+        if self.meas_points is None:
+            self.meas_points = []
         if self.device_drawings is None:
             self.device_drawings = []
 
@@ -503,6 +509,7 @@ class DiagramRelay:
     cy: float
     function_code: str = "51"       # ANSI function number e.g. "21", "50/51", "87T"
     windings: list = None           # list of winding label strings e.g. ["W1","W2"]
+    meas_points: list = None        # list of {pred_mag, pred_ang, meas_mag, meas_ang} per winding
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
     panel: str = ""
@@ -513,6 +520,8 @@ class DiagramRelay:
     def __post_init__(self):
         if self.windings is None:
             self.windings = ["W1"]
+        if self.meas_points is None:
+            self.meas_points = []
         if self.device_drawings is None:
             self.device_drawings = []
 

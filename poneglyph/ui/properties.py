@@ -138,13 +138,16 @@ class PropertiesPanel(tk.Frame):
         self._current: Optional[object] = None
         self._diagram = None
 
-        tk.Label(self, text="Properties", font=("TkDefaultFont", 10, "bold"),
-                 anchor="w").pack(fill=tk.X, padx=8, pady=(8, 4))
-        ttk.Separator(self).pack(fill=tk.X)
+        # Top-level notebook: Properties | Meter Readings
+        self._panel_nb = ttk.Notebook(self)
+        self._panel_nb.pack(fill=tk.BOTH, expand=True)
 
-        # Scrollable body
-        self._canvas_frame = tk.Canvas(self, highlightthickness=0)
-        self._scrollbar = ttk.Scrollbar(self, orient="vertical",
+        # ── Properties tab ──────────────────────────────────────────────
+        _props_tab = tk.Frame(self._panel_nb)
+        self._panel_nb.add(_props_tab, text="Properties")
+
+        self._canvas_frame = tk.Canvas(_props_tab, highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(_props_tab, orient="vertical",
                                         command=self._canvas_frame.yview)
         self._canvas_frame.configure(yscrollcommand=self._scrollbar.set)
         self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -157,6 +160,24 @@ class PropertiesPanel(tk.Frame):
         self._canvas_frame.bind("<Configure>", lambda e: self._canvas_frame.itemconfig(
             self._body_win, width=e.width))
 
+        # ── Meter Readings tab ───────────────────────────────────────────
+        _mr_tab = tk.Frame(self._panel_nb)
+        self._panel_nb.add(_mr_tab, text="Meter Readings")
+
+        self._mr_canvas = tk.Canvas(_mr_tab, highlightthickness=0)
+        self._mr_scrollbar = ttk.Scrollbar(_mr_tab, orient="vertical",
+                                           command=self._mr_canvas.yview)
+        self._mr_canvas.configure(yscrollcommand=self._mr_scrollbar.set)
+        self._mr_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._mr_canvas.pack(fill=tk.BOTH, expand=True)
+        self._mr_body = tk.Frame(self._mr_canvas)
+        self._mr_body_win = self._mr_canvas.create_window(
+            (0, 0), window=self._mr_body, anchor="nw")
+        self._mr_body.bind("<Configure>", lambda e: self._mr_canvas.configure(
+            scrollregion=self._mr_canvas.bbox("all")))
+        self._mr_canvas.bind("<Configure>", lambda e: self._mr_canvas.itemconfig(
+            self._mr_body_win, width=e.width))
+
         self._show_empty()
 
     # ── Public ────────────────────────────────────────────────────────────
@@ -167,6 +188,7 @@ class PropertiesPanel(tk.Frame):
 
     def show_bus(self, bus: DiagramBus) -> None:
         self._current = bus
+        self._populate_mr(bus)
         self._clear()
 
         v_name = tk.StringVar(value=bus.name)
@@ -193,6 +215,7 @@ class PropertiesPanel(tk.Frame):
 
     def show_connection(self, conn: DiagramConnection) -> None:
         self._current = conn
+        self._populate_mr(conn)
         self._clear()
 
         kind_label = {"tline": "Transmission Line", "feeder": "Feeder",
@@ -235,6 +258,7 @@ class PropertiesPanel(tk.Frame):
         if xfmr is None:
             return
         self._current = xfmr
+        self._populate_mr(xfmr)
         self._clear()
 
         row = _RowCounter()
@@ -326,6 +350,7 @@ class PropertiesPanel(tk.Frame):
         if src is None:
             return
         self._current = src
+        self._populate_mr(src)
         self._clear()
         tk.Label(self._body, text="Power Source (slack)", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -357,6 +382,7 @@ class PropertiesPanel(tk.Frame):
         if ld is None:
             return
         self._current = ld
+        self._populate_mr(ld)
         self._clear()
         import math
 
@@ -584,6 +610,7 @@ class PropertiesPanel(tk.Frame):
         if ct is None:
             return
         self._current = ct
+        self._populate_mr(ct)
         self._clear()
 
         RELAY_CLASSES   = ["C50", "C100", "C200", "C400", "C800"]
@@ -699,6 +726,7 @@ class PropertiesPanel(tk.Frame):
         if vt is None:
             return
         self._current = vt
+        self._populate_mr(vt)
         self._clear()
         tk.Label(self._body, text="Voltage Transformer / CVT",
                  font=("TkDefaultFont", 9, "italic"),
@@ -769,6 +797,7 @@ class PropertiesPanel(tk.Frame):
         if cttb is None:
             return
         self._current = cttb
+        self._populate_mr(cttb)
         self._clear()
         tk.Label(self._body, text="CT Test Block (CTTB)",
                  font=("TkDefaultFont", 9, "italic"),
@@ -810,6 +839,7 @@ class PropertiesPanel(tk.Frame):
         if tb is None:
             return
         self._current = tb
+        self._populate_mr(tb)
         self._clear()
         tk.Label(self._body, text="FT / ISO Test Block",
                  font=("TkDefaultFont", 9, "italic"),
@@ -849,6 +879,7 @@ class PropertiesPanel(tk.Frame):
         if br is None:
             return
         self._current = br
+        self._populate_mr(br)
         self._clear()
         tk.Label(self._body, text="Circuit Breaker", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -879,6 +910,7 @@ class PropertiesPanel(tk.Frame):
         if dc is None:
             return
         self._current = dc
+        self._populate_mr(dc)
         self._clear()
         tk.Label(self._body, text="Disconnect Switch", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -909,6 +941,7 @@ class PropertiesPanel(tk.Frame):
         if relay is None:
             return
         self._current = relay
+        self._populate_mr(relay)
         self._clear()
         row = _RowCounter()
 
@@ -981,6 +1014,7 @@ class PropertiesPanel(tk.Frame):
         if rw is None:
             return
         self._current = rw
+        self._populate_mr(rw)
         self._clear()
         row = _RowCounter()
         tk.Label(self._body, text="Relay Wire",
@@ -1014,6 +1048,7 @@ class PropertiesPanel(tk.Frame):
     def clear(self) -> None:
         self._current = None
         self._show_empty()
+        self._show_mr_na()
 
     def _device_fields(self, obj, start_row: int):
         """Add extended location/drawing fields. Returns (next_row, vars_dict)."""
@@ -1060,6 +1095,190 @@ class PropertiesPanel(tk.Frame):
         self._clear()
         tk.Label(self._body, text="Nothing selected.",
                  fg="#888888", font=("TkDefaultFont", 9)).pack(anchor="w")
+
+    # ── Meter readings helpers ────────────────────────────────────────────
+
+    def _clear_mr(self) -> None:
+        for w in self._mr_body.winfo_children():
+            w.destroy()
+
+    def _show_mr_na(self) -> None:
+        self._clear_mr()
+        tk.Label(self._mr_body,
+                 text="Meter readings are not\navailable for this device type.",
+                 fg="#888888", font=("TkDefaultFont", 9), justify="center"
+                 ).pack(expand=True, pady=20)
+
+    def _populate_mr(self, device) -> None:
+        """Dispatch to the right MR builder based on device type."""
+        if isinstance(device, DiagramCTTB):
+            self._build_mr_cttb(device)
+        elif isinstance(device, DiagramRelay):
+            self._build_mr_relay(device)
+        elif isinstance(device, DiagramTestBlock):
+            self._build_mr_testblock(device)
+        else:
+            self._show_mr_na()
+
+    _PHASES = (("A", 0.0), ("B", 240.0), ("C", 120.0))
+
+    def _build_mr_channels(self, channels: list, unit: str, save_fn) -> None:
+        """Populate _mr_body with one LabelFrame per channel, 3 phases each.
+
+        channels: list of dicts with keys pred_mag_a/b/c, pred_ang_a/b/c,
+                  meas_mag_a/b/c, meas_ang_a/b/c, plus 'label'.
+        unit: 'A' or 'V'
+        save_fn: callable(list_of_updated_dicts)
+        """
+        self._clear_mr()
+        body = self._mr_body
+        body.columnconfigure(0, weight=1)
+
+        ch_vars: list[dict] = []
+
+        for i, ch in enumerate(channels):
+            lf = tk.LabelFrame(body, text=ch["label"],
+                               font=("TkDefaultFont", 8, "bold"), padx=4, pady=2)
+            lf.grid(row=i, column=0, sticky="ew", padx=4, pady=(4, 0))
+            # cols: 0=phase, 1=row-label, 2=mag-entry, 3=unit, 4=ang-entry, 5=°
+            lf.columnconfigure(2, weight=1)
+            lf.columnconfigure(4, weight=1)
+
+            phase_vars: dict = {}   # ph -> {pred_mag, pred_ang, meas_mag, meas_ang}
+            grid_row = 0
+
+            for ph, _default_ang in self._PHASES:
+                sfx = ph.lower()
+                v_pm = tk.StringVar(value=str(ch.get(f"pred_mag_{sfx}", 0.0)))
+                v_pa = tk.StringVar(value=str(ch.get(f"pred_ang_{sfx}", 0.0)))
+                v_mm = tk.StringVar(value=str(ch.get(f"meas_mag_{sfx}", 0.0)))
+                v_ma = tk.StringVar(value=str(ch.get(f"meas_ang_{sfx}", 0.0)))
+                v_dv = tk.StringVar(value="—")
+                phase_vars[ph] = {"pred_mag": v_pm, "pred_ang": v_pa,
+                                  "meas_mag": v_mm, "meas_ang": v_ma}
+
+                # Phase header label
+                tk.Label(lf, text=f"Ph {ph}", font=("TkDefaultFont", 8, "bold"),
+                         fg="#333333").grid(row=grid_row, column=0, rowspan=2,
+                                           sticky="nw", padx=(0, 4))
+
+                # Pred row
+                tk.Label(lf, text="Pred", fg="#666666",
+                         font=("TkDefaultFont", 8)).grid(
+                    row=grid_row, column=1, sticky="e", padx=(0, 2))
+                tk.Entry(lf, textvariable=v_pm, width=6).grid(
+                    row=grid_row, column=2, sticky="ew", padx=1)
+                tk.Label(lf, text=unit, fg="#666666",
+                         font=("TkDefaultFont", 8)).grid(
+                    row=grid_row, column=3, sticky="w")
+                tk.Entry(lf, textvariable=v_pa, width=6).grid(
+                    row=grid_row, column=4, sticky="ew", padx=1)
+                tk.Label(lf, text="°", fg="#666666",
+                         font=("TkDefaultFont", 8)).grid(
+                    row=grid_row, column=5, sticky="w")
+                grid_row += 1
+
+                # Meas row
+                tk.Label(lf, text="Meas", fg="#333333",
+                         font=("TkDefaultFont", 8, "bold")).grid(
+                    row=grid_row, column=1, sticky="e", padx=(0, 2))
+                tk.Entry(lf, textvariable=v_mm, width=6).grid(
+                    row=grid_row, column=2, sticky="ew", padx=1)
+                tk.Label(lf, text=unit, fg="#333333",
+                         font=("TkDefaultFont", 8)).grid(
+                    row=grid_row, column=3, sticky="w")
+                tk.Entry(lf, textvariable=v_ma, width=6).grid(
+                    row=grid_row, column=4, sticky="ew", padx=1)
+                tk.Label(lf, text="°", fg="#333333",
+                         font=("TkDefaultFont", 8)).grid(
+                    row=grid_row, column=5, sticky="w")
+                grid_row += 1
+
+                # Delta row
+                tk.Label(lf, textvariable=v_dv, fg="#0044AA",
+                         font=("TkFixedFont", 7), justify="left").grid(
+                    row=grid_row, column=1, columnspan=5, sticky="w")
+                grid_row += 1
+
+                def _upd(*_, _pm=v_pm, _pa=v_pa, _mm=v_mm, _ma=v_ma,
+                         _dv=v_dv, _u=unit):
+                    try:
+                        pm = float(_pm.get()); pa = float(_pa.get())
+                        mm = float(_mm.get()); ma = float(_ma.get())
+                        d_mag = mm - pm
+                        pct = f"({abs(d_mag)/pm*100:.1f}%)" if pm != 0 else ""
+                        d_ang = (ma - pa + 180) % 360 - 180
+                        _dv.set(f"Δ{d_mag:+.3f}{_u} {pct}  Δang{d_ang:+.1f}°")
+                    except ValueError:
+                        _dv.set("—")
+
+                for v in (v_pm, v_pa, v_mm, v_ma):
+                    v.trace_add("write", _upd)
+                _upd()
+
+                # Thin separator between phases (not after last)
+                if ph != "C":
+                    ttk.Separator(lf, orient="horizontal").grid(
+                        row=grid_row, column=0, columnspan=6,
+                        sticky="ew", pady=(2, 2))
+                    grid_row += 1
+
+            ch_vars.append(phase_vars)
+
+        def _save():
+            data = []
+            for pv in ch_vars:
+                pt: dict = {}
+                for ph in ("A", "B", "C"):
+                    sfx = ph.lower()
+                    vs = pv[ph]
+                    try:
+                        pt[f"pred_mag_{sfx}"] = float(vs["pred_mag"].get())
+                        pt[f"pred_ang_{sfx}"] = float(vs["pred_ang"].get())
+                        pt[f"meas_mag_{sfx}"] = float(vs["meas_mag"].get())
+                        pt[f"meas_ang_{sfx}"] = float(vs["meas_ang"].get())
+                    except ValueError:
+                        pt[f"pred_mag_{sfx}"] = 0.0
+                        pt[f"pred_ang_{sfx}"] = 0.0
+                        pt[f"meas_mag_{sfx}"] = 0.0
+                        pt[f"meas_ang_{sfx}"] = 0.0
+                data.append(pt)
+            save_fn(data)
+            if self._on_change:
+                self._on_change()
+
+        tk.Button(body, text="Save Readings", command=_save).grid(
+            row=len(channels), column=0, sticky="w", padx=4, pady=(8, 4))
+
+    def _blank_pt(self) -> dict:
+        return {
+            "pred_mag_a": 0.0, "pred_ang_a": 0.0,
+            "meas_mag_a": 0.0, "meas_ang_a": 0.0,
+            "pred_mag_b": 0.0, "pred_ang_b": 0.0,
+            "meas_mag_b": 0.0, "meas_ang_b": 0.0,
+            "pred_mag_c": 0.0, "pred_ang_c": 0.0,
+            "meas_mag_c": 0.0, "meas_ang_c": 0.0,
+        }
+
+    def _build_mr_cttb(self, cttb: DiagramCTTB) -> None:
+        n = max(1, cttb.num_circuits)
+        while len(cttb.meas_points) < n:
+            cttb.meas_points.append(self._blank_pt())
+        channels = [{"label": f"Circuit {i+1}", **cttb.meas_points[i]} for i in range(n)]
+        self._build_mr_channels(channels, "A", lambda data: setattr(cttb, "meas_points", data))
+
+    def _build_mr_relay(self, relay: DiagramRelay) -> None:
+        n = max(1, len(relay.windings))
+        while len(relay.meas_points) < n:
+            relay.meas_points.append(self._blank_pt())
+        channels = [{"label": relay.windings[i], **relay.meas_points[i]} for i in range(n)]
+        self._build_mr_channels(channels, "A", lambda data: setattr(relay, "meas_points", data))
+
+    def _build_mr_testblock(self, tb: DiagramTestBlock) -> None:
+        while len(tb.meas_points) < 1:
+            tb.meas_points.append(self._blank_pt())
+        channels = [{"label": "Channel 1", **tb.meas_points[0]}]
+        self._build_mr_channels(channels, "V", lambda data: setattr(tb, "meas_points", data))
 
     def _row(self, label: str, var: tk.Variable,
              readonly: bool = False, start_row: int = None) -> None:
