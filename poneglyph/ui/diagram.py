@@ -757,6 +757,13 @@ class Diagram(tk.Frame):
         if not self._sticky_tool and not shift_held:
             self.set_tool(TOOL_SELECT)
 
+    def _new_id(self, prefix: str, collection: dict) -> str:
+        """Return the lowest unused 'PREFIX-N' key in collection."""
+        n = len(collection) + 1
+        while f"{prefix}-{n}" in collection:
+            n += 1
+        return f"{prefix}-{n}"
+
     def get_buses(self)        -> dict: return self._buses
     def get_connections(self)  -> dict: return self._connections
     def get_transformers(self) -> dict: return self._transformers
@@ -2019,7 +2026,7 @@ class Diagram(tk.Frame):
             if cttb is None:
                 return None
             # Right edge of CTTB box (box centred on cx,cy; half-width = 20)
-            return (cttb.cx + 20, cttb.cy)
+            return (cttb.cx - 20, cttb.cy)
         elif source_type == "testblock":
             tb = self._testblocks.get(source_id)
             if tb is None:
@@ -2047,6 +2054,10 @@ class Diagram(tk.Frame):
         canvas.create_text(bsx, bsy, text="CTTB",
                            font=("TkDefaultFont", 9, "bold"), fill=colour)
 
+        # Terminal nodes: right = CT input, left = relay output
+        self._terminal_dot(bsx - W, bsy, colour)
+        self._terminal_dot(bsx + W, bsy, colour)
+
         # Device name as small label outside (to the right)
         canvas.create_text(bsx + W + 4 * self._scale, bsy,
                            text=cttb.name,
@@ -2070,6 +2081,10 @@ class Diagram(tk.Frame):
         # Bold "FT" or "ISO" text centred inside
         canvas.create_text(bsx, bsy, text=tb.block_type,
                            font=("TkDefaultFont", 9, "bold"), fill=colour)
+
+        # Terminal nodes: top = VT input, bottom = relay output
+        self._terminal_dot(bsx, bsy - H/2, colour)
+        self._terminal_dot(bsx, bsy + H/2, colour)
 
         # Device name as small label outside (to the right)
         canvas.create_text(bsx + W + 4*self._scale, bsy,
@@ -2118,7 +2133,7 @@ class Diagram(tk.Frame):
             cttb_dest = self._cttbs.get(rw.relay_id)
             if cttb_dest is None:
                 return
-            term_w = (cttb_dest.cx - 20, cttb_dest.cy)   # left edge = input
+            term_w = (cttb_dest.cx + 20, cttb_dest.cy)   # right edge = input
         elif dest_type == "testblock":
             tb_dest = self._testblocks.get(rw.relay_id)
             if tb_dest is None:
@@ -2221,7 +2236,13 @@ class Diagram(tk.Frame):
         return best
 
     def _xfmr_lead_segments(self, xfmr: "DiagramTransformer"):
-        """Return [(ax,ay,bx,by,label)] for each drawn lead segment of a transformer."""
+        """Return [(label, ax,ay,bx,by)] for each lead segment of a transformer.
+
+        Connected terminal → 3-segment elbow from bus tap to coil spine.
+        Disconnected terminal → 1-segment stub from terminal point to coil spine,
+        matching the visual stub drawn by _draw_transformer.  This ensures CTs
+        placed before a bus was removed remain visible and hit-testable.
+        """
         rot = xfmr.rotation % 360
         vert_exit = (rot % 180 == 0)
         hv_y_loc = -XFMR_CORE / 2
@@ -2238,6 +2259,9 @@ class Diagram(tk.Frame):
             else:
                 mx = (ax + bx) / 2
                 segs += [("hv", ax, ay, mx, ay), ("hv", mx, ay, mx, by), ("hv", mx, by, bx, by)]
+        else:
+            hv_t = xfmr.hv_terminal
+            segs += [("hv", hv_t[0], hv_t[1], hv_spine[0], hv_spine[1])]
         if xfmr.lv_bus and xfmr.lv_bus in self._buses:
             tap = self._buses[xfmr.lv_bus].nearest_tap(xfmr.lv_tap_x, xfmr.lv_tap_y)
             ax, ay, bx, by = lv_spine[0], lv_spine[1], tap[0], tap[1]
@@ -2247,6 +2271,9 @@ class Diagram(tk.Frame):
             else:
                 mx = (ax + bx) / 2
                 segs += [("lv", ax, ay, mx, ay), ("lv", mx, ay, mx, by), ("lv", mx, by, bx, by)]
+        else:
+            lv_t = xfmr.lv_terminal
+            segs += [("lv", lv_spine[0], lv_spine[1], lv_t[0], lv_t[1])]
         return segs
 
     def _nearest_wire(self, sx: float, sy: float, max_px: float = 20.0):
@@ -2339,21 +2366,24 @@ class Diagram(tk.Frame):
             pts = self._ct_wire_endpoints(ct)
             if pts is None:
                 continue
-            ax, ay, bx, by, wx, wy = pts
+            _ax, _ay, _bx, _by, wx, wy = pts
             # Primary check: near symbol centre
             csx, csy = self._w2s(wx, wy)
             if math.hypot(sx - csx, sy - csy) < 20 * self._scale:
                 return ct.id
-            # Secondary check: near any point on the wire segment (for wire-tool clicks)
-            x1, y1 = self._w2s(ax, ay)
-            x2, y2 = self._w2s(bx, by)
-            dx, dy = x2 - x1, y2 - y1
-            seg_len2 = dx*dx + dy*dy
-            if seg_len2 > 1:
-                t = max(0.0, min(1.0, ((sx-x1)*dx + (sy-y1)*dy) / seg_len2))
-                px, py = x1 + t*dx, y1 + t*dy
-                if math.hypot(sx - px, sy - py) < 10 * self._scale:
-                    return ct.id
+            # Secondary check: near any segment of the full lead (handles degenerate
+            # elbow segments and transformer leads with multiple segments).
+            all_segs = self._ct_lead_segs(ct) or [(_ax, _ay, _bx, _by)]
+            for seg_ax, seg_ay, seg_bx, seg_by in all_segs:
+                x1, y1 = self._w2s(seg_ax, seg_ay)
+                x2, y2 = self._w2s(seg_bx, seg_by)
+                dx, dy = x2 - x1, y2 - y1
+                seg_len2 = dx*dx + dy*dy
+                if seg_len2 > 1:
+                    t = max(0.0, min(1.0, ((sx-x1)*dx + (sy-y1)*dy) / seg_len2))
+                    px, py = x1 + t*dx, y1 + t*dy
+                    if math.hypot(sx - px, sy - py) < 10 * self._scale:
+                        return ct.id
         return None
 
     def _hit_vt(self, wx: float, wy: float) -> Optional[str]:
@@ -2370,7 +2400,9 @@ class Diagram(tk.Frame):
     def _hit_cttb(self, sx: float, sy: float) -> Optional[str]:
         for cttb in self._cttbs.values():
             bsx, bsy = self._w2s(cttb.cx, cttb.cy)
-            if math.hypot(sx - bsx, sy - bsy) < 22 * self._scale:
+            W = 20 * self._scale + 2   # matches create_rectangle half-width + margin
+            H = 13 * self._scale + 2   # matches create_rectangle half-height (26/2) + margin
+            if abs(sx - bsx) <= W and abs(sy - bsy) <= H:
                 return cttb.id
         return None
 
@@ -2417,6 +2449,81 @@ class Diagram(tk.Frame):
                 return dc.id
         return None
 
+    # ── Relay-wire crossing guards ────────────────────────────────────────
+
+    @staticmethod
+    def _seg_crosses_aabb(ax: float, ay: float, bx: float, by: float,
+                          lx: float, ly: float, rx: float, ry: float) -> bool:
+        """True if segment (ax,ay)-(bx,by) intersects axis-aligned box [lx,rx]×[ly,ry]."""
+        if ax < lx and bx < lx: return False
+        if ax > rx and bx > rx: return False
+        if ay < ly and by < ly: return False
+        if ay > ry and by > ry: return False
+        if lx <= ax <= rx and ly <= ay <= ry: return True
+        if lx <= bx <= rx and ly <= by <= ry: return True
+        def _cross2d(p1x, p1y, p2x, p2y, q1x, q1y, q2x, q2y) -> bool:
+            d1x, d1y = p2x - p1x, p2y - p1y
+            d2x, d2y = q2x - q1x, q2y - q1y
+            denom = d1x * d2y - d1y * d2x
+            if abs(denom) < 1e-9:
+                return False
+            t = ((q1x - p1x) * d2y - (q1y - p1y) * d2x) / denom
+            u = ((q1x - p1x) * d1y - (q1y - p1y) * d1x) / denom
+            return 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0
+        edges = [
+            (lx, ly, rx, ly), (rx, ly, rx, ry),
+            (rx, ry, lx, ry), (lx, ry, lx, ly),
+        ]
+        return any(_cross2d(ax, ay, bx, by, *e) for e in edges)
+
+    def _orthogonal_route(self, tip_w: tuple, term_w: tuple) -> list:
+        """Return the orthogonal waypoint list (same elbow logic as _draw_relay_wire)."""
+        ax, ay = tip_w
+        bx, by = term_w
+        if abs(ax - bx) > 0.5 and abs(ay - by) > 0.5:
+            return [tip_w, (bx, ay), term_w]
+        return [tip_w, term_w]
+
+    def _relay_wire_crosses_cttb(self, src_type: str, src_id: str,
+                                  dest_type: str, dest_id: str) -> Optional[str]:
+        """Return the id of a CTTB (not source/dest) whose box the proposed wire would cross."""
+        tip_w = self._device_output_world(src_type, src_id)
+        if tip_w is None:
+            return None
+        if dest_type == "cttb":
+            dest_obj = self._cttbs.get(dest_id)
+            if dest_obj is None:
+                return None
+            term_w = (dest_obj.cx + 20, dest_obj.cy)
+        elif dest_type == "testblock":
+            dest_obj = self._testblocks.get(dest_id)
+            if dest_obj is None:
+                return None
+            term_w = (dest_obj.cx, dest_obj.cy - 11)
+        else:
+            dest_obj = self._relays.get(dest_id)
+            if dest_obj is None:
+                return None
+            term_w = (dest_obj.cx, dest_obj.cy)
+        route = self._orthogonal_route(tip_w, term_w)
+        excluded = set()
+        if src_type == "cttb":
+            excluded.add(src_id)
+        if dest_type == "cttb":
+            excluded.add(dest_id)
+        WH, HH = 20, 13
+        for cttb in self._cttbs.values():
+            if cttb.id in excluded:
+                continue
+            lx, rx = cttb.cx - WH, cttb.cx + WH
+            ly, ry = cttb.cy - HH, cttb.cy + HH
+            for i in range(len(route) - 1):
+                if self._seg_crosses_aabb(route[i][0], route[i][1],
+                                          route[i+1][0], route[i+1][1],
+                                          lx, ly, rx, ry):
+                    return cttb.id
+        return None
+
     def _hit_relay(self, wx: float, wy: float) -> Optional[str]:
         R_world = 18
         for r in self._relays.values():
@@ -2436,7 +2543,7 @@ class Diagram(tk.Frame):
                 cttb_dest = self._cttbs.get(rw.relay_id)
                 if cttb_dest is None:
                     continue
-                term_w = (cttb_dest.cx - 20, cttb_dest.cy)
+                term_w = (cttb_dest.cx + 20, cttb_dest.cy)   # right edge = input
             elif dest_type == "testblock":
                 tb_dest = self._testblocks.get(rw.relay_id)
                 if tb_dest is None:
@@ -2571,7 +2678,7 @@ class Diagram(tk.Frame):
         if len(pts) < 2:
             self.redraw()
             return
-        bid = f"BUS-{len(self._buses) + 1}"
+        bid = self._new_id("BUS", self._buses)
         nodes = list(pts)
         edges = [(i, i+1) for i in range(len(pts)-1)]
         self._buses[bid] = DiagramBus(bid, bid, 0.0, nodes, edges)
@@ -2833,7 +2940,7 @@ class Diagram(tk.Frame):
 
         elif self._tool == TOOL_TRANSFORMER:
             snap_id = self._snap_bus(wx, wy)
-            tid = f"XFMR-{len(self._transformers) + 1}"
+            tid = self._new_id("XFMR", self._transformers)
             if snap_id:
                 bus = self._buses[snap_id]
                 tap_pt = bus.nearest_tap(*self._sg(wx, wy))
@@ -2854,7 +2961,7 @@ class Diagram(tk.Frame):
 
         elif self._tool == TOOL_SOURCE:
             snap_id = self._snap_bus(wx, wy)
-            sid = f"SRC-{len(self._sources) + 1}"
+            sid = self._new_id("SRC", self._sources)
             if snap_id:
                 bus = self._buses[snap_id]
                 tap_pt = bus.nearest_tap(*self._sg(wx, wy))
@@ -2871,7 +2978,7 @@ class Diagram(tk.Frame):
 
         elif self._tool == TOOL_LOAD:
             snap_id = self._snap_bus(wx, wy)
-            lid = f"LOAD-{len(self._loads) + 1}"
+            lid = self._new_id("LOAD", self._loads)
             if snap_id:
                 bus = self._buses[snap_id]
                 tap_pt = bus.nearest_tap(*self._sg(wx, wy))
@@ -2895,7 +3002,7 @@ class Diagram(tk.Frame):
                     t = max(0.20, min(0.80, t))
                 else:
                     t = max(0.10, min(0.90, t))
-                cid = f"CT-{len(self._cts) + 1}"
+                cid = self._new_id("CT", self._cts)
                 if kind == "conn":
                     ct = DiagramCT(cid, cid, eid, t)
                 elif kind == "xfmr_hv":
@@ -2911,7 +3018,7 @@ class Diagram(tk.Frame):
             if bus_id:
                 bus = self._buses[bus_id]
                 tap_pt = bus.nearest_tap(wx, wy)
-                vid = f"VT-{len(self._vts) + 1}"
+                vid = self._new_id("VT", self._vts)
                 self._vts[vid] = DiagramVT(vid, vid, bus_id, tap_pt[0], tap_pt[1])
                 self._set_selection("vt", vid)
                 self._revert_to_select(event)
@@ -2919,7 +3026,7 @@ class Diagram(tk.Frame):
         elif self._tool == TOOL_CTTB:
             # Free-place at clicked world coordinate
             wx, wy = self._sg(wx, wy)
-            cid = f"CTTB-{len(self._cttbs) + 1}"
+            cid = self._new_id("CTTB", self._cttbs)
             self._cttbs[cid] = DiagramCTTB(cid, cid, cx=wx, cy=wy)
             self._set_selection("cttb", cid)
             self._revert_to_select(event)
@@ -2927,7 +3034,7 @@ class Diagram(tk.Frame):
         elif self._tool == TOOL_TESTBLOCK:
             # Free-place at clicked world coordinate
             wx, wy = self._sg(wx, wy)
-            tid = f"TB-{len(self._testblocks) + 1}"
+            tid = self._new_id("TB", self._testblocks)
             self._testblocks[tid] = DiagramTestBlock(tid, tid, cx=wx, cy=wy)
             self._set_selection("testblock", tid)
             self._revert_to_select(event)
@@ -2936,7 +3043,7 @@ class Diagram(tk.Frame):
             result = self._nearest_connection(event.x, event.y)
             if result:
                 conn_id, t = result
-                bid = f"BKR-{len(self._breakers) + 1}"
+                bid = self._new_id("BKR", self._breakers)
                 self._breakers[bid] = DiagramBreaker(bid, bid, conn_id, t)
                 self._set_selection("breaker", bid)
                 self._revert_to_select(event)
@@ -2945,14 +3052,14 @@ class Diagram(tk.Frame):
             result = self._nearest_connection(event.x, event.y)
             if result:
                 conn_id, t = result
-                did = f"DSW-{len(self._disconnects) + 1}"
+                did = self._new_id("DSW", self._disconnects)
                 self._disconnects[did] = DiagramDisconnect(did, did, conn_id, t)
                 self._set_selection("disconnect", did)
                 self._revert_to_select(event)
 
         elif self._tool == TOOL_RELAY:
             wx, wy = self._sg(wx, wy)
-            rid = f"RELAY-{len(self._relays) + 1}"
+            rid = self._new_id("RELAY", self._relays)
             self._relays[rid] = DiagramRelay(rid, rid, wx, wy)
             self._set_selection("relay", rid)
             self._revert_to_select(event)
@@ -2989,7 +3096,13 @@ class Diagram(tk.Frame):
                 relay_id = self._hit_relay(wx, wy)
                 if relay_id:
                     src_type, src_id = self._relay_wire_from
-                    rwid = f"RW-{len(self._relay_wires) + 1}"
+                    crossed = self._relay_wire_crosses_cttb(src_type, src_id, "relay", relay_id)
+                    if crossed:
+                        if self._on_status:
+                            self._on_status(
+                                f"Wire would cross CTTB '{crossed}' — move the CTTB or add it as an intermediate stop.")
+                        return
+                    rwid = self._new_id("RW", self._relay_wires)
                     self._relay_wires[rwid] = DiagramRelayWire(
                         rwid, src_id, src_type, relay_id)
                     self._relay_wire_from = None
@@ -3028,8 +3141,14 @@ class Diagram(tk.Frame):
                 dest_type = "relay" if relay_id else ("cttb" if cttb_id else "testblock")
                 if dest_id:
                     src_type, src_id = self._relay_wire_from
+                    crossed = self._relay_wire_crosses_cttb(src_type, src_id, dest_type, dest_id)
+                    if crossed:
+                        if self._on_status:
+                            self._on_status(
+                                f"Wire would cross CTTB '{crossed}' — move the CTTB or add it as an intermediate stop.")
+                        return
                     wtype = "current" if is_current else "voltage"
-                    rwid = f"RW-{len(self._relay_wires) + 1}"
+                    rwid = self._new_id("RW", self._relay_wires)
                     self._relay_wires[rwid] = DiagramRelayWire(
                         rwid, src_id, src_type, dest_id, wire_type=wtype, dest_type=dest_type)
                     self._relay_wire_from = None
@@ -3353,7 +3472,7 @@ class Diagram(tk.Frame):
         if self._conn_from_bus not in self._buses:
             self._conn_from_bus = None
             return
-        cid = f"{kind.upper()}-{len(self._connections) + 1}"
+        cid = self._new_id(kind.upper(), self._connections)
         from_tap = self._conn_from_tap
         if kind == "feeder":
             conn = DiagramConnection(cid, cid, kind, self._conn_from_bus,
