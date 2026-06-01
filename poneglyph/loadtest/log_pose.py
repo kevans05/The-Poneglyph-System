@@ -125,12 +125,8 @@ class LogPosePanel(tk.Frame):
     def _build_ui(self) -> None:
         # Ensure treeview rows are tall enough that text isn't clipped on any platform
         style = ttk.Style()
-        try:
-            current_rh = int(style.lookup("Treeview", "rowheight") or 0)
-        except (ValueError, TypeError):
-            current_rh = 0
-        if current_rh < 22:
-            style.configure("Treeview", rowheight=22)
+        style.configure("Treeview", rowheight=26)
+        style.configure("Treeview.Heading", font=("TkDefaultFont", 9, "bold"))
 
         self._outer_nb = ttk.Notebook(self)
         self._outer_nb.pack(fill=tk.BOTH, expand=True)
@@ -1371,11 +1367,11 @@ class LogPosePanel(tk.Frame):
         self._hist_tree.heading("technologist", text="Technologist")
         self._hist_tree.heading("device_count", text="Devices")
         self._hist_tree.heading("notes",        text="Notes")
-        self._hist_tree.column("timestamp",    width=160)
-        self._hist_tree.column("wo_number",    width=120)
-        self._hist_tree.column("technologist", width=140)
-        self._hist_tree.column("device_count", width=60)
-        self._hist_tree.column("notes",        width=200)
+        self._hist_tree.column("timestamp",    width=170, minwidth=150, stretch=False)
+        self._hist_tree.column("wo_number",    width=120, minwidth=80,  stretch=False)
+        self._hist_tree.column("technologist", width=160, minwidth=120, stretch=False)
+        self._hist_tree.column("device_count", width=70,  minwidth=50,  stretch=False)
+        self._hist_tree.column("notes",        width=200, minwidth=100, stretch=True)
 
         vsb = ttk.Scrollbar(parent, orient="vertical", command=self._hist_tree.yview)
         self._hist_tree.configure(yscrollcommand=vsb.set)

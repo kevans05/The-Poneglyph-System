@@ -1043,6 +1043,12 @@ class Diagram(tk.Frame):
         # Draw in-progress bus preview
         self._draw_bus_preview()
 
+    # Labels are suppressed below this zoom level to avoid unreadable overlaps.
+    _LABEL_SCALE_MIN = 0.45
+
+    def _labels_on(self) -> bool:
+        return self._scale >= self._LABEL_SCALE_MIN
+
     def _draw_grid(self) -> None:
         w = self.canvas.winfo_width()  or 800
         h = self.canvas.winfo_height() or 600
@@ -1104,24 +1110,22 @@ class Diagram(tk.Frame):
         lx_w = bus.cx + bus.label_ox
         ly_w = bus.cy_label + bus.label_oy
         cxs, cys = self._w2s(lx_w, ly_w)
-        # Name: bottom sits 6px above bus line
-        self.canvas.create_text(cxs, cys - 6, text=bus.name,
-                                font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
-        if bus.kv:
-            # kV: bottom sits 20px above bus line (above the name)
-            self.canvas.create_text(cxs, cys - 20, text=f"{bus.kv} kV",
-                                    font=("TkDefaultFont", 8), fill=colour, anchor="s")
-        if bus.v_solved is not None:
-            import cmath as _cm
-            mag = abs(bus.v_solved)
-            ang = math.degrees(_cm.phase(bus.v_solved))
-            kv_actual = mag * bus.kv if bus.kv else 0.0
-            txt = f"{mag:.3f} pu ∠{ang:.1f}°"
-            if kv_actual:
-                txt += f"  ({kv_actual:.2f} kV)"
-            # Voltage annotation: 8px below bus line
-            self.canvas.create_text(cxs, cys + 8, text=txt,
-                                    font=("TkDefaultFont", 8, "bold"), fill="#118811", anchor="n")
+        if self._labels_on():
+            self.canvas.create_text(cxs, cys - 6, text=bus.name,
+                                    font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
+            if bus.kv:
+                self.canvas.create_text(cxs, cys - 20, text=f"{bus.kv} kV",
+                                        font=("TkDefaultFont", 8), fill=colour, anchor="s")
+            if bus.v_solved is not None:
+                import cmath as _cm
+                mag = abs(bus.v_solved)
+                ang = math.degrees(_cm.phase(bus.v_solved))
+                kv_actual = mag * bus.kv if bus.kv else 0.0
+                txt = f"{mag:.3f} pu ∠{ang:.1f}°"
+                if kv_actual:
+                    txt += f"  ({kv_actual:.2f} kV)"
+                self.canvas.create_text(cxs, cys + 8, text=txt,
+                                        font=("TkDefaultFont", 8, "bold"), fill="#118811", anchor="n")
 
     def _draw_bus_preview(self) -> None:
         """Draw in-progress bus polyline as a dashed preview."""
@@ -1234,8 +1238,9 @@ class Diagram(tk.Frame):
             if t1 < 1.0:
                 self.canvas.create_line(x1 + (x2-x1)*t1, y1 + (y2-y1)*t1, x2, y2,
                                         width=LINE_WIDTH, fill=colour)
-        self.canvas.create_text(lbl_sx + 4, lbl_sy, text=conn.name,
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            self.canvas.create_text(lbl_sx + 4, lbl_sy, text=conn.name,
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     def _draw_legacy_breaker_square(self, bx: float, by: float, colour: str) -> None:
         """Original filled-square breaker symbol (for has_breaker_from)."""
@@ -1271,11 +1276,11 @@ class Diagram(tk.Frame):
             self.canvas.create_polygon(*flat, fill=colour, outline=colour)
         else:
             self.canvas.create_polygon(*flat, fill="white", outline=colour, width=LINE_WIDTH)
-        # Label.
-        lbl_x = cx + px * (s + 4)
-        lbl_y = cy + py * (s + 4)
-        self.canvas.create_text(lbl_x, lbl_y, text=br.name,
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            lbl_x = cx + px * (s + 4)
+            lbl_y = cy + py * (s + 4)
+            self.canvas.create_text(lbl_x, lbl_y, text=br.name,
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     def _draw_disconnect_symbol(self, prev_sx, prev_sy, x1, y1, x2, y2,
                                 t: float, colour: str, dc, gap: float) -> None:
@@ -1309,11 +1314,11 @@ class Diagram(tk.Frame):
         r = 3 * self._scale
         self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
                                 fill=colour, outline=colour)
-        # Label.
-        lbl_x = cx + px * (blade_len + 4)
-        lbl_y = cy + py * (blade_len + 4)
-        self.canvas.create_text(lbl_x, lbl_y, text=dc.name,
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            lbl_x = cx + px * (blade_len + 4)
+            lbl_y = cy + py * (blade_len + 4)
+            self.canvas.create_text(lbl_x, lbl_y, text=dc.name,
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     def _draw_breaker(self, x1, y1, x2, y2, t: float, colour: str) -> None:
         bx = x1 + (x2 - x1) * t
@@ -1443,27 +1448,26 @@ class Diagram(tk.Frame):
         self._draw_winding_indicator(lv_ind[0], lv_ind[1],
                                      xfmr.lv_winding, xfmr.lv_grounded, lv_col)
 
-        # ── kV labels (rotated) ───────────────────────────────────────────
+        # ── kV labels + name (suppressed when zoomed out) ────────────────
         kv_loc_x = -half - 6
-        if xfmr.hv_kv:
-            kv_hv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + hv_y_loc)
-            kv_sx, kv_sy = self._w2s(*kv_hv)
-            self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.hv_kv:g} kV",
-                                    font=("TkDefaultFont", 8, "bold"), fill=hv_col, anchor="e")
-        if xfmr.lv_kv:
-            kv_lv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + lv_y_loc)
-            kv_sx, kv_sy = self._w2s(*kv_lv)
-            self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.lv_kv:g} kV",
-                                    font=("TkDefaultFont", 8, "bold"), fill=lv_col, anchor="e")
-
-        # ── Name label ────────────────────────────────────────────────────
-        label = xfmr.name
-        if xfmr.mva:
-            label += f"\n{xfmr.mva:g} MVA"
-        l_sx, l_sy = self._w2s(xfmr.cx + kv_loc_x + xfmr.label_ox,
-                               xfmr.cy + xfmr.label_oy)
-        self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="e")
+        if self._labels_on():
+            if xfmr.hv_kv:
+                kv_hv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + hv_y_loc)
+                kv_sx, kv_sy = self._w2s(*kv_hv)
+                self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.hv_kv:g} kV",
+                                        font=("TkDefaultFont", 8, "bold"), fill=hv_col, anchor="e")
+            if xfmr.lv_kv:
+                kv_lv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + lv_y_loc)
+                kv_sx, kv_sy = self._w2s(*kv_lv)
+                self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.lv_kv:g} kV",
+                                        font=("TkDefaultFont", 8, "bold"), fill=lv_col, anchor="e")
+            label = xfmr.name
+            if xfmr.mva:
+                label += f"\n{xfmr.mva:g} MVA"
+            l_sx, l_sy = self._w2s(xfmr.cx + kv_loc_x + xfmr.label_ox,
+                                   xfmr.cy + xfmr.label_oy)
+            self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="e")
 
     def _terminal_dot(self, sx: float, sy: float, colour: str) -> None:
         rd = max(3, 3 * self._scale)
@@ -1569,10 +1573,11 @@ class Diagram(tk.Frame):
             pts.extend([sx, sy])
         self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
 
-        lsx, lsy = self._w2s(src.cx + SRC_R + 6 + src.label_ox, src.cy + src.label_oy)
-        label = f"{src.name}\n{src.v_pu:g} pu"
-        self.canvas.create_text(lsx, lsy, text=label, justify="left",
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            lsx, lsy = self._w2s(src.cx + SRC_R + 6 + src.label_ox, src.cy + src.label_oy)
+            label = f"{src.name}\n{src.v_pu:g} pu"
+            self.canvas.create_text(lsx, lsy, text=label, justify="left",
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── Load (downward filled arrow) ──────────────────────────────────────
 
@@ -1601,10 +1606,11 @@ class Diagram(tk.Frame):
                                    base_sx + aw, base_sy,
                                    fill=colour, outline=colour)
 
-        lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6 + ld.label_ox, ld.cy - LOAD_AH / 2 + ld.label_oy)
-        self.canvas.create_text(lsx, lsy, text=f"{ld.name}\n{ld.summary_str()}",
-                                justify="left",
-                                font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6 + ld.label_ox, ld.cy - LOAD_AH / 2 + ld.label_oy)
+            self.canvas.create_text(lsx, lsy, text=f"{ld.name}\n{ld.summary_str()}",
+                                    justify="left",
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── CT ────────────────────────────────────────────────────────────────
 
@@ -1763,12 +1769,13 @@ class Diagram(tk.Frame):
             self.canvas.create_oval(sx - wr, sy - wr, sx + wr, sy + wr,
                                     outline="#FF8800", width=2, dash=(4, 3))
 
-        label = f"{ct.ratio_str}\n{ct.name}"
-        self.canvas.create_text(lead_ex + pxn*(pr+4) + ct.label_ox*self._scale,
-                                lead_ey + pyn*(pr+4) + ct.label_oy*self._scale,
-                                text=label, font=("TkDefaultFont", 8),
-                                fill="#444444",
-                                anchor="w" if pxn >= 0 else "e")
+        if self._labels_on():
+            label = f"{ct.ratio_str}\n{ct.name}"
+            self.canvas.create_text(lead_ex + pxn*(pr+4) + ct.label_ox*self._scale,
+                                    lead_ey + pyn*(pr+4) + ct.label_oy*self._scale,
+                                    text=label, font=("TkDefaultFont", 8),
+                                    fill="#444444",
+                                    anchor="w" if pxn >= 0 else "e")
 
     # ── VT / CVT ──────────────────────────────────────────────────────────
 
@@ -1841,11 +1848,12 @@ class Diagram(tk.Frame):
         self._draw_vt_secondary(vt, sx, bottom_y, colour, sel)
 
         # ── Label ────────────────────────────────────────────────────────
-        label = f"{vt.vt_type}  {vt.ratio_str}\n{vt.name}"
-        canvas.create_text(sx + total_w/2 + 6*self._scale,
-                           pri_y + R,
-                           text=label, font=("TkDefaultFont", 8),
-                           fill="#444444", anchor="w")
+        if self._labels_on():
+            label = f"{vt.vt_type}  {vt.ratio_str}\n{vt.name}"
+            canvas.create_text(sx + total_w/2 + 6*self._scale,
+                               pri_y + R,
+                               text=label, font=("TkDefaultFont", 8),
+                               fill="#444444", anchor="w")
 
     def _draw_vt_secondary(self, vt: DiagramVT,
                            sym_sx: float, sym_bottom_sy: float,
@@ -2073,9 +2081,10 @@ class Diagram(tk.Frame):
         self._terminal_dot(bsx + W, bsy, colour)
 
         # Device name as small label outside (to the right)
-        canvas.create_text(bsx + W + 4 * self._scale, bsy,
-                           text=cttb.name,
-                           font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            canvas.create_text(bsx + W + 4 * self._scale, bsy,
+                               text=cttb.name,
+                               font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── FT / ISO block draw ───────────────────────────────────────────────
 
@@ -2101,9 +2110,10 @@ class Diagram(tk.Frame):
         self._terminal_dot(bsx, bsy + H/2, colour)
 
         # Device name as small label outside (to the right)
-        canvas.create_text(bsx + W + 4*self._scale, bsy,
-                           text=tb.name,
-                           font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+        if self._labels_on():
+            canvas.create_text(bsx + W + 4*self._scale, bsy,
+                               text=tb.name,
+                               font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── Relay draw ────────────────────────────────────────────────────────
 
@@ -2117,8 +2127,9 @@ class Diagram(tk.Frame):
                            width=LINE_WIDTH+1, fill="#FFF8F8")
         canvas.create_text(sx, sy, text=relay.function_code,
                            font=("TkDefaultFont", 9, "bold"), fill=colour)
-        canvas.create_text(sx, sy + R + 4*self._scale, text=relay.name,
-                           font=("TkDefaultFont", 8), fill="#444444", anchor="n")
+        if self._labels_on():
+            canvas.create_text(sx, sy + R + 4*self._scale, text=relay.name,
+                               font=("TkDefaultFont", 8), fill="#444444", anchor="n")
         # Winding terminals spread evenly across top arc
         nw   = len(relay.windings)
         tw   = 4 * self._scale
@@ -2130,11 +2141,11 @@ class Diagram(tk.Frame):
             tx = sx + R * math.cos(angle)
             ty = sy - R * math.sin(angle)
             canvas.create_oval(tx-tw, ty-tw, tx+tw, ty+tw, fill=colour, outline=colour)
-            # Label outside circle
-            lx = sx + (R + tw + 4) * math.cos(angle)
-            ly = sy - (R + tw + 4) * math.sin(angle)
-            canvas.create_text(lx, ly, text=wlabel,
-                               font=("TkDefaultFont", 7), fill=colour, anchor="center")
+            if self._labels_on():
+                lx = sx + (R + tw + 4) * math.cos(angle)
+                ly = sy - (R + tw + 4) * math.sin(angle)
+                canvas.create_text(lx, ly, text=wlabel,
+                                   font=("TkDefaultFont", 7), fill=colour, anchor="center")
 
     def _draw_relay_wire(self, rw: "DiagramRelayWire") -> None:
         """Draw dashed orthogonal wire from source secondary output to relay winding."""
