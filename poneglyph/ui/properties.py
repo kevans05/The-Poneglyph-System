@@ -6,6 +6,8 @@ Calls an on_change callback whenever the user applies an edit.
 
 from __future__ import annotations
 
+import cmath
+import math
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
@@ -178,6 +180,24 @@ class PropertiesPanel(tk.Frame):
         self._mr_canvas.bind("<Configure>", lambda e: self._mr_canvas.itemconfig(
             self._mr_body_win, width=e.width))
 
+        # ── Predictions tab ──────────────────────────────────────────────
+        _pred_tab = tk.Frame(self._panel_nb)
+        self._panel_nb.add(_pred_tab, text="Predictions")
+
+        self._pred_canvas = tk.Canvas(_pred_tab, highlightthickness=0)
+        self._pred_scrollbar = ttk.Scrollbar(_pred_tab, orient="vertical",
+                                             command=self._pred_canvas.yview)
+        self._pred_canvas.configure(yscrollcommand=self._pred_scrollbar.set)
+        self._pred_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._pred_canvas.pack(fill=tk.BOTH, expand=True)
+        self._pred_body = tk.Frame(self._pred_canvas)
+        self._pred_body_win = self._pred_canvas.create_window(
+            (0, 0), window=self._pred_body, anchor="nw")
+        self._pred_body.bind("<Configure>", lambda e: self._pred_canvas.configure(
+            scrollregion=self._pred_canvas.bbox("all")))
+        self._pred_canvas.bind("<Configure>", lambda e: self._pred_canvas.itemconfig(
+            self._pred_body_win, width=e.width))
+
         self._show_empty()
 
     # ── Public ────────────────────────────────────────────────────────────
@@ -189,6 +209,7 @@ class PropertiesPanel(tk.Frame):
     def show_bus(self, bus: DiagramBus) -> None:
         self._current = bus
         self._populate_mr(bus)
+        self._populate_predictions(bus)
         self._clear()
 
         v_name = tk.StringVar(value=bus.name)
@@ -216,6 +237,7 @@ class PropertiesPanel(tk.Frame):
     def show_connection(self, conn: DiagramConnection) -> None:
         self._current = conn
         self._populate_mr(conn)
+        self._populate_predictions(conn)
         self._clear()
 
         kind_label = {"tline": "Transmission Line", "feeder": "Feeder",
@@ -259,6 +281,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = xfmr
         self._populate_mr(xfmr)
+        self._populate_predictions(xfmr)
         self._clear()
 
         row = _RowCounter()
@@ -351,6 +374,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = src
         self._populate_mr(src)
+        self._populate_predictions(src)
         self._clear()
         tk.Label(self._body, text="Power Source (slack)", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -360,9 +384,14 @@ class PropertiesPanel(tk.Frame):
         self._row("ID",         tk.StringVar(value=src.id), readonly=True, start_row=1)
         self._row("Name",       v_name,  start_row=2)
         self._row("Voltage (pu)", v_vpu,  start_row=3)
-        self._row("Angle (deg)", v_angle, start_row=4)
+        tk.Label(self._body, text="  1.0 pu = bus nominal kV (e.g. 1.0 = 11 kV on an 11 kV bus).\n"
+                                  "  Typical range 0.95–1.05 pu.",
+                 justify="left", fg="#888888",
+                 font=("TkDefaultFont", 7), wraplength=180).grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=(4, 0), pady=(0, 4))
+        self._row("Angle (deg)", v_angle, start_row=5)
         bus_txt = src.bus if src.bus else "(not attached)"
-        self._row("Bus",        tk.StringVar(value=bus_txt), readonly=True, start_row=5)
+        self._row("Bus",        tk.StringVar(value=bus_txt), readonly=True, start_row=6)
 
         def apply():
             src.name = v_name.get().strip() or src.name
@@ -383,6 +412,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = ld
         self._populate_mr(ld)
+        self._populate_predictions(ld)
         self._clear()
         import math
 
@@ -419,7 +449,7 @@ class PropertiesPanel(tk.Frame):
         _spec_frame.columnconfigure(1, weight=1)
 
         # Solved summary
-        tk.Label(self._body, text="Solved", font=("TkDefaultFont", 8, "bold"),
+        tk.Label(self._body, text="Solved", font=("TkDefaultFont", 9, "bold"),
                  fg="#444").grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
         v_solved = tk.StringVar()
         tk.Label(self._body, textvariable=v_solved, justify="left",
@@ -611,6 +641,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = ct
         self._populate_mr(ct)
+        self._populate_predictions(ct)
         self._clear()
 
         RELAY_CLASSES   = ["C50", "C100", "C200", "C400", "C800"]
@@ -628,7 +659,7 @@ class PropertiesPanel(tk.Frame):
         self._row("Name", v_name, start_row=2)
 
         # ── Ratio ─────────────────────────────────────────────────────────
-        tk.Label(self._body, text="Ratio", font=("TkDefaultFont", 8, "bold"),
+        tk.Label(self._body, text="Ratio", font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
         v_pri = tk.StringVar(value=str(ct.ratio_primary))
         v_sec = tk.StringVar(value=str(ct.ratio_secondary))
@@ -643,7 +674,7 @@ class PropertiesPanel(tk.Frame):
 
         # ── Accuracy & burden ─────────────────────────────────────────────
         tk.Label(self._body, text="Accuracy & Burden",
-                 font=("TkDefaultFont", 8, "bold"),
+                 font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         tk.Label(self._body, text="Relay class", anchor="e").grid(
@@ -665,7 +696,7 @@ class PropertiesPanel(tk.Frame):
 
         # ── Winding configuration ─────────────────────────────────────────
         tk.Label(self._body, text="Winding configuration",
-                 font=("TkDefaultFont", 8, "bold"),
+                 font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=13, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         tk.Label(self._body, text="Primary", anchor="e").grid(
@@ -681,7 +712,7 @@ class PropertiesPanel(tk.Frame):
                      state="readonly", width=20).grid(row=15, column=1, sticky="w")
 
         # ── Polarity ──────────────────────────────────────────────────────
-        tk.Label(self._body, text="Polarity", font=("TkDefaultFont", 8, "bold"),
+        tk.Label(self._body, text="Polarity", font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=16, column=0, columnspan=2, sticky="w", pady=(6, 0))
         v_polarity = tk.BooleanVar(value=ct.polarity_standard)
         tk.Checkbutton(self._body, text="Show dot (standard IEEE/IEC)",
@@ -727,6 +758,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = vt
         self._populate_mr(vt)
+        self._populate_predictions(vt)
         self._clear()
         tk.Label(self._body, text="Voltage Transformer / CVT",
                  font=("TkDefaultFont", 9, "italic"),
@@ -751,14 +783,14 @@ class PropertiesPanel(tk.Frame):
 
         # Voltage ratio
         row = 4
-        tk.Label(self._body, text="Ratio", font=("TkDefaultFont", 8, "bold"),
+        tk.Label(self._body, text="Ratio", font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8,2))
         self._row("Primary (V)",   v_pri,  start_row=5)
         self._row("Secondary (V)", v_sec,  start_row=6)
 
         # Protection / metering data
         row = 7
-        tk.Label(self._body, text="Nameplate", font=("TkDefaultFont", 8, "bold"),
+        tk.Label(self._body, text="Nameplate", font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8,2))
         self._row("Accuracy Class", v_acc,    start_row=8)
         self._row("Burden (VA)",    v_burden,  start_row=9)
@@ -798,6 +830,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = cttb
         self._populate_mr(cttb)
+        self._populate_predictions(cttb)
         self._clear()
         tk.Label(self._body, text="CT Test Block (CTTB)",
                  font=("TkDefaultFont", 9, "italic"),
@@ -840,6 +873,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = tb
         self._populate_mr(tb)
+        self._populate_predictions(tb)
         self._clear()
         tk.Label(self._body, text="FT / ISO Test Block",
                  font=("TkDefaultFont", 9, "italic"),
@@ -880,6 +914,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = br
         self._populate_mr(br)
+        self._populate_predictions(br)
         self._clear()
         tk.Label(self._body, text="Circuit Breaker", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -911,6 +946,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = dc
         self._populate_mr(dc)
+        self._populate_predictions(dc)
         self._clear()
         tk.Label(self._body, text="Disconnect Switch", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -942,6 +978,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = relay
         self._populate_mr(relay)
+        self._populate_predictions(relay)
         self._clear()
         row = _RowCounter()
 
@@ -959,7 +996,7 @@ class PropertiesPanel(tk.Frame):
         # ── Windings list ────────────────────────────────────────────────
         ttk.Separator(self._body, orient="horizontal").grid(
             row=row.next(), column=0, columnspan=2, sticky="ew", pady=4)
-        tk.Label(self._body, text="Windings", font=("TkDefaultFont", 8, "bold"),
+        tk.Label(self._body, text="Windings", font=("TkDefaultFont", 9, "bold"),
                  fg="#333").grid(row=row.next(), column=0, columnspan=2, sticky="w")
 
         winding_vars = []
@@ -992,12 +1029,21 @@ class PropertiesPanel(tk.Frame):
         tk.Button(self._body, text="+ Add winding", command=_add_winding).grid(
             row=row.next(), column=0, columnspan=2, sticky="w", pady=(4, 0))
 
+        # ── Flags ────────────────────────────────────────────────────────
+        ttk.Separator(self._body, orient="horizontal").grid(
+            row=row.next(), column=0, columnspan=2, sticky="ew", pady=4)
+        v_mirrored = tk.BooleanVar(value=relay.mirrored_bit)
+        tk.Checkbutton(self._body, text="Mirrored bit",
+                       variable=v_mirrored).grid(
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=2)
+
         dev_start = row.next()
         dev_next, dev_vars = self._device_fields(relay, dev_start)
 
         def apply():
             relay.name          = v_name.get().strip() or relay.name
             relay.function_code = v_func.get().strip() or relay.function_code
+            relay.mirrored_bit  = v_mirrored.get()
             for wi, v in enumerate(winding_vars):
                 lbl = v.get().strip()
                 if lbl and wi < len(relay.windings):
@@ -1015,6 +1061,7 @@ class PropertiesPanel(tk.Frame):
             return
         self._current = rw
         self._populate_mr(rw)
+        self._populate_predictions(rw)
         self._clear()
         row = _RowCounter()
         tk.Label(self._body, text="Relay Wire",
@@ -1065,7 +1112,7 @@ class PropertiesPanel(tk.Frame):
                 row=row, column=0, columnspan=2, sticky="ew", pady=4)
             row += 1
             tk.Label(self._body, text="Location & Drawing",
-                     font=("TkDefaultFont", 8, "bold"), fg="#333").grid(
+                     font=("TkDefaultFont", 9, "bold"), fg="#333").grid(
                 row=row, column=0, columnspan=2, sticky="w")
             row += 1
         for label, attr in fields:
@@ -1089,6 +1136,7 @@ class PropertiesPanel(tk.Frame):
     def _clear(self) -> None:
         for w in self._body.winfo_children():
             w.destroy()
+        self._body.columnconfigure(0, minsize=120)
         self._body.columnconfigure(1, weight=1)
 
     def _show_empty(self) -> None:
@@ -1138,7 +1186,7 @@ class PropertiesPanel(tk.Frame):
 
         for i, ch in enumerate(channels):
             lf = tk.LabelFrame(body, text=ch["label"],
-                               font=("TkDefaultFont", 8, "bold"), padx=4, pady=2)
+                               font=("TkDefaultFont", 9, "bold"), padx=4, pady=2)
             lf.grid(row=i, column=0, sticky="ew", padx=4, pady=(4, 0))
             # cols: 0=phase, 1=row-label, 2=mag-entry, 3=unit, 4=ang-entry, 5=°
             lf.columnconfigure(2, weight=1)
@@ -1158,7 +1206,7 @@ class PropertiesPanel(tk.Frame):
                                   "meas_mag": v_mm, "meas_ang": v_ma}
 
                 # Phase header label
-                tk.Label(lf, text=f"Ph {ph}", font=("TkDefaultFont", 8, "bold"),
+                tk.Label(lf, text=f"Ph {ph}", font=("TkDefaultFont", 9, "bold"),
                          fg="#333333").grid(row=grid_row, column=0, rowspan=2,
                                            sticky="nw", padx=(0, 4))
 
@@ -1180,7 +1228,7 @@ class PropertiesPanel(tk.Frame):
 
                 # Meas row
                 tk.Label(lf, text="Meas", fg="#333333",
-                         font=("TkDefaultFont", 8, "bold")).grid(
+                         font=("TkDefaultFont", 9, "bold")).grid(
                     row=grid_row, column=1, sticky="e", padx=(0, 2))
                 tk.Entry(lf, textvariable=v_mm, width=6).grid(
                     row=grid_row, column=2, sticky="ew", padx=1)
@@ -1280,16 +1328,299 @@ class PropertiesPanel(tk.Frame):
         channels = [{"label": "Channel 1", **tb.meas_points[0]}]
         self._build_mr_channels(channels, "V", lambda data: setattr(tb, "meas_points", data))
 
+    # ── Predictions helpers ───────────────────────────────────────────────
+
+    def _clear_pred(self) -> None:
+        for w in self._pred_body.winfo_children():
+            w.destroy()
+
+    def _show_pred_pending(self, device) -> None:
+        self._clear_pred()
+        supported = isinstance(device, (DiagramBus, DiagramConnection,
+                                        DiagramTransformer, DiagramSource, DiagramLoad,
+                                        DiagramCT, DiagramVT, DiagramCTTB,
+                                        DiagramTestBlock, DiagramRelay))
+        msg = ("Run power flow to\nsee predictions."
+               if supported else
+               "Predictions not available\nfor this device type.")
+        tk.Label(self._pred_body, text=msg, fg="#888888",
+                 font=("TkDefaultFont", 9), justify="center"
+                 ).pack(expand=True, pady=20)
+
+    def _populate_predictions(self, device) -> None:
+        pf = getattr(device, "pf_solved", None)
+        if pf is None:
+            self._show_pred_pending(device)
+        else:
+            self._build_predictions(pf)
+
+    def _build_predictions(self, pf: dict) -> None:
+        """Render the unified predictions table + phasor canvas(es).
+
+        Row order for every device type:  V LN · ∠V · V LL · I · ∠I · S · Q · P · PF
+        Columns: label | A | B | C | N   (N = neutral / 3-phase total depending on row)
+        Missing quantities show '—'.
+        """
+        self._clear_pred()
+        body = self._pred_body
+        body.columnconfigure(0, weight=0)
+        for c in range(1, 5):
+            body.columnconfigure(c, weight=1)
+
+        dtype = pf.get("type", "")
+
+        # ── Column headers ────────────────────────────────────────────
+        for col, txt in enumerate(("", "A", "B", "C", "N")):
+            tk.Label(body, text=txt, font=("TkDefaultFont", 9, "bold"),
+                     fg="#333333", anchor="center").grid(
+                row=0, column=col, sticky="ew", padx=1, pady=(4, 2))
+        ttk.Separator(body, orient="horizontal").grid(
+            row=1, column=0, columnspan=5, sticky="ew")
+
+        r = 2
+
+        def _val(v, fmt):
+            if v is None or v == "—":
+                return "—"
+            if isinstance(v, str):
+                return v
+            try:
+                return fmt.format(v)
+            except Exception:
+                return "—"
+
+        def data_row(label, a, b, c, n, fmt="{:.4g}"):
+            nonlocal r
+            tk.Label(body, text=label, font=("TkDefaultFont", 8),
+                     fg="#555555", anchor="w").grid(
+                row=r, column=0, sticky="w", padx=(4, 6), pady=1)
+            for col, v in enumerate([a, b, c, n], start=1):
+                tk.Label(body, text=_val(v, fmt), font=("TkFixedFont", 8),
+                         fg="#003388", anchor="center").grid(
+                    row=r, column=col, sticky="ew", padx=1, pady=1)
+            r += 1
+
+        def note_row(text: str) -> None:
+            nonlocal r
+            tk.Label(body, text=text, font=("TkDefaultFont", 7),
+                     fg="#888888", anchor="w").grid(
+                row=r, column=0, columnspan=5, sticky="w", padx=4, pady=(0, 2))
+            r += 1
+
+        def ang_str(deg):
+            return None if deg is None else f"{deg:.1f}°"
+
+        def _render_block(v_a, v_b, v_c, i_a, i_b, i_c,
+                          p_kw, q_kvar, s_kva, pf_val,
+                          v_unit: str, v_fmt: str) -> None:
+            """Render the 9-row data block into body starting at current r."""
+
+            # ── Voltage ──────────────────────────────────────────────
+            if v_a is not None:
+                vln_a = abs(v_a)
+                vln_b = abs(v_b) if v_b is not None else None
+                vln_c = abs(v_c) if v_c is not None else None
+                data_row(f"V LN ({v_unit})", vln_a, vln_b, vln_c, 0.0, fmt=v_fmt)
+                ang_va = math.degrees(cmath.phase(v_a))
+                ang_vb = math.degrees(cmath.phase(v_b)) if v_b is not None else None
+                ang_vc = math.degrees(cmath.phase(v_c)) if v_c is not None else None
+                data_row("∠V (°)",
+                         ang_str(ang_va), ang_str(ang_vb), ang_str(ang_vc), "—")
+                if v_b is not None and v_c is not None:
+                    vll_ab = abs(v_a - v_b)
+                    vll_bc = abs(v_b - v_c)
+                    vll_ca = abs(v_c - v_a)
+                    data_row(f"V LL ({v_unit})", vll_ab, vll_bc, vll_ca, "—", fmt=v_fmt)
+                else:
+                    data_row(f"V LL ({v_unit})", "—", "—", "—", "—")
+            else:
+                data_row(f"V LN ({v_unit})", "—", "—", "—", "—")
+                data_row("∠V (°)",           "—", "—", "—", "—")
+                data_row(f"V LL ({v_unit})", "—", "—", "—", "—")
+
+            # ── Current ──────────────────────────────────────────────
+            if i_a is not None:
+                ima = abs(i_a)
+                imb = abs(i_b) if i_b is not None else None
+                imc = abs(i_c) if i_c is not None else None
+                imn = abs(i_a + i_b + i_c) if (i_b is not None and i_c is not None) else None
+                data_row("I (A)", ima, imb, imc, imn, fmt="{:.3f}")
+                ang_ia = math.degrees(cmath.phase(i_a))
+                ang_ib = math.degrees(cmath.phase(i_b)) if i_b is not None else None
+                ang_ic = math.degrees(cmath.phase(i_c)) if i_c is not None else None
+                data_row("∠I (°)",
+                         ang_str(ang_ia), ang_str(ang_ib), ang_str(ang_ic), "—")
+            else:
+                data_row("I (A)",   "—", "—", "—", "—")
+                data_row("∠I (°)", "—", "—", "—", "—")
+
+            # ── Power ────────────────────────────────────────────────
+            if s_kva is not None:
+                data_row("S (kVA)",  s_kva/3, s_kva/3, s_kva/3, s_kva,  fmt="{:.2f}")
+            else:
+                data_row("S (kVA)",  "—", "—", "—", "—")
+            if q_kvar is not None:
+                data_row("Q (kVAR)", q_kvar/3, q_kvar/3, q_kvar/3, q_kvar, fmt="{:.2f}")
+            else:
+                data_row("Q (kVAR)", "—", "—", "—", "—")
+            if p_kw is not None:
+                data_row("P (kW)",   p_kw/3, p_kw/3, p_kw/3, p_kw,     fmt="{:.2f}")
+            else:
+                data_row("P (kW)",   "—", "—", "—", "—")
+            if pf_val is not None:
+                data_row("PF",       pf_val, pf_val, pf_val, pf_val,    fmt="{:.3f}")
+            else:
+                data_row("PF",       "—", "—", "—", "—")
+
+        # ── Relay: per-winding sections ───────────────────────────────
+        if dtype == "relay":
+            windings = pf.get("windings", [])
+            i_ph_list: list = []   # (complex, colour, label) for first I winding
+            v_ph_list: list = []   # (complex, colour, label) for first V winding
+            i_ph_label = v_ph_label = ""
+
+            for wd in windings:
+                lbl = wd.get("label", "W?")
+                # section divider
+                ttk.Separator(body, orient="horizontal").grid(
+                    row=r, column=0, columnspan=5, sticky="ew", pady=(4, 0))
+                r += 1
+                tk.Label(body, text=lbl, font=("TkDefaultFont", 9, "bold"),
+                         fg="#333333", anchor="w").grid(
+                    row=r, column=0, columnspan=5, sticky="w", padx=4, pady=(2, 2))
+                r += 1
+                w_va = wd.get("v_a"); w_vb = wd.get("v_b"); w_vc = wd.get("v_c")
+                w_ia = wd.get("i_a"); w_ib = wd.get("i_b"); w_ic = wd.get("i_c")
+                _render_block(w_va, w_vb, w_vc, w_ia, w_ib, w_ic,
+                              None, None, None, None, "V", "{:.2f}")
+                # Collect phasors from first populated winding
+                if not i_ph_list and w_ia is not None:
+                    i_ph_list = [(w_ia, "#CC2200", f"{lbl}-A"),
+                                 (w_ib, "#009900", f"{lbl}-B"),
+                                 (w_ic, "#0055CC", f"{lbl}-C")]
+                    i_ph_label = f"Current – {lbl} (A)"
+                if not v_ph_list and w_va is not None:
+                    v_ph_list = [(w_va, "#CC2200", f"{lbl}-A"),
+                                 (w_vb, "#009900", f"{lbl}-B"),
+                                 (w_vc, "#0055CC", f"{lbl}-C")]
+                    v_ph_label = f"Voltage – {lbl} (V)"
+
+            # Phasors
+            ttk.Separator(body, orient="horizontal").grid(
+                row=r, column=0, columnspan=5, sticky="ew", pady=(8, 4))
+            r += 1
+            for ph_list, ph_lbl in ((i_ph_list, i_ph_label), (v_ph_list, v_ph_label)):
+                if ph_list:
+                    tk.Label(body, text=ph_lbl, font=("TkDefaultFont", 9, "bold"),
+                             fg="#333333").grid(row=r, column=0, columnspan=5,
+                                               sticky="w", padx=4)
+                    r += 1
+                    self._draw_phasors(body, r, ph_list)
+                    r += 1
+            return
+
+        # ── All other device types ────────────────────────────────────
+        v_a = pf.get("v_a"); v_b = pf.get("v_b"); v_c = pf.get("v_c")
+        i_a = pf.get("i_a"); i_b = pf.get("i_b"); i_c = pf.get("i_c")
+
+        # Secondary devices (VT, TestBlock) store voltage in V; primaries in kV
+        if dtype in ("vt", "testblock"):
+            v_unit, v_fmt = "V", "{:.2f}"
+        else:
+            v_unit, v_fmt = "kV", "{:.3f}"
+
+        _render_block(v_a, v_b, v_c, i_a, i_b, i_c,
+                      pf.get("p_kw"), pf.get("q_kvar"),
+                      pf.get("s_kva"), pf.get("pf"),
+                      v_unit, v_fmt)
+
+        # Device-specific annotation line
+        if dtype == "ct":
+            note_row(f"CT ratio: {pf.get('ratio', '?')}")
+        elif dtype == "vt":
+            delta = pf.get("delta_primary", False)
+            note_row(f"VT ratio: {pf.get('ratio', '?')}"
+                     + ("  [Δ primary — V LL shown]" if delta else ""))
+        elif dtype == "cttb":
+            note_row(f"Mode: {pf.get('mode', '?')}")
+
+        # ── Phasor canvas(es) ─────────────────────────────────────────
+        ttk.Separator(body, orient="horizontal").grid(
+            row=r, column=0, columnspan=5, sticky="ew", pady=(8, 4))
+        r += 1
+        phasor_sets = []
+        if v_a is not None:
+            phasor_sets.append(([(v_a, "#CC2200", "A"),
+                                  (v_b, "#009900", "B"),
+                                  (v_c, "#0055CC", "C")],
+                                 f"Voltage Phasors ({v_unit})"))
+        if i_a is not None:
+            phasor_sets.append(([(i_a, "#CC2200", "A"),
+                                  (i_b, "#009900", "B"),
+                                  (i_c, "#0055CC", "C")],
+                                 "Current Phasors (A)"))
+        for ph_list, ph_lbl in phasor_sets:
+            tk.Label(body, text=ph_lbl, font=("TkDefaultFont", 9, "bold"),
+                     fg="#333333").grid(row=r, column=0, columnspan=5,
+                                       sticky="w", padx=4)
+            r += 1
+            self._draw_phasors(body, r, ph_list)
+            r += 1
+
+    def _draw_phasors(self, parent, grid_row: int, phasors: list) -> None:
+        """Draw arrow phasors on a canvas placed in parent at grid_row."""
+        size = 260
+        cv = tk.Canvas(parent, width=size, height=size, bg="#F8F8F8",
+                       highlightthickness=1, highlightbackground="#CCCCCC")
+        cv.grid(row=grid_row, column=0, columnspan=5, pady=6, padx=4)
+
+        cx, cy = size // 2, size // 2
+        radius = size // 2 - 22
+
+        max_mag = max((abs(p) for p, _, _ in phasors), default=1.0)
+        if max_mag < 1e-12:
+            max_mag = 1.0
+        scale = radius / max_mag
+
+        # Reference circle + thin axes
+        cv.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
+                       outline="#DDDDDD", dash=(3, 3))
+        cv.create_line(cx, cy - radius - 4, cx, cy + radius + 4,
+                       fill="#CCCCCC", width=1)
+        cv.create_line(cx - radius - 4, cy, cx + radius + 4, cy,
+                       fill="#CCCCCC", width=1)
+        # 0° / 90° tick labels
+        cv.create_text(cx + radius + 6, cy, text="0°",
+                       font=("TkDefaultFont", 8), fill="#AAAAAA", anchor="w")
+        cv.create_text(cx, cy - radius - 6, text="90°",
+                       font=("TkDefaultFont", 8), fill="#AAAAAA", anchor="s")
+
+        for phasor, colour, label in phasors:
+            if abs(phasor) < 1e-12:
+                continue
+            mag = abs(phasor) * scale
+            ang = cmath.phase(phasor)
+            x2 = cx + mag * math.cos(ang)
+            y2 = cy - mag * math.sin(ang)   # screen y is inverted
+            cv.create_line(cx, cy, x2, y2, fill=colour, width=2,
+                           arrow=tk.LAST, arrowshape=(10, 12, 4))
+            # Label just beyond the tip
+            lmag = mag + 14
+            lx = cx + lmag * math.cos(ang)
+            ly = cy - lmag * math.sin(ang)
+            cv.create_text(lx, ly, text=label, fill=colour,
+                           font=("TkDefaultFont", 9, "bold"))
+
     def _row(self, label: str, var: tk.Variable,
              readonly: bool = False, start_row: int = None) -> None:
         row = start_row if start_row is not None else len(self._body.winfo_children())
-        tk.Label(self._body, text=label, anchor="w").grid(
-            row=row, column=0, sticky="w", pady=2, padx=(0, 8)
+        tk.Label(self._body, text=label, anchor="e").grid(
+            row=row, column=0, sticky="e", pady=3, padx=(4, 6)
         )
         if readonly:
             tk.Label(self._body, textvariable=var, anchor="w",
-                     fg="#888888").grid(row=row, column=1, sticky="ew", pady=2)
+                     fg="#888888").grid(row=row, column=1, sticky="ew", pady=3)
         else:
             tk.Entry(self._body, textvariable=var).grid(
-                row=row, column=1, sticky="ew", pady=2
+                row=row, column=1, sticky="ew", pady=3, padx=(0, 4)
             )

@@ -80,6 +80,7 @@ class LoadTestRecord:
     blocking_note: str = ""             # who was contacted, SIO/FVO reference
     points: list = field(default_factory=list)   # list of MeasurementPoint dicts
     vector_groups: list = field(default_factory=list)  # list of VectorGroup dicts
+    drawings: list = field(default_factory=list) # list of drawing name strings
     notes: str = ""
 
     def __post_init__(self):

@@ -606,13 +606,348 @@ class MainWindow:
         for bid, dbus in buses.items():
             nb = net.buses.get(bid)
             dbus.v_solved = nb.v_pu if nb else None
+
+        self._store_pf_results(net, buses, conns, xfmrs, sources, loads)
         self.diagram.redraw()
+
+        # Refresh properties panel so Predictions tab updates immediately
+        sel = self.diagram.get_selection()
+        if sel is not None:
+            self._on_select(sel)
 
         if result.converged:
             self._set_status(f"Power flow converged in {result.iterations} iterations. "
                              f"Slack: {slack_bus}.")
         else:
             self._set_status(f"Power flow DID NOT converge after {result.iterations} iterations.")
+
+    def _store_pf_results(self, net, buses, conns, xfmrs, sources, loads) -> None:
+        """Stamp pf_solved dicts onto diagram devices after a power-flow solve."""
+        import cmath as _cm, math as _m
+        sqrt3 = _m.sqrt(3)
+        BASE  = net.base_mva   # MVA
+
+        def _ph3(mag, ang):
+            return (_cm.rect(mag, ang),
+                    _cm.rect(mag, ang - 2*_m.pi/3),
+                    _cm.rect(mag, ang + 2*_m.pi/3))
+
+        def _branch_flow(nb_from, nb_to, br):
+            phi = getattr(br, "phase_shift_rad", 0.0)
+            if abs(phi) > 1e-9:
+                # Phase-shifting transformer: I_HV = (V_HV - a*V_LV) / Z
+                a = _cm.rect(1.0, phi)
+                dv = nb_from.v_pu - a * nb_to.v_pu
+            else:
+                dv = nb_from.v_pu - nb_to.v_pu
+            ipu = dv / br.z_pu if abs(br.z_pu) > 1e-12 else 0j
+            base_i = (BASE * 1e6) / (nb_from.base_kv * 1e3 * sqrt3)
+            imag = abs(ipu) * base_i
+            iang = _cm.phase(ipu)
+            s = nb_from.v_pu * ipu.conjugate()
+            p_kw   = s.real * BASE * 1e3
+            q_kvar = s.imag * BASE * 1e3
+            s_kva  = _m.hypot(p_kw, q_kvar)
+            pf     = p_kw / s_kva if s_kva > 1e-9 else 1.0
+            ia, ib, ic = _ph3(imag, iang)
+            vln  = abs(nb_from.v_pu) * nb_from.base_kv / sqrt3
+            vll  = abs(nb_from.v_pu) * nb_from.base_kv
+            vang = _cm.phase(nb_from.v_pu)
+            va, vb, vc = _ph3(vln, vang)
+            return {"type": "branch",
+                    "i_a": ia, "i_b": ib, "i_c": ic,
+                    "i_mag": imag, "i_ang_deg": _m.degrees(iang),
+                    "v_a": va, "v_b": vb, "v_c": vc,
+                    "v_kv_ln": vln, "v_kv_ll": vll,
+                    "p_kw": p_kw, "q_kvar": q_kvar, "s_kva": s_kva, "pf": pf}
+
+        def _bus_power(bid):
+            p_kw = q_kvar = 0.0
+            for br in net.connected_branches(bid):
+                fb = net.get_bus(br.from_bus)
+                tb = net.get_bus(br.to_bus)
+                if not fb or not tb:
+                    continue
+                dv = fb.v_pu - tb.v_pu
+                ipu = dv / br.z_pu if abs(br.z_pu) > 1e-12 else 0j
+                vref = fb.v_pu if br.from_bus == bid else tb.v_pu
+                sign = 1 if br.from_bus == bid else -1
+                s = vref * (sign * ipu).conjugate()
+                p_kw   += s.real * BASE * 1e3
+                q_kvar += s.imag * BASE * 1e3
+            return p_kw, q_kvar
+
+        # ── buses ────────────────────────────────────────────────────────
+        for bid, dbus in buses.items():
+            nb = net.buses.get(bid)
+            if nb is None:
+                dbus.pf_solved = None
+                continue
+            vpu  = nb.v_pu
+            vmag = abs(vpu)
+            vang = _cm.phase(vpu)
+            vln  = vmag * nb.base_kv / sqrt3
+            vll  = vmag * nb.base_kv
+            va, vb, vc = _ph3(vln, vang)
+            p_kw, q_kvar = _bus_power(bid)
+            s_kva = _m.hypot(p_kw, q_kvar)
+            pf    = p_kw / s_kva if s_kva > 1e-9 else 1.0
+            dbus.pf_solved = {
+                "type": "bus",
+                "v_mag_pu": vmag, "v_ang_deg": _m.degrees(vang),
+                "v_kv_ln": vln, "v_kv_ll": vll,
+                "v_a": va, "v_b": vb, "v_c": vc,
+                "p_kw": p_kw, "q_kvar": q_kvar, "s_kva": s_kva, "pf": pf,
+            }
+
+        # ── connections + transformers ────────────────────────────────────
+        for brid, dev in list(conns.items()) + list(xfmrs.items()):
+            br = net.branches.get(brid)
+            if br is None:
+                dev.pf_solved = None
+                continue
+            fb = net.get_bus(br.from_bus)
+            tb = net.get_bus(br.to_bus)
+            dev.pf_solved = _branch_flow(fb, tb, br) if (fb and tb) else None
+
+        # ── sources ──────────────────────────────────────────────────────
+        for src in sources.values():
+            nb = net.buses.get(src.bus) if src.bus else None
+            if not nb:
+                src.pf_solved = None
+                continue
+            vmag = abs(nb.v_pu)
+            vang = _cm.phase(nb.v_pu)
+            vln  = vmag * nb.base_kv / sqrt3
+            vll  = vmag * nb.base_kv
+            va, vb, vc = _ph3(vln, vang)
+            p_kw, q_kvar = _bus_power(src.bus)
+            s_kva = _m.hypot(p_kw, q_kvar)
+            pf_val = p_kw / s_kva if s_kva > 1e-9 else 1.0
+            imag   = (s_kva * 1e3 / 3) / (vln * 1e3) if vln > 1e-9 else 0.0
+            ia, ib, ic = _ph3(imag, vang)
+            src.pf_solved = {
+                "type": "source",
+                "v_kv_ln": vln, "v_kv_ll": vll, "v_ang_deg": _m.degrees(vang),
+                "v_a": va, "v_b": vb, "v_c": vc,
+                "p_kw": p_kw, "q_kvar": q_kvar, "s_kva": s_kva, "pf": pf_val,
+                "i_a": ia, "i_b": ib, "i_c": ic,
+            }
+
+        # ── loads ─────────────────────────────────────────────────────────
+        for ld in loads.values():
+            nb = net.buses.get(ld.bus) if ld.bus else None
+            p_kw, q_kvar = ld._resolved()
+            s_kva = _m.hypot(p_kw, q_kvar)
+            pf_val = p_kw / s_kva if s_kva > 1e-9 else 1.0
+            if nb and abs(nb.v_pu) > 1e-9:
+                vln  = abs(nb.v_pu) * nb.base_kv / sqrt3
+                vll  = abs(nb.v_pu) * nb.base_kv
+                vang = _cm.phase(nb.v_pu)
+                imag = (s_kva * 1e3 / 3) / (vln * 1e3) if vln > 1e-9 else 0.0
+                iang = vang - _m.acos(min(1.0, abs(pf_val)))
+                va, vb, vc = _ph3(vln, vang)
+            else:
+                vln = vll = 0.0
+                imag = iang = 0.0
+                va = vb = vc = 0j
+            ia, ib, ic = _ph3(imag, iang)
+            ld.pf_solved = {
+                "type": "load",
+                "v_a": va, "v_b": vb, "v_c": vc,
+                "v_kv_ln": vln, "v_kv_ll": vll,
+                "p_kw": p_kw, "q_kvar": q_kvar, "s_kva": s_kva, "pf": pf_val,
+                "i_a": ia, "i_b": ib, "i_c": ic, "i_mag": imag,
+            }
+
+        # ── secondary devices ─────────────────────────────────────────────
+        diag = self.diagram
+        cts        = diag.get_cts()
+        vts        = diag.get_vts()
+        cttbs      = diag.get_cttbs()
+        testblocks = diag.get_testblocks()
+        relays     = diag.get_relays()
+        rwires     = diag.get_relay_wires()
+
+        # ── CTs ──────────────────────────────────────────────────────────
+        for ct in cts.values():
+            # Find the branch the CT sits on
+            br_dev = conns.get(ct.connection_id) or xfmrs.get(ct.xfmr_id)
+            pf_br  = getattr(br_dev, "pf_solved", None) if br_dev else None
+            if not pf_br:
+                ct.pf_solved = None
+                continue
+            ratio = ct.ratio_secondary / ct.ratio_primary if ct.ratio_primary else 1.0
+            i_pri = pf_br["i_mag"]
+            i_sec = i_pri * ratio
+            ang   = pf_br["i_ang_deg"]
+            ia, ib, ic = _ph3(i_sec, _m.radians(ang))
+            ct.pf_solved = {
+                "type": "ct",
+                "i_mag": i_sec, "i_ang_deg": ang,
+                "i_a": ia, "i_b": ib, "i_c": ic,
+                "ratio": f"{ct.ratio_primary}:{ct.ratio_secondary}",
+            }
+
+        # ── VTs ──────────────────────────────────────────────────────────
+        def _bus_is_delta(bus_id: str) -> bool:
+            """True if bus_id is the terminal of a delta winding on any transformer."""
+            for tx in xfmrs.values():
+                if tx.hv_bus == bus_id and tx.hv_winding == "delta":
+                    return True
+                if tx.lv_bus == bus_id and tx.lv_winding == "delta":
+                    return True
+            return False
+
+        for vt in vts.values():
+            nb = net.buses.get(vt.bus_id) if vt.bus_id else None
+            if not nb:
+                vt.pf_solved = None
+                continue
+            ratio  = vt.ratio_secondary / vt.ratio_primary if vt.ratio_primary else 1.0
+            vang   = _m.degrees(_cm.phase(nb.v_pu))
+            # Delta-winding buses have no neutral — VT primary sees V_LL, not V_LN.
+            # Wye-grounded buses: primary sees V_LN (= base_kv / sqrt3 per-unit).
+            is_delta = _bus_is_delta(vt.bus_id)
+            if is_delta:
+                v_pri = abs(nb.v_pu) * nb.base_kv * 1000          # V_LL in volts
+            else:
+                v_pri = abs(nb.v_pu) * nb.base_kv / sqrt3 * 1000  # V_LN in volts
+            v_sec  = v_pri * ratio
+            va, vb, vc = _ph3(v_sec, _m.radians(vang))
+            vt.pf_solved = {
+                "type": "vt",
+                "v_mag": v_sec, "v_ang_deg": vang,
+                "v_a": va, "v_b": vb, "v_c": vc,
+                "ratio": f"{vt.ratio_primary:.0f}:{vt.ratio_secondary:.0f}",
+                "delta_primary": is_delta,
+            }
+
+        # ── CTTBs ─────────────────────────────────────────────────────────
+        # Build a lookup: relay_wire dest_id → list of source pf_solved dicts
+        # We process CTTBs iteratively so downstream CTTBs can read upstream results.
+        def _get_cttb_input_phasors(cttb_id: str) -> list:
+            """Return list of (complex) secondary current phasors feeding this CTTB."""
+            inputs = []
+            for rw in rwires.values():
+                if rw.relay_id == cttb_id and rw.dest_type == "cttb":
+                    if rw.source_type == "ct":
+                        src_pf = getattr(cts.get(rw.source_id), "pf_solved", None)
+                        if src_pf:
+                            inputs.append(src_pf["i_a"])  # use phase A as representative
+                    elif rw.source_type == "cttb":
+                        src_pf = getattr(cttbs.get(rw.source_id), "pf_solved", None)
+                        if src_pf:
+                            inputs.append(src_pf["i_a"])
+            return inputs
+
+        # Two-pass: first pass handles CTs as sources, second handles CTTB→CTTB chains
+        for _ in range(2):
+            for cttb in cttbs.values():
+                phasors_in = _get_cttb_input_phasors(cttb.id)
+                if not phasors_in:
+                    cttb.pf_solved = None
+                    continue
+                if cttb.mode == "Sum":
+                    combined = sum(phasors_in)
+                elif cttb.mode == "Subtract" and len(phasors_in) >= 2:
+                    combined = phasors_in[0] - sum(phasors_in[1:])
+                else:
+                    combined = phasors_in[0]   # Pass or single input
+                i_sec = abs(combined)
+                ang_r = _cm.phase(combined)
+                ia, ib, ic = _ph3(i_sec, ang_r)
+                cttb.pf_solved = {
+                    "type": "cttb",
+                    "i_mag": i_sec, "i_ang_deg": _m.degrees(ang_r),
+                    "i_a": ia, "i_b": ib, "i_c": ic,
+                    "mode": cttb.mode,
+                }
+
+        # ── TestBlocks (FT/ISO) ───────────────────────────────────────────
+        def _get_tb_voltage(tb_id: str):
+            """Return (complex volts, ang_deg) for a test block from upstream VT/TB."""
+            for rw in rwires.values():
+                if rw.relay_id == tb_id and rw.dest_type == "testblock" and rw.wire_type == "voltage":
+                    if rw.source_type == "vt":
+                        src_pf = getattr(vts.get(rw.source_id), "pf_solved", None)
+                        if src_pf:
+                            return src_pf["v_a"], src_pf["v_ang_deg"]
+                    elif rw.source_type == "testblock":
+                        src_pf = getattr(testblocks.get(rw.source_id), "pf_solved", None)
+                        if src_pf:
+                            return src_pf["v_a"], src_pf["v_ang_deg"]
+            return None, None
+
+        for _ in range(2):
+            for tb in testblocks.values():
+                v_complex, ang_deg = _get_tb_voltage(tb.id)
+                if v_complex is None:
+                    tb.pf_solved = None
+                    continue
+                v_mag = abs(v_complex)
+                ang_r = _cm.phase(v_complex)
+                va, vb, vc = _ph3(v_mag, ang_r)
+                tb.pf_solved = {
+                    "type": "testblock",
+                    "v_mag": v_mag, "v_ang_deg": ang_deg,
+                    "v_a": va, "v_b": vb, "v_c": vc,
+                }
+
+        # ── Relays ────────────────────────────────────────────────────────
+        for relay in relays.values():
+            winding_data = []
+            # Collect wires that terminate at this relay
+            relay_inputs = [rw for rw in rwires.values()
+                            if rw.relay_id == relay.id and rw.dest_type == "relay"]
+            for w_idx, winding_label in enumerate(relay.windings):
+                w_wires = [rw for rw in relay_inputs if rw.winding == w_idx + 1]
+                i_complex = v_complex_w = None
+                for rw in w_wires:
+                    if rw.wire_type == "current":
+                        if rw.source_type == "ct":
+                            src_pf = getattr(cts.get(rw.source_id), "pf_solved", None)
+                        elif rw.source_type == "cttb":
+                            src_pf = getattr(cttbs.get(rw.source_id), "pf_solved", None)
+                        else:
+                            src_pf = None
+                        if src_pf:
+                            i_complex = src_pf["i_a"]
+                    elif rw.wire_type == "voltage":
+                        if rw.source_type == "vt":
+                            src_pf = getattr(vts.get(rw.source_id), "pf_solved", None)
+                        elif rw.source_type == "testblock":
+                            src_pf = getattr(testblocks.get(rw.source_id), "pf_solved", None)
+                        else:
+                            src_pf = None
+                        if src_pf:
+                            v_complex_w = src_pf["v_a"]
+                if i_complex is not None:
+                    i_mag = abs(i_complex)
+                    i_ang = _m.degrees(_cm.phase(i_complex))
+                    wi_a, wi_b, wi_c = _ph3(i_mag, _cm.phase(i_complex))
+                else:
+                    i_mag = i_ang = None
+                    wi_a = wi_b = wi_c = None
+                if v_complex_w is not None:
+                    v_mag = abs(v_complex_w)
+                    v_ang = _m.degrees(_cm.phase(v_complex_w))
+                    wv_a, wv_b, wv_c = _ph3(v_mag, _cm.phase(v_complex_w))
+                else:
+                    v_mag = v_ang = None
+                    wv_a = wv_b = wv_c = None
+                winding_data.append({
+                    "label": winding_label,
+                    "i_mag": i_mag, "i_ang_deg": i_ang,
+                    "i_a": wi_a, "i_b": wi_b, "i_c": wi_c,
+                    "v_mag": v_mag, "v_ang_deg": v_ang,
+                    "v_a": wv_a, "v_b": wv_b, "v_c": wv_c,
+                })
+            has_any = any(
+                w["i_mag"] is not None or w["v_mag"] is not None
+                for w in winding_data
+            )
+            relay.pf_solved = {"type": "relay", "windings": winding_data} if has_any else None
 
     def _set_status(self, msg: str) -> None:
         self._status_var.set(msg)

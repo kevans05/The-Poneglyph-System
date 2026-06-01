@@ -15,6 +15,22 @@ from poneglyph.simulation.network import Branch, Bus, Network
 from poneglyph.ui.diagram import DiagramBus, DiagramConnection, DiagramTransformer
 
 
+def _transformer_phase_shift(xfmr: DiagramTransformer) -> float:
+    """Return phase shift in radians for the transformer branch (from_bus = HV).
+
+    Standard ANSI/IEC rules:
+      Yy / Dd  → 0°  (same winding type, no shift)
+      Yd       → +30°  (HV wye leads LV delta by 30°  — vector group Yd1)
+      Dy       → −30°  (LV wye leads HV delta by 30°  — vector group Dy11)
+    """
+    delta = {"delta"}
+    hv_delta = xfmr.hv_winding in delta
+    lv_delta = xfmr.lv_winding in delta
+    if hv_delta == lv_delta:
+        return 0.0
+    return math.radians(30.0) if (not hv_delta and lv_delta) else math.radians(-30.0)
+
+
 def _transformer_rx(xfmr: DiagramTransformer, base_mva: float) -> tuple[float, float]:
     """Return (r_pu, x_pu) on the system base from the transformer's %Z and MVA.
 
@@ -57,11 +73,13 @@ def build_network(
         if tx.hv_bus not in net.buses or tx.lv_bus not in net.buses:
             continue
         r, x = _transformer_rx(tx, base_mva)
+        phi   = _transformer_phase_shift(tx)
         net.add_branch(Branch(
             id=tx.id, name=tx.name,
             from_bus=tx.hv_bus, to_bus=tx.lv_bus,
             r_pu=r, x_pu=x,
             closed=True,
+            phase_shift_rad=phi,
         ))
 
     return net

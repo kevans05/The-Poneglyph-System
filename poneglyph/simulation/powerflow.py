@@ -80,10 +80,24 @@ class PowerFlowSolver:
                 continue
             i, j = idx[branch.from_bus], idx[branch.to_bus]
             y = 1.0 / branch.z_pu if branch.z_pu != 0 else 0.0
-            Y[i, i] += y
-            Y[j, j] += y
-            Y[i, j] -= y
-            Y[j, i] -= y
+            phi = getattr(branch, "phase_shift_rad", 0.0)
+            if abs(phi) < 1e-9:
+                # Symmetric: plain line or Yy/Dd transformer
+                Y[i, i] += y
+                Y[j, j] += y
+                Y[i, j] -= y
+                Y[j, i] -= y
+            else:
+                # Asymmetric complex-tap model: a = e^(jφ), HV at i, LV at j
+                # Y[i,i] = y/|a|² = y  (|a|=1)
+                # Y[j,j] = y
+                # Y[i,j] = -y / conj(a)
+                # Y[j,i] = -y / a
+                a = cmath.rect(1.0, phi)
+                Y[i, i] += y
+                Y[j, j] += y
+                Y[i, j] -= y / a.conjugate()
+                Y[j, i] -= y / a
 
         # Initial voltage vector
         V = np.array([b.v_pu for b in buses], dtype=complex)

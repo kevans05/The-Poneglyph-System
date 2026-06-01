@@ -509,6 +509,7 @@ class DiagramRelay:
     cy: float
     function_code: str = "51"       # ANSI function number e.g. "21", "50/51", "87T"
     windings: list = None           # list of winding label strings e.g. ["W1","W2"]
+    mirrored_bit: bool = False      # relay output is mirrored to SCADA/communications
     meas_points: list = None        # list of {pred_mag, pred_ang, meas_mag, meas_ang} per winding
     # ── Extended device fields ────────────────────────────────────────────
     location: str = ""
@@ -841,8 +842,9 @@ class Diagram(tk.Frame):
         """Serialise entire diagram state to a plain JSON-safe dict."""
         def _ser(obj):
             d = dataclasses.asdict(obj)
-            # Convert tuple values to lists (JSON arrays) — already happens
-            # via asdict; convert list-of-tuples inside nodes/edges/waypoints
+            # v_solved is Optional[complex] — complex is not JSON-serialisable.
+            # It is transient (recomputed on every power-flow run) so we never persist it.
+            d.pop("v_solved", None)
             return d
 
         return {
@@ -1098,15 +1100,17 @@ class Diagram(tk.Frame):
                 self.canvas.create_polygon(sx, sy-dm, sx+dm, sy, sx, sy+dm, sx-dm, sy,
                                            outline="#0066CC", fill="#CCE5FF", width=1)
 
-        # Name label at top-centre (offset if user has dragged it)
+        # Name label above the bus line; kV just below name; voltage annotation below bus.
         lx_w = bus.cx + bus.label_ox
         ly_w = bus.cy_label + bus.label_oy
         cxs, cys = self._w2s(lx_w, ly_w)
-        self.canvas.create_text(cxs, cys - 12, text=bus.name,
+        # Name: bottom sits 6px above bus line
+        self.canvas.create_text(cxs, cys - 6, text=bus.name,
                                 font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
         if bus.kv:
-            self.canvas.create_text(cxs, cys - 2, text=f"{bus.kv} kV",
-                                    font=("TkDefaultFont", 8), fill=colour, anchor="n")
+            # kV: bottom sits 20px above bus line (above the name)
+            self.canvas.create_text(cxs, cys - 20, text=f"{bus.kv} kV",
+                                    font=("TkDefaultFont", 8), fill=colour, anchor="s")
         if bus.v_solved is not None:
             import cmath as _cm
             mag = abs(bus.v_solved)
@@ -1115,7 +1119,8 @@ class Diagram(tk.Frame):
             txt = f"{mag:.3f} pu ∠{ang:.1f}°"
             if kv_actual:
                 txt += f"  ({kv_actual:.2f} kV)"
-            self.canvas.create_text(cxs, cys + 14, text=txt,
+            # Voltage annotation: 8px below bus line
+            self.canvas.create_text(cxs, cys + 8, text=txt,
                                     font=("TkDefaultFont", 8, "bold"), fill="#118811", anchor="n")
 
     def _draw_bus_preview(self) -> None:

@@ -35,6 +35,9 @@ class Branch:
     r_pu: float     # Resistance in per-unit
     x_pu: float     # Reactance in per-unit
     closed: bool = True  # False when an in-series breaker is open
+    # Phase shift for delta/wye transformers (radians, positive = from_bus leads to_bus).
+    # Non-zero makes the Y-bus asymmetric; 0.0 for plain lines/Yy/Dd transformers.
+    phase_shift_rad: float = 0.0
 
     @property
     def z_pu(self) -> complex:
