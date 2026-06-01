@@ -1044,10 +1044,14 @@ class Diagram(tk.Frame):
         self._draw_bus_preview()
 
     # Labels are suppressed below this zoom level to avoid unreadable overlaps.
-    _LABEL_SCALE_MIN = 0.45
+    _SCALE_NAMES  = 0.45   # show device names
+    _SCALE_DETAIL = 0.75   # show kV class, voltages, ratios, winding labels
 
     def _labels_on(self) -> bool:
-        return self._scale >= self._LABEL_SCALE_MIN
+        return self._scale >= self._SCALE_NAMES
+
+    def _details_on(self) -> bool:
+        return self._scale >= self._SCALE_DETAIL
 
     def _draw_grid(self) -> None:
         w = self.canvas.winfo_width()  or 800
@@ -1106,13 +1110,14 @@ class Diagram(tk.Frame):
                 self.canvas.create_polygon(sx, sy-dm, sx+dm, sy, sx, sy+dm, sx-dm, sy,
                                            outline="#0066CC", fill="#CCE5FF", width=1)
 
-        # Name label above the bus line; kV just below name; voltage annotation below bus.
+        # Name label above bus; kV class + solved voltage only when zoomed in.
         lx_w = bus.cx + bus.label_ox
         ly_w = bus.cy_label + bus.label_oy
         cxs, cys = self._w2s(lx_w, ly_w)
         if self._labels_on():
             self.canvas.create_text(cxs, cys - 6, text=bus.name,
                                     font=("TkDefaultFont", 9, "bold"), fill=colour, anchor="s")
+        if self._details_on():
             if bus.kv:
                 self.canvas.create_text(cxs, cys - 20, text=f"{bus.kv} kV",
                                         font=("TkDefaultFont", 8), fill=colour, anchor="s")
@@ -1450,7 +1455,7 @@ class Diagram(tk.Frame):
 
         # ── kV labels + name (suppressed when zoomed out) ────────────────
         kv_loc_x = -half - 6
-        if self._labels_on():
+        if self._details_on():
             if xfmr.hv_kv:
                 kv_hv = self._xr(xfmr, xfmr.cx + kv_loc_x, xfmr.cy + hv_y_loc)
                 kv_sx, kv_sy = self._w2s(*kv_hv)
@@ -1461,6 +1466,7 @@ class Diagram(tk.Frame):
                 kv_sx, kv_sy = self._w2s(*kv_lv)
                 self.canvas.create_text(kv_sx, kv_sy, text=f"{xfmr.lv_kv:g} kV",
                                         font=("TkDefaultFont", 8, "bold"), fill=lv_col, anchor="e")
+        if self._labels_on():
             label = xfmr.name
             if xfmr.mva:
                 label += f"\n{xfmr.mva:g} MVA"
@@ -1575,7 +1581,9 @@ class Diagram(tk.Frame):
 
         if self._labels_on():
             lsx, lsy = self._w2s(src.cx + src.label_ox, src.cy - SRC_R - 6 + src.label_oy)
-            label = f"{src.name}\n{src.v_pu:g} pu"
+            label = src.name
+            if self._details_on():
+                label += f"\n{src.v_pu:g} pu"
             self.canvas.create_text(lsx, lsy, text=label, justify="center",
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="s")
 
@@ -1608,8 +1616,10 @@ class Diagram(tk.Frame):
 
         if self._labels_on():
             lsx, lsy = self._w2s(ld.cx + LOAD_AW + 6 + ld.label_ox, ld.cy - LOAD_AH / 2 + ld.label_oy)
-            self.canvas.create_text(lsx, lsy, text=f"{ld.name}\n{ld.summary_str()}",
-                                    justify="left",
+            label = ld.name
+            if self._details_on():
+                label += f"\n{ld.summary_str()}"
+            self.canvas.create_text(lsx, lsy, text=label, justify="left",
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="w")
 
     # ── CT ────────────────────────────────────────────────────────────────
@@ -1770,7 +1780,9 @@ class Diagram(tk.Frame):
                                     outline="#FF8800", width=2, dash=(4, 3))
 
         if self._labels_on():
-            label = f"{ct.ratio_str}\n{ct.name}"
+            label = ct.name
+            if self._details_on():
+                label = f"{ct.ratio_str}\n" + label
             self.canvas.create_text(lead_ex + pxn*(pr+4) + ct.label_ox*self._scale,
                                     lead_ey + pyn*(pr+4) + ct.label_oy*self._scale,
                                     text=label, font=("TkDefaultFont", 8),
@@ -1849,7 +1861,9 @@ class Diagram(tk.Frame):
 
         # ── Label ────────────────────────────────────────────────────────
         if self._labels_on():
-            label = f"{vt.vt_type}  {vt.ratio_str}\n{vt.name}"
+            label = vt.name
+            if self._details_on():
+                label = f"{vt.vt_type}  {vt.ratio_str}\n" + label
             canvas.create_text(sx + total_w/2 + 6*self._scale,
                                pri_y + R,
                                text=label, font=("TkDefaultFont", 8),
@@ -2141,7 +2155,7 @@ class Diagram(tk.Frame):
             tx = sx + R * math.cos(angle)
             ty = sy - R * math.sin(angle)
             canvas.create_oval(tx-tw, ty-tw, tx+tw, ty+tw, fill=colour, outline=colour)
-            if self._labels_on():
+            if self._details_on():
                 lx = sx + (R + tw + 4) * math.cos(angle)
                 ly = sy - (R + tw + 4) * math.sin(angle)
                 canvas.create_text(lx, ly, text=wlabel,
