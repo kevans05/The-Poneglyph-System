@@ -1,12 +1,16 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "poneglyph"
 version = "2.0.0"
 description = "SCADA Pro Console — Substation Load Test Platform"
 requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.13",

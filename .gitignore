@@ -2,3 +2,6 @@ poneglyph/**/__pycache__
 __pycache__
 *.pyc
 .claude/worktrees/
+*.egg-info/
+dist/
+build/
