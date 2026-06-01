@@ -1664,6 +1664,16 @@ class LogPosePanel(tk.Frame):
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc), parent=self)
 
+    def get_all_records(self) -> list[dict]:
+        """Return all saved load test records for the current project."""
+        if not self._project_path:
+            return []
+        try:
+            from poneglyph.io.project import list_load_tests
+            return list_load_tests(Path(self._project_path))
+        except Exception:
+            return []
+
     def _refresh_history(self) -> None:
         if not self._project_path:
             return

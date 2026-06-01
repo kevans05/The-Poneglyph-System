@@ -198,6 +198,51 @@ class PropertiesPanel(tk.Frame):
         self._pred_canvas.bind("<Configure>", lambda e: self._pred_canvas.itemconfig(
             self._pred_body_win, width=e.width))
 
+        # ── Test History tab ─────────────────────────────────────────────
+        _hist_tab = tk.Frame(self._panel_nb)
+        self._panel_nb.add(_hist_tab, text="History")
+        _hist_tab.rowconfigure(0, weight=1)
+        _hist_tab.columnconfigure(0, weight=1)
+
+        # Top: treeview of past test sessions that include this device
+        _hist_tree_frame = tk.Frame(_hist_tab)
+        _hist_tree_frame.grid(row=0, column=0, sticky="nsew")
+        _hist_tree_frame.rowconfigure(0, weight=1)
+        _hist_tree_frame.columnconfigure(0, weight=1)
+
+        _hist_cols = ("timestamp", "wo", "meas", "delta_mag", "delta_ang", "flag")
+        self._hist_tree = ttk.Treeview(_hist_tree_frame, columns=_hist_cols,
+                                       show="headings", height=6, selectmode="browse")
+        self._hist_tree.heading("timestamp",  text="Date")
+        self._hist_tree.heading("wo",         text="WO #")
+        self._hist_tree.heading("meas",       text="Meas")
+        self._hist_tree.heading("delta_mag",  text="ΔMag%")
+        self._hist_tree.heading("delta_ang",  text="ΔAng°")
+        self._hist_tree.heading("flag",       text="")
+        self._hist_tree.column("timestamp",  width=110, minwidth=90, stretch=True)
+        self._hist_tree.column("wo",         width=60,  minwidth=50, stretch=False)
+        self._hist_tree.column("meas",       width=55,  minwidth=40, stretch=False)
+        self._hist_tree.column("delta_mag",  width=45,  minwidth=35, stretch=False)
+        self._hist_tree.column("delta_ang",  width=45,  minwidth=35, stretch=False)
+        self._hist_tree.column("flag",       width=20,  minwidth=18, stretch=False)
+        _hist_vsb = ttk.Scrollbar(_hist_tree_frame, orient="vertical",
+                                  command=self._hist_tree.yview)
+        self._hist_tree.configure(yscrollcommand=_hist_vsb.set)
+        self._hist_tree.grid(row=0, column=0, sticky="nsew")
+        _hist_vsb.grid(row=0, column=1, sticky="ns")
+        self._hist_tree.tag_configure("flagged", foreground="#CC2200")
+
+        # Bottom: detail label frame shown when a row is selected
+        self._hist_detail = tk.Frame(_hist_tab)
+        self._hist_detail.grid(row=1, column=0, sticky="ew", padx=4, pady=(4, 0))
+
+        self._hist_tree.bind("<<TreeviewSelect>>", self._on_hist_row_select)
+
+        # Storage for full record data (index aligned with treeview rows)
+        self._hist_records_cache: list[dict] = []
+
+        self._history_loader = None
+
         self._show_empty()
 
     # ── Public ────────────────────────────────────────────────────────────
@@ -206,10 +251,15 @@ class PropertiesPanel(tk.Frame):
         """Store a reference to the diagram for accessing the drawings registry."""
         self._diagram = diagram
 
+    def set_history_loader(self, fn) -> None:
+        """Provide a callable that returns list[dict] of all LoadTestRecord dicts."""
+        self._history_loader = fn
+
     def show_bus(self, bus: DiagramBus) -> None:
         self._current = bus
         self._populate_mr(bus)
         self._populate_predictions(bus)
+        self._populate_history(bus)
         self._clear()
 
         v_name = tk.StringVar(value=bus.name)
@@ -238,6 +288,7 @@ class PropertiesPanel(tk.Frame):
         self._current = conn
         self._populate_mr(conn)
         self._populate_predictions(conn)
+        self._populate_history(conn)
         self._clear()
 
         kind_label = {"tline": "Transmission Line", "feeder": "Feeder",
@@ -282,6 +333,7 @@ class PropertiesPanel(tk.Frame):
         self._current = xfmr
         self._populate_mr(xfmr)
         self._populate_predictions(xfmr)
+        self._populate_history(xfmr)
         self._clear()
 
         row = _RowCounter()
@@ -375,6 +427,7 @@ class PropertiesPanel(tk.Frame):
         self._current = src
         self._populate_mr(src)
         self._populate_predictions(src)
+        self._populate_history(src)
         self._clear()
         tk.Label(self._body, text="Power Source (slack)", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -413,6 +466,7 @@ class PropertiesPanel(tk.Frame):
         self._current = ld
         self._populate_mr(ld)
         self._populate_predictions(ld)
+        self._populate_history(ld)
         self._clear()
         import math
 
@@ -642,6 +696,7 @@ class PropertiesPanel(tk.Frame):
         self._current = ct
         self._populate_mr(ct)
         self._populate_predictions(ct)
+        self._populate_history(ct)
         self._clear()
 
         RELAY_CLASSES   = ["C50", "C100", "C200", "C400", "C800"]
@@ -759,6 +814,7 @@ class PropertiesPanel(tk.Frame):
         self._current = vt
         self._populate_mr(vt)
         self._populate_predictions(vt)
+        self._populate_history(vt)
         self._clear()
         tk.Label(self._body, text="Voltage Transformer / CVT",
                  font=("TkDefaultFont", 9, "italic"),
@@ -831,6 +887,7 @@ class PropertiesPanel(tk.Frame):
         self._current = cttb
         self._populate_mr(cttb)
         self._populate_predictions(cttb)
+        self._populate_history(cttb)
         self._clear()
         tk.Label(self._body, text="CT Test Block (CTTB)",
                  font=("TkDefaultFont", 9, "italic"),
@@ -874,6 +931,7 @@ class PropertiesPanel(tk.Frame):
         self._current = tb
         self._populate_mr(tb)
         self._populate_predictions(tb)
+        self._populate_history(tb)
         self._clear()
         tk.Label(self._body, text="FT / ISO Test Block",
                  font=("TkDefaultFont", 9, "italic"),
@@ -915,6 +973,7 @@ class PropertiesPanel(tk.Frame):
         self._current = br
         self._populate_mr(br)
         self._populate_predictions(br)
+        self._populate_history(br)
         self._clear()
         tk.Label(self._body, text="Circuit Breaker", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -947,6 +1006,7 @@ class PropertiesPanel(tk.Frame):
         self._current = dc
         self._populate_mr(dc)
         self._populate_predictions(dc)
+        self._populate_history(dc)
         self._clear()
         tk.Label(self._body, text="Disconnect Switch", font=("TkDefaultFont", 9, "italic"),
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -979,6 +1039,7 @@ class PropertiesPanel(tk.Frame):
         self._current = relay
         self._populate_mr(relay)
         self._populate_predictions(relay)
+        self._populate_history(relay)
         self._clear()
         row = _RowCounter()
 
@@ -1062,6 +1123,7 @@ class PropertiesPanel(tk.Frame):
         self._current = rw
         self._populate_mr(rw)
         self._populate_predictions(rw)
+        self._populate_history(rw)
         self._clear()
         row = _RowCounter()
         tk.Label(self._body, text="Relay Wire",
@@ -1096,6 +1158,11 @@ class PropertiesPanel(tk.Frame):
         self._current = None
         self._show_empty()
         self._show_mr_na()
+        for row in self._hist_tree.get_children():
+            self._hist_tree.delete(row)
+        for w in self._hist_detail.winfo_children():
+            w.destroy()
+        self._hist_records_cache.clear()
 
     def _device_fields(self, obj, start_row: int):
         """Add extended location/drawing fields. Returns (next_row, vars_dict)."""
@@ -1159,7 +1226,11 @@ class PropertiesPanel(tk.Frame):
 
     def _populate_mr(self, device) -> None:
         """Dispatch to the right MR builder based on device type."""
-        if isinstance(device, DiagramCTTB):
+        if isinstance(device, DiagramCT):
+            self._build_mr_ct(device)
+        elif isinstance(device, DiagramVT):
+            self._build_mr_vt(device)
+        elif isinstance(device, DiagramCTTB):
             self._build_mr_cttb(device)
         elif isinstance(device, DiagramRelay):
             self._build_mr_relay(device)
@@ -1307,6 +1378,20 @@ class PropertiesPanel(tk.Frame):
             "pred_mag_c": 0.0, "pred_ang_c": 0.0,
             "meas_mag_c": 0.0, "meas_ang_c": 0.0,
         }
+
+    def _build_mr_ct(self, ct: DiagramCT) -> None:
+        while len(ct.meas_points) < 1:
+            ct.meas_points.append(self._blank_pt())
+        channels = [{"label": f"{ct.ratio_str} secondary", **ct.meas_points[0]}]
+        self._build_mr_channels(channels, "A", lambda data: setattr(ct, "meas_points", data))
+
+    def _build_mr_vt(self, vt: DiagramVT) -> None:
+        n = max(1, vt.num_secondaries)
+        while len(vt.meas_points) < n:
+            vt.meas_points.append(self._blank_pt())
+        channels = [{"label": f"Sec {i+1}  {vt.ratio_str}", **vt.meas_points[i]}
+                    for i in range(n)]
+        self._build_mr_channels(channels, "V", lambda data: setattr(vt, "meas_points", data))
 
     def _build_mr_cttb(self, cttb: DiagramCTTB) -> None:
         n = max(1, cttb.num_circuits)
@@ -1610,6 +1695,117 @@ class PropertiesPanel(tk.Frame):
             ly = cy - lmag * math.sin(ang)
             cv.create_text(lx, ly, text=label, fill=colour,
                            font=("TkDefaultFont", 9, "bold"))
+
+    # ── Test History helpers ──────────────────────────────────────────────
+
+    def _populate_history(self, device) -> None:
+        """Show past load-test results for this device in the History tab."""
+        for w in self._hist_detail.winfo_children():
+            w.destroy()
+        for row in self._hist_tree.get_children():
+            self._hist_tree.delete(row)
+        self._hist_records_cache.clear()
+
+        if self._history_loader is None:
+            tk.Label(self._hist_detail,
+                     text="No project open yet.",
+                     fg="#888888", font=("TkDefaultFont", 8)).pack(anchor="w")
+            return
+
+        dev_id   = getattr(device, "id",   None)
+        dev_name = getattr(device, "name", "")
+        if not dev_id and not dev_name:
+            tk.Label(self._hist_detail,
+                     text="No history for this element type.",
+                     fg="#888888", font=("TkDefaultFont", 8)).pack(anchor="w")
+            return
+
+        records = self._history_loader()
+        # Collect (record, point) pairs that match this device
+        hits: list[tuple[dict, dict]] = []
+        for rec in records:
+            for pt in rec.get("points", []):
+                if (dev_id and pt.get("device_id") == dev_id) or \
+                   (dev_name and pt.get("device_name") == dev_name):
+                    hits.append((rec, pt))
+
+        if not hits:
+            tk.Label(self._hist_detail,
+                     text="No load test records found\nfor this device.",
+                     fg="#888888", font=("TkDefaultFont", 8), justify="left").pack(anchor="w")
+            return
+
+        for rec, pt in hits:
+            ts    = rec.get("timestamp", "")[:16].replace("T", " ")
+            wo    = rec.get("wo_number", "")
+            pm    = pt.get("pred_magnitude", 0.0)
+            mm    = pt.get("meas_magnitude", 0.0)
+            pa    = pt.get("pred_angle",    0.0)
+            ma    = pt.get("meas_angle",    0.0)
+            dm    = mm - pm
+            dpct  = f"{dm/pm*100:+.1f}%" if abs(pm) > 1e-9 else "—"
+            dang  = (ma - pa + 180) % 360 - 180
+            flag  = "⚠" if (abs(pm) > 1e-9 and abs(dm/pm)*100 > 5) or abs(dang) > 5 else "✓"
+            tag   = "flagged" if flag == "⚠" else ""
+            iid   = f"h{len(self._hist_records_cache)}"
+            self._hist_tree.insert("", tk.END, iid=iid, tags=(tag,),
+                                   values=(ts, wo, f"{mm:.3g}", dpct,
+                                           f"{dang:+.1f}", flag))
+            self._hist_records_cache.append((rec, pt))
+
+        tk.Label(self._hist_detail,
+                 text="Select a row for details.",
+                 fg="#888888", font=("TkDefaultFont", 8)).pack(anchor="w")
+
+    def _on_hist_row_select(self, _event) -> None:
+        sel = self._hist_tree.selection()
+        if not sel:
+            return
+        row_idx = self._hist_tree.index(sel[0])
+        if row_idx >= len(self._hist_records_cache):
+            return
+        rec, pt = self._hist_records_cache[row_idx]
+
+        for w in self._hist_detail.winfo_children():
+            w.destroy()
+
+        ts   = rec.get("timestamp", "")[:19].replace("T", " ")
+        wo   = rec.get("wo_number", "") or "—"
+        tech = rec.get("technologist", "") or "—"
+        ch   = pt.get("channel", 1)
+        pm   = pt.get("pred_magnitude", 0.0)
+        pa   = pt.get("pred_angle",    0.0)
+        mm   = pt.get("meas_magnitude", 0.0)
+        ma   = pt.get("meas_angle",    0.0)
+        dm   = mm - pm
+        dpct = f"{dm/pm*100:+.1f}%" if abs(pm) > 1e-9 else "—"
+        dang = (ma - pa + 180) % 360 - 180
+        flagged = (abs(pm) > 1e-9 and abs(dm/pm)*100 > 5) or abs(dang) > 5
+
+        lf = tk.LabelFrame(self._hist_detail, text="Test Detail",
+                           font=("TkDefaultFont", 8, "bold"), padx=4, pady=2)
+        lf.pack(fill=tk.X)
+        lf.columnconfigure(1, weight=1)
+
+        def dr(label, value, row, colour="#000000"):
+            tk.Label(lf, text=label, font=("TkDefaultFont", 8), fg="#555555",
+                     anchor="e").grid(row=row, column=0, sticky="e", padx=(0, 4))
+            tk.Label(lf, text=value, font=("TkFixedFont", 8), fg=colour,
+                     anchor="w").grid(row=row, column=1, sticky="w")
+
+        dr("Date",        ts,                        0)
+        dr("WO #",        wo,                        1)
+        dr("Tech",        tech,                      2)
+        dr("Channel",     str(ch),                   3)
+        dr("Predicted",   f"{pm:.4g} @ {pa:.1f}°",  4)
+        dr("Measured",    f"{mm:.4g} @ {ma:.1f}°",  5)
+        dr("ΔMag",        f"{dm:+.4g}  ({dpct})",   6,
+           colour="#CC2200" if flagged else "#006600")
+        dr("ΔAng",        f"{dang:+.1f}°",          7,
+           colour="#CC2200" if flagged else "#006600")
+        status_txt = "FLAGGED  ⚠" if flagged else "OK  ✓"
+        status_col = "#CC2200" if flagged else "#006600"
+        dr("Status",      status_txt,                8, colour=status_col)
 
     def _row(self, label: str, var: tk.Variable,
              readonly: bool = False, start_row: int = None) -> None:

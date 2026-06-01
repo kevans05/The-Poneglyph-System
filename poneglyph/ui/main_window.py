@@ -262,7 +262,7 @@ class MainWindow:
 
         self.props = PropertiesPanel(pane, on_change=self._on_props_change)
         self.props.set_diagram(self.diagram)
-        pane.add(self.props, minsize=180, width=220)
+        pane.add(self.props, minsize=180, width=240)
 
         # ── Tab 2: Drawings ─────────────────────────────────────────────────
         drw_frame = tk.Frame(nb)
@@ -359,6 +359,7 @@ class MainWindow:
             project_name=self._project_name,
         )
         self._load_test.pack(fill=tk.BOTH, expand=True)
+        self.props.set_history_loader(self._load_test.get_all_records)
 
     def _on_props_change(self):
         self.diagram.redraw()

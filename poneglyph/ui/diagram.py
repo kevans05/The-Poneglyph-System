@@ -405,10 +405,13 @@ class DiagramCT:
     device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+    meas_points: list = None   # list of {pred_mag_a/b/c, pred_ang_a/b/c, meas_*} dicts
 
     def __post_init__(self):
         if self.device_drawings is None:
             self.device_drawings = []
+        if self.meas_points is None:
+            self.meas_points = []
 
     @property
     def ratio_str(self) -> str:
@@ -438,12 +441,15 @@ class DiagramVT:
     device_drawings: list = None
     drawing_cell: str = ""
     notes: str = ""
+    meas_points: list = None   # list of {pred_mag_a/b/c, pred_ang_a/b/c, meas_*} dicts
 
     def __post_init__(self):
         if self.sec_waypoints is None:
             self.sec_waypoints = []
         if self.device_drawings is None:
             self.device_drawings = []
+        if self.meas_points is None:
+            self.meas_points = []
 
     @property
     def ratio_str(self) -> str:
