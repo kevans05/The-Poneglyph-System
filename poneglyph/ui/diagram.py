@@ -1465,7 +1465,7 @@ class Diagram(tk.Frame):
             if xfmr.mva:
                 label += f"\n{xfmr.mva:g} MVA"
             l_sx, l_sy = self._w2s(xfmr.cx + kv_loc_x + xfmr.label_ox,
-                                   xfmr.cy + xfmr.label_oy)
+                                   xfmr.cy + lv_y_loc + 18 + xfmr.label_oy)
             self.canvas.create_text(l_sx, l_sy, text=label, justify="right",
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="e")
 
@@ -1574,10 +1574,10 @@ class Diagram(tk.Frame):
         self.canvas.create_line(*pts, fill=colour, width=LINE_WIDTH, smooth=True)
 
         if self._labels_on():
-            lsx, lsy = self._w2s(src.cx + SRC_R + 6 + src.label_ox, src.cy + src.label_oy)
+            lsx, lsy = self._w2s(src.cx + src.label_ox, src.cy - SRC_R - 6 + src.label_oy)
             label = f"{src.name}\n{src.v_pu:g} pu"
-            self.canvas.create_text(lsx, lsy, text=label, justify="left",
-                                    font=("TkDefaultFont", 8), fill="#444444", anchor="w")
+            self.canvas.create_text(lsx, lsy, text=label, justify="center",
+                                    font=("TkDefaultFont", 8), fill="#444444", anchor="s")
 
     # ── Load (downward filled arrow) ──────────────────────────────────────
 
