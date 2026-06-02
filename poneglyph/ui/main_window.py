@@ -200,16 +200,6 @@ class MainWindow:
         tk.Button(bar, text="Run Power Flow", relief="flat", padx=6,
                   command=self._run_power_flow).pack(side=tk.LEFT, padx=2, pady=2)
 
-        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=4)
-
-        # View controls
-        tk.Button(bar, text="⊕", width=3, relief="flat", font=("TkDefaultFont", 11),
-                  command=lambda: self.diagram.zoom_in()).pack(side=tk.LEFT, padx=1, pady=2)
-        tk.Button(bar, text="⊖", width=3, relief="flat", font=("TkDefaultFont", 11),
-                  command=lambda: self.diagram.zoom_out()).pack(side=tk.LEFT, padx=1, pady=2)
-        tk.Button(bar, text="⊡ Fit", relief="flat", padx=4,
-                  command=lambda: self.diagram.fit_view()).pack(side=tk.LEFT, padx=2, pady=2)
-
         # Keyboard shortcuts
         self.root.bind("s", lambda _e: self._set_tool(TOOL_SELECT))
         self.root.bind("b", lambda _e: self._toggle_tool(TOOL_BUS,         self._set_lines_tool))

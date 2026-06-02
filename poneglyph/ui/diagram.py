@@ -932,24 +932,29 @@ class Diagram(tk.Frame):
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<Escape>", self._on_escape)
 
-        # ── Zoom overlay (Google Maps style, bottom-right of canvas) ─────
-        PAD = "#2C3E50"
-        BTN = "#34495E"
-        FG  = "white"
-        ov  = tk.Frame(self.canvas, bg=PAD, padx=3, pady=4)
-        tk.Button(ov, text="+", width=2, bg=BTN, fg=FG, relief="flat",
-                  font=("TkDefaultFont", 13, "bold"), cursor="arrow",
-                  command=self.zoom_in).pack(pady=(0, 1))
-        self._zoom_overlay_lbl = tk.Label(ov, text="100%", bg=PAD, fg=FG,
-                                          font=("TkDefaultFont", 8), width=4)
-        self._zoom_overlay_lbl.pack(pady=1)
-        tk.Button(ov, text="−", width=2, bg=BTN, fg=FG, relief="flat",
-                  font=("TkDefaultFont", 13, "bold"), cursor="arrow",
-                  command=self.zoom_out).pack(pady=(1, 4))
-        tk.Frame(ov, bg="#555555", height=1).pack(fill=tk.X, padx=2, pady=2)
-        tk.Button(ov, text="⊡", width=2, bg=BTN, fg=FG, relief="flat",
-                  font=("TkDefaultFont", 10), cursor="arrow",
-                  command=self.fit_view).pack(pady=(0, 0))
+        # ── Zoom overlay (bottom-right of canvas, white card style) ─────
+        BG  = "#FFFFFF"
+        SEP = "#DDDDDD"
+        FG  = "#333333"
+        ABG = "#F0F0F0"   # active/hover background
+
+        def _btn(parent, text, cmd, font=("TkDefaultFont", 13, "bold")):
+            return tk.Button(parent, text=text, width=2, bg=BG, fg=FG,
+                             relief="flat", font=font, cursor="arrow",
+                             activebackground=ABG, activeforeground=FG,
+                             bd=0, highlightthickness=0, command=cmd)
+
+        ov = tk.Frame(self.canvas, bg=BG, bd=1, relief="solid",
+                      highlightthickness=0, highlightbackground=SEP)
+        _btn(ov, "+", self.zoom_in).pack(fill=tk.X)
+        tk.Frame(ov, bg=SEP, height=1).pack(fill=tk.X)
+        self._zoom_overlay_lbl = tk.Label(ov, text="100%", bg=BG, fg="#777777",
+                                          font=("TkDefaultFont", 8), width=4, pady=2)
+        self._zoom_overlay_lbl.pack()
+        tk.Frame(ov, bg=SEP, height=1).pack(fill=tk.X)
+        _btn(ov, "−", self.zoom_out).pack(fill=tk.X)
+        tk.Frame(ov, bg=SEP, height=1).pack(fill=tk.X)
+        _btn(ov, "⊡", self.fit_view, font=("TkDefaultFont", 10)).pack(fill=tk.X)
         self._zoom_overlay = ov
 
     # ── Public API ────────────────────────────────────────────────────────
