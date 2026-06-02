@@ -297,31 +297,63 @@ class PropertiesPanel(tk.Frame):
                  fg="#555555").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
         v_name = tk.StringVar(value=conn.name)
-        v_r    = tk.StringVar(value=str(conn.r_pu))
-        v_x    = tk.StringVar(value=str(conn.x_pu))
         v_bkr  = tk.BooleanVar(value=conn.has_breaker_from)
 
-        self._row("ID",          tk.StringVar(value=conn.id), readonly=True, start_row=1)
-        self._row("Name",        v_name, start_row=2)
-        self._row("R (pu)",      v_r,    start_row=3)
-        self._row("X (pu)",      v_x,    start_row=4)
+        # Physical parameters
+        v_len  = tk.StringVar(value=str(getattr(conn, "length_km",       0.0)))
+        v_r    = tk.StringVar(value=str(getattr(conn, "r_ohm_per_km",    0.05)))
+        v_x    = tk.StringVar(value=str(getattr(conn, "x_ohm_per_km",    0.10)))
+        v_b    = tk.StringVar(value=str(getattr(conn, "b_us_per_km",     0.0)))
+        v_g    = tk.StringVar(value=str(getattr(conn, "g_us_per_km",     0.0)))
+        # Legacy pu values
+        v_rpu  = tk.StringVar(value=str(conn.r_pu))
+        v_xpu  = tk.StringVar(value=str(conn.x_pu))
+
+        row = _RowCounter()
+        self._row("ID",   tk.StringVar(value=conn.id), readonly=True, start_row=row.next())
+        self._row("Name", v_name, start_row=row.next())
+
+        tk.Label(self._body, text="Physical Parameters",
+                 font=("TkDefaultFont", 9, "bold"), fg="#333").grid(
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self._row("Length (km)",          v_len, start_row=row.next())
+        self._row("R (Ω/km)",             v_r,   start_row=row.next())
+        self._row("X (Ω/km)",             v_x,   start_row=row.next())
+        self._row("B shunt (µS/km)",      v_b,   start_row=row.next())
+        self._row("G shunt (µS/km)",      v_g,   start_row=row.next())
+
+        tk.Label(self._body, text="Solver Parameters (pu)",
+                 font=("TkDefaultFont", 9, "bold"), fg="#333").grid(
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self._row("R (pu)", v_rpu, start_row=row.next())
+        self._row("X (pu)", v_xpu, start_row=row.next())
+
         tk.Checkbutton(self._body, text="Breaker at source end", variable=v_bkr).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=2,
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=2,
         )
 
         def apply():
             conn.name = v_name.get().strip() or conn.name
-            try:
-                conn.r_pu = float(v_r.get())
-                conn.x_pu = float(v_x.get())
-            except ValueError:
-                pass
+            try: conn.length_km      = float(v_len.get())
+            except ValueError: pass
+            try: conn.r_ohm_per_km   = float(v_r.get())
+            except ValueError: pass
+            try: conn.x_ohm_per_km   = float(v_x.get())
+            except ValueError: pass
+            try: conn.b_us_per_km    = float(v_b.get())
+            except ValueError: pass
+            try: conn.g_us_per_km    = float(v_g.get())
+            except ValueError: pass
+            try: conn.r_pu = float(v_rpu.get())
+            except ValueError: pass
+            try: conn.x_pu = float(v_xpu.get())
+            except ValueError: pass
             conn.has_breaker_from = v_bkr.get()
             if self._on_change:
                 self._on_change()
 
         tk.Button(self._body, text="Apply", command=apply).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(12, 0)
+            row=row.next(), column=0, columnspan=2, sticky="w", pady=(12, 0)
         )
 
     _WINDING_TYPES = ("wye", "delta", "zigzag")
