@@ -3889,21 +3889,34 @@ class Diagram(tk.Frame):
                 self.redraw()
                 if self._on_status:
                     self._on_status(
-                        "Click to add waypoints · Right-click or double-click to finish."
+                        "Click a bus or endpoint to finish · click empty space to add a bend "
+                        "· right-click to finish anywhere."
                     )
             else:
-                # Subsequent click — add 90°-snapped waypoint OR detect double-click
+                # Subsequent click:
+                #   • bus (different from start) or existing free endpoint → finish
+                #   • double-click                                          → finish
+                #   • free space                                            → add waypoint
                 last = self._conn_pts[-1]
                 snapped = self._snap_90(last, *self._sg(wx, wy))
                 sx_last, sy_last = self._w2s(*last)
-                sx_new, sy_new = self._w2s(*snapped)
-                if math.hypot(sx_new - sx_last, sy_new - sy_last) < 10:
-                    # Double-click → finish here
+                sx_new,  sy_new  = self._w2s(*snapped)
+                finish = (
+                    (bus_id and bus_id != self._conn_from_bus)  # landed on a bus
+                    or bool(free_ep)                             # landed on existing endpoint
+                    or math.hypot(sx_new - sx_last, sy_new - sy_last) < 10  # double-click
+                )
+                if finish:
                     self._finish_connection_from_pts(wx, wy, bus_id, free_ep)
                 else:
                     self._conn_pts.append(snapped)
                     self._preview_point = snapped
                     self.redraw()
+                    if self._on_status:
+                        self._on_status(
+                            "Waypoint added · click a bus/endpoint to finish, "
+                            "or right-click anywhere to finish there."
+                        )
 
         elif self._tool == TOOL_TRANSFORMER:
             snap_id = self._snap_bus(wx, wy)
