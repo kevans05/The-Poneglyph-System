@@ -1130,6 +1130,12 @@ class Diagram(tk.Frame):
     _SCALE_CTTB_FT = 0.60   # CTTB and FT/ISO test blocks
     _SCALE_RELAY   = 0.50   # protection relays and relay wires
 
+    # ── Disconnect (isolator) open-blade angle ────────────────────────────────
+    # Degrees from the conductor direction (0° = in-line, 90° = perpendicular).
+    # 90° = blade stands straight up/out when open (current default).
+    # Common values: 60°, 75°, 90°.
+    _DISC_OPEN_ANGLE_DEG = 90
+
     def _labels_on(self) -> bool:
         return self._scale >= self._SCALE_NAMES
 
@@ -1369,11 +1375,15 @@ class Diagram(tk.Frame):
             bx2 = cx + lx * blade_len / 2
             by2 = cy + ly * blade_len / 2
         else:
-            # Blade perpendicular (open): sticks out 90° from conductor.
+            # Blade open: rotates _DISC_OPEN_ANGLE_DEG from conductor direction.
+            a = math.radians(self._DISC_OPEN_ANGLE_DEG)
+            # Rotate the line direction vector by the open angle
+            ox = lx * math.cos(a) - ly * math.sin(a)
+            oy = lx * math.sin(a) + ly * math.cos(a)
             bx1 = cx
             by1 = cy
-            bx2 = cx + px * blade_len
-            by2 = cy + py * blade_len
+            bx2 = cx + ox * blade_len
+            by2 = cy + oy * blade_len
         self.canvas.create_line(bx1, by1, bx2, by2,
                                 width=LINE_WIDTH + 1, fill=colour, capstyle=tk.ROUND)
         # Hinge dot.
@@ -1450,8 +1460,11 @@ class Diagram(tk.Frame):
             self.canvas.create_line(hinge_x, sy, contact_x, sy,
                                     width=LINE_WIDTH+1, fill=sw_col, capstyle=tk.ROUND)
         else:
-            # Blade perpendicular: straight up from hinge
-            self.canvas.create_line(hinge_x, sy, hinge_x, sy - blade,
+            # Blade open: rotates _DISC_OPEN_ANGLE_DEG from horizontal (line direction).
+            a = math.radians(self._DISC_OPEN_ANGLE_DEG)
+            tip_x = hinge_x + math.cos(a) * blade   # rotate right from horizontal
+            tip_y = sy       - math.sin(a) * blade   # canvas y flipped → minus for "up"
+            self.canvas.create_line(hinge_x, sy, tip_x, tip_y,
                                     width=LINE_WIDTH+1, fill=sw_col, capstyle=tk.ROUND)
         if sel:
             m = stub + half_gap + 5
