@@ -1393,12 +1393,12 @@ class Diagram(tk.Frame):
         sx, sy  = self._w2s(br.cx, br.cy)
         sel     = self._selection == ("breaker", br.id)
         sw_col  = "#00AA00" if br.closed else "#CC0000"
-        s       = 9 * self._scale
-        stub    = 18 * self._scale
-        # Terminal stubs
+        s       = 11 * self._scale   # half-size of square body
+        stub    = 26 * self._scale   # terminal stub length each side
+        # Terminal stubs (left and right, meeting the square body)
         self.canvas.create_line(sx - stub - s, sy, sx - s, sy, width=LINE_WIDTH, fill=sw_col)
-        self.canvas.create_line(sx + s, sy, sx + stub + s, sy, width=LINE_WIDTH, fill=sw_col)
-        # Square body — filled (closed) or hollow (open)
+        self.canvas.create_line(sx + s,        sy, sx + stub + s, sy, width=LINE_WIDTH, fill=sw_col)
+        # Square body: filled = closed, hollow = open
         if br.closed:
             self.canvas.create_rectangle(sx-s, sy-s, sx+s, sy+s, fill=sw_col, outline=sw_col)
         else:
@@ -1409,38 +1409,46 @@ class Diagram(tk.Frame):
             self.canvas.create_rectangle(sx-m, sy-s-4, sx+m, sy+s+4,
                                          outline="#0066CC", width=2, dash=(3, 3))
         if self._labels_on():
-            self.canvas.create_text(sx, sy - s - 5, text=br.name,
+            self.canvas.create_text(sx, sy - s - 6, text=br.name,
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="s")
 
     def _draw_standalone_disconnect(self, dc: "DiagramDisconnect") -> None:
+        """IEC isolator: hinge at left terminal, blade pivots to right contact (closed)
+        or stands perpendicular (open)."""
         sx, sy  = self._w2s(dc.cx, dc.cy)
         sel     = self._selection == ("disconnect", dc.id)
         sw_col  = "#00AA00" if dc.closed else "#CC0000"
-        blade   = 12 * self._scale
-        stub    = 18 * self._scale
-        # Terminal stubs
-        self.canvas.create_line(sx - stub - blade/2, sy, sx - blade/2, sy,
+        half_gap = 12 * self._scale   # half the gap between terminals
+        stub     = 26 * self._scale   # terminal stub length each side
+        blade    = half_gap * 2       # blade length ≈ gap width
+
+        hinge_x   = sx - half_gap    # hinge = left terminal end
+        contact_x = sx + half_gap    # contact = right terminal start
+
+        # Left terminal stub → hinge
+        self.canvas.create_line(sx - stub - half_gap, sy, hinge_x, sy,
                                 width=LINE_WIDTH, fill=sw_col)
-        self.canvas.create_line(sx + blade/2, sy, sx + stub + blade/2, sy,
+        # Right terminal stub ← contact
+        self.canvas.create_line(contact_x, sy, sx + stub + half_gap, sy,
                                 width=LINE_WIDTH, fill=sw_col)
         # Hinge dot
         r = 3 * self._scale
-        self.canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=sw_col, outline=sw_col)
+        self.canvas.create_oval(hinge_x-r, sy-r, hinge_x+r, sy+r,
+                                fill=sw_col, outline=sw_col)
         if dc.closed:
-            # Blade diagonal
-            self.canvas.create_line(sx - blade/2, sy,
-                                    sx + blade/2, sy - blade,
+            # Blade diagonal: hinge → contact point raised by blade length
+            self.canvas.create_line(hinge_x, sy, contact_x, sy - blade,
                                     width=LINE_WIDTH+1, fill=sw_col, capstyle=tk.ROUND)
         else:
-            # Blade perpendicular (open) — vertical stub upward
-            self.canvas.create_line(sx, sy, sx, sy - blade * 1.4,
+            # Blade perpendicular: straight up from hinge
+            self.canvas.create_line(hinge_x, sy, hinge_x, sy - blade * 1.3,
                                     width=LINE_WIDTH+1, fill=sw_col, capstyle=tk.ROUND)
         if sel:
-            m = stub + blade/2 + 5
-            self.canvas.create_rectangle(sx-m, sy - blade*1.4 - 4, sx+m, sy+6,
+            m = stub + half_gap + 5
+            self.canvas.create_rectangle(sx-m, sy - blade*1.3 - 4, sx+m, sy+6,
                                          outline="#0066CC", width=2, dash=(3, 3))
         if self._labels_on():
-            self.canvas.create_text(sx, sy - blade - 8, text=dc.name,
+            self.canvas.create_text(sx, sy - blade - 10, text=dc.name,
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="s")
 
     # ── Transformer (standalone, world-space IEC coupled-coil symbol) ─────
@@ -3705,9 +3713,9 @@ class Diagram(tk.Frame):
                 r = 7
                 self.canvas.create_oval(tap_sx-r, tap_sy-r, tap_sx+r, tap_sy+r,
                                         fill="#0066CC", outline="white", width=2)
-            # Ghost symbol at cursor
-            s = 9 * self._scale
-            stub = 14 * self._scale
+            # Ghost symbol at cursor (matches the actual placed symbol)
+            s    = 11 * self._scale
+            stub = 22 * self._scale
             sx, sy = event.x, event.y
             ghost = "#00AA00"
             if self._tool == TOOL_BREAKER:
@@ -3715,12 +3723,13 @@ class Diagram(tk.Frame):
                 self.canvas.create_line(sx+s, sy, sx+stub+s, sy, width=LINE_WIDTH, fill=ghost)
                 self.canvas.create_rectangle(sx-s, sy-s, sx+s, sy+s, fill=ghost, outline=ghost)
             else:
-                blade = 10 * self._scale
-                self.canvas.create_line(sx-stub-blade/2, sy, sx-blade/2, sy, width=LINE_WIDTH, fill=ghost)
-                self.canvas.create_line(sx+blade/2, sy, sx+stub+blade/2, sy, width=LINE_WIDTH, fill=ghost)
+                hg = 12 * self._scale   # half_gap
+                bl = hg * 2
+                self.canvas.create_line(sx-stub-hg, sy, sx-hg, sy, width=LINE_WIDTH, fill=ghost)
+                self.canvas.create_line(sx+hg, sy, sx+stub+hg, sy, width=LINE_WIDTH, fill=ghost)
                 r = 3 * self._scale
-                self.canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=ghost, outline=ghost)
-                self.canvas.create_line(sx-blade/2, sy, sx+blade/2, sy-blade,
+                self.canvas.create_oval(sx-hg-r, sy-r, sx-hg+r, sy+r, fill=ghost, outline=ghost)
+                self.canvas.create_line(sx-hg, sy, sx+hg, sy-bl,
                                         width=LINE_WIDTH+1, fill=ghost, capstyle=tk.ROUND)
 
         elif self._tool in (TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD):
