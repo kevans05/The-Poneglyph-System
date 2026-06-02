@@ -252,70 +252,17 @@ class MainWindow:
         # SLD-specific toolbar sits at the top of this tab only
         self._build_toolbar(sld_frame)
 
-        # Diagram area: canvas + zoom bar on the right
-        diagram_area = tk.Frame(sld_frame)
-        diagram_area.pack(fill=tk.BOTH, expand=True)
-        diagram_area.columnconfigure(0, weight=1)
-        diagram_area.rowconfigure(0, weight=1)
-
-        pane = tk.PanedWindow(diagram_area, orient=tk.HORIZONTAL,
+        pane = tk.PanedWindow(sld_frame, orient=tk.HORIZONTAL,
                               sashwidth=4, sashrelief="flat")
-        pane.grid(row=0, column=0, sticky="nsew")
+        pane.pack(fill=tk.BOTH, expand=True)
 
         self.diagram = Diagram(pane, on_select=self._on_select,
-                               on_status=self._set_status,
-                               on_zoom=self._on_zoom_changed)
+                               on_status=self._set_status)
         pane.add(self.diagram, minsize=400, stretch="always")
 
         self.props = PropertiesPanel(pane, on_change=self._on_props_change)
         self.props.set_diagram(self.diagram)
         pane.add(self.props, minsize=180, width=240)
-
-        # ── Zoom bar (right side of diagram area) ─────────────────────────
-        zoom_bar = tk.Frame(diagram_area, width=52, bg="#2C3E50")
-        zoom_bar.grid(row=0, column=1, sticky="ns")
-        zoom_bar.pack_propagate(False)
-
-        tk.Label(zoom_bar, text="Zoom", bg="#2C3E50", fg="white",
-                 font=("TkDefaultFont", 7)).pack(pady=(6, 0))
-
-        self._zoom_label = tk.Label(zoom_bar, text="100%", bg="#2C3E50", fg="#ECF0F1",
-                                    font=("TkDefaultFont", 8, "bold"))
-        self._zoom_label.pack()
-
-        # Logarithmic slider: map 0.2–8.0 to 0–100
-        import math as _math
-        self._zoom_var = tk.DoubleVar(value=50.0)
-
-        def _slider_to_scale(v):
-            # map 0..100 → 0.2..8.0 logarithmically
-            lo, hi = _math.log(0.2), _math.log(8.0)
-            return _math.exp(lo + float(v) / 100.0 * (hi - lo))
-
-        def _scale_to_slider(s):
-            lo, hi = _math.log(0.2), _math.log(8.0)
-            return (_math.log(s) - lo) / (hi - lo) * 100.0
-
-        def _on_slider(val):
-            if self._zoom_slider_updating:
-                return
-            self.diagram.zoom_to(_slider_to_scale(float(val)))
-
-        self._zoom_slider_updating = False
-
-        slider = ttk.Scale(zoom_bar, orient=tk.VERTICAL, variable=self._zoom_var,
-                           from_=100.0, to=0.0, command=_on_slider, length=200)
-        slider.pack(pady=4)
-
-        tk.Button(zoom_bar, text="+", width=3, bg="#34495E", fg="white",
-                  relief="flat", font=("TkDefaultFont", 10, "bold"),
-                  command=lambda: self.diagram.zoom_in()).pack(pady=1)
-        tk.Button(zoom_bar, text="−", width=3, bg="#34495E", fg="white",
-                  relief="flat", font=("TkDefaultFont", 10, "bold"),
-                  command=lambda: self.diagram.zoom_out()).pack(pady=1)
-        tk.Button(zoom_bar, text="Fit", width=3, bg="#34495E", fg="white",
-                  relief="flat", font=("TkDefaultFont", 8),
-                  command=lambda: self.diagram.fit_view()).pack(pady=(1, 6))
 
         # ── Tab 2: Drawings ─────────────────────────────────────────────────
         drw_frame = tk.Frame(nb)
@@ -416,19 +363,6 @@ class MainWindow:
 
     def _on_props_change(self):
         self.diagram.redraw()
-
-    def _on_zoom_changed(self, scale: float) -> None:
-        """Called by the diagram whenever zoom level changes."""
-        import math as _math
-        if not hasattr(self, "_zoom_label"):
-            return
-        self._zoom_label.config(text=f"{round(scale * 100)}%")
-        if hasattr(self, "_zoom_var"):
-            lo, hi = _math.log(0.2), _math.log(8.0)
-            slider_val = (_math.log(max(0.2, min(scale, 8.0))) - lo) / (hi - lo) * 100.0
-            self._zoom_slider_updating = True
-            self._zoom_var.set(slider_val)
-            self._zoom_slider_updating = False
 
     def _on_tab_changed(self, event):
         tab = self._main_nb.index(self._main_nb.select())

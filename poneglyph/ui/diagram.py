@@ -928,9 +928,29 @@ class Diagram(tk.Frame):
         self.canvas.bind("<MouseWheel>", self._scroll)
         self.canvas.bind("<Button-4>", self._scroll)
         self.canvas.bind("<Button-5>", self._scroll)
-        self.canvas.bind("<Configure>", lambda _e: self.redraw())
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<Escape>", self._on_escape)
+
+        # ── Zoom overlay (Google Maps style, bottom-right of canvas) ─────
+        PAD = "#2C3E50"
+        BTN = "#34495E"
+        FG  = "white"
+        ov  = tk.Frame(self.canvas, bg=PAD, padx=3, pady=4)
+        tk.Button(ov, text="+", width=2, bg=BTN, fg=FG, relief="flat",
+                  font=("TkDefaultFont", 13, "bold"), cursor="arrow",
+                  command=self.zoom_in).pack(pady=(0, 1))
+        self._zoom_overlay_lbl = tk.Label(ov, text="100%", bg=PAD, fg=FG,
+                                          font=("TkDefaultFont", 8), width=4)
+        self._zoom_overlay_lbl.pack(pady=1)
+        tk.Button(ov, text="−", width=2, bg=BTN, fg=FG, relief="flat",
+                  font=("TkDefaultFont", 13, "bold"), cursor="arrow",
+                  command=self.zoom_out).pack(pady=(1, 4))
+        tk.Frame(ov, bg="#555555", height=1).pack(fill=tk.X, padx=2, pady=2)
+        tk.Button(ov, text="⊡", width=2, bg=BTN, fg=FG, relief="flat",
+                  font=("TkDefaultFont", 10), cursor="arrow",
+                  command=self.fit_view).pack(pady=(0, 0))
+        self._zoom_overlay = ov
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -1147,9 +1167,20 @@ class Diagram(tk.Frame):
 
     # ── Zoom / fit ────────────────────────────────────────────────────────
 
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self.redraw()
+        # Reposition zoom overlay to bottom-right corner
+        if hasattr(self, "_zoom_overlay"):
+            ov = self._zoom_overlay
+            ov.update_idletasks()
+            ov.place(x=event.width - ov.winfo_reqwidth() - 12,
+                     y=event.height - ov.winfo_reqheight() - 12)
+
     def _notify_zoom(self) -> None:
         if self._on_zoom:
             self._on_zoom(self._scale)
+        if hasattr(self, "_zoom_overlay_lbl"):
+            self._zoom_overlay_lbl.config(text=f"{round(self._scale * 100)}%")
 
     def zoom_in(self) -> None:
         cx = self.canvas.winfo_width() / 2
@@ -4170,17 +4201,19 @@ class Diagram(tk.Frame):
         self._drag_origin = (wx, wy)
 
     def _delete_at(self, event: tk.Event, wx: float, wy: float) -> None:
-        xfmr_id = self._hit_transformer(wx, wy)
-        src_id = self._hit_source(wx, wy)
-        load_id = self._hit_load(wx, wy)
-        ct_id = self._hit_ct(event.x, event.y)
-        vt_id = self._hit_vt(wx, wy)
-        cttb_id = self._hit_cttb(event.x, event.y)
-        tb_id = self._hit_testblock(event.x, event.y)
+        xfmr_id  = self._hit_transformer(wx, wy)
+        src_id   = self._hit_source(wx, wy)
+        load_id  = self._hit_load(wx, wy)
+        ct_id    = self._hit_ct(event.x, event.y)
+        vt_id    = self._hit_vt(wx, wy)
+        cttb_id  = self._hit_cttb(event.x, event.y)
+        tb_id    = self._hit_testblock(event.x, event.y)
         relay_id = self._hit_relay(wx, wy)
-        rw_id = self._hit_relay_wire(event.x, event.y)
-        bus_id = self._hit_bus(wx, wy)
-        conn_id = self._hit_connection(event.x, event.y)
+        rw_id    = self._hit_relay_wire(event.x, event.y)
+        br_id    = self._hit_breaker(event.x, event.y)
+        dc_id    = self._hit_disconnect(event.x, event.y)
+        bus_id   = self._hit_bus(wx, wy)
+        conn_id  = self._hit_connection(event.x, event.y)
         if xfmr_id:
             self._transformers.pop(xfmr_id, None)
             self._set_selection(None, None)
@@ -4215,6 +4248,19 @@ class Diagram(tk.Frame):
             self.redraw()
         elif rw_id:
             self._relay_wires.pop(rw_id, None)
+            self._set_selection(None, None)
+            self.redraw()
+        elif br_id:
+            br = self._breakers.pop(br_id, None)
+            # If it owned a standalone connection, delete that too
+            if br and br.connection_id:
+                self._connections.pop(br.connection_id, None)
+            self._set_selection(None, None)
+            self.redraw()
+        elif dc_id:
+            dc = self._disconnects.pop(dc_id, None)
+            if dc and dc.connection_id:
+                self._connections.pop(dc.connection_id, None)
             self._set_selection(None, None)
             self.redraw()
         elif bus_id:
