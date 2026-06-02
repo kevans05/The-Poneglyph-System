@@ -2977,10 +2977,14 @@ class Diagram(tk.Frame):
                 if bus_id:
                     self._conn_from_bus = bus_id
                     self._conn_from_tap = (wx, wy)
+                    self.redraw()
                     if self._on_status:
                         self._on_status(
-                            f"From '{self._buses[bus_id].name}' — now click the destination."
+                            f"From '{self._buses[bus_id].name}' — now click the destination bus."
                         )
+                else:
+                    if self._on_status:
+                        self._on_status("T-Line: click on a bus bar to start.")
             else:
                 self._finish_connection(wx, wy, bus_id)
 
@@ -3102,6 +3106,9 @@ class Diagram(tk.Frame):
                 self._disconnects[did] = DiagramDisconnect(did, did, conn_id, t)
                 self._set_selection("disconnect", did)
                 self._revert_to_select(event)
+            else:
+                if self._on_status:
+                    self._on_status("Disconnect: click on a connection line to place a switch.")
 
         elif self._tool == TOOL_RELAY:
             wx, wy = self._sg(wx, wy)
@@ -3477,14 +3484,53 @@ class Diagram(tk.Frame):
             self.redraw()
             return
 
-        if self._tool in (TOOL_TLINE, TOOL_FEEDER) and self._conn_from_bus:
+        if self._tool in (TOOL_TLINE, TOOL_FEEDER):
             self.redraw()
-            bus = self._buses.get(self._conn_from_bus)
-            if bus:
-                tap_pt = bus.nearest_tap(*self._conn_from_tap)
-                sx, sy = self._w2s(*tap_pt)
-                self.canvas.create_line(sx, sy, event.x, event.y,
-                                        width=LINE_WIDTH, fill="#888888", dash=(4, 4))
+            if self._conn_from_bus:
+                # Phase 2 — dragging from locked bus: dashed preview to cursor
+                bus = self._buses.get(self._conn_from_bus)
+                if bus:
+                    tap_pt = bus.nearest_tap(*self._conn_from_tap)
+                    sx, sy = self._w2s(*tap_pt)
+                    self.canvas.create_line(sx, sy, event.x, event.y,
+                                            width=LINE_WIDTH, fill="#888888", dash=(4, 4))
+                # Highlight destination bus when hovering over one
+                dest_id = self._hit_bus(wx, wy)
+                if dest_id and dest_id != self._conn_from_bus:
+                    for i, j in self._buses[dest_id].edges:
+                        nx1, ny1 = self._w2s(*self._buses[dest_id].nodes[i])
+                        nx2, ny2 = self._w2s(*self._buses[dest_id].nodes[j])
+                        self.canvas.create_line(nx1, ny1, nx2, ny2,
+                                                fill="#0066CC", width=3)
+            else:
+                # Phase 1 — highlight whichever bus the cursor is over
+                hover_id = self._hit_bus(wx, wy)
+                if hover_id:
+                    for i, j in self._buses[hover_id].edges:
+                        nx1, ny1 = self._w2s(*self._buses[hover_id].nodes[i])
+                        nx2, ny2 = self._w2s(*self._buses[hover_id].nodes[j])
+                        self.canvas.create_line(nx1, ny1, nx2, ny2,
+                                                fill="#0066CC", width=3)
+
+        elif self._tool == TOOL_DISCONNECT:
+            self.redraw()
+            result = self._nearest_connection(event.x, event.y)
+            if result:
+                conn_id, t = result
+                conn = self._connections.get(conn_id)
+                if conn:
+                    start = conn.start_point(self._buses)
+                    end   = conn.end_point(self._buses)
+                    if start and end:
+                        hx1, hy1 = self._w2s(*start)
+                        hx2, hy2 = self._w2s(*end)
+                        self.canvas.create_line(hx1, hy1, hx2, hy2,
+                                                fill="#E67E22", width=3)
+                        px = hx1 + (hx2 - hx1) * t
+                        py = hy1 + (hy2 - hy1) * t
+                        r = 7
+                        self.canvas.create_oval(px - r, py - r, px + r, py + r,
+                                                fill="#E67E22", outline="white", width=2)
 
         elif self._tool in (TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD):
             snap_id = self._snap_bus(wx, wy)
