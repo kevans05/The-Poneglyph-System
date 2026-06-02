@@ -1102,24 +1102,33 @@ class Diagram(tk.Frame):
             self._draw_load(ld)
         for bus in self._buses.values():
             self._draw_bus(bus)
-        for ct in self._cts.values():
-            self._draw_ct(ct)
-        for vt in self._vts.values():
-            self._draw_vt(vt)
-        for cttb in self._cttbs.values():
-            self._draw_cttb(cttb)
-        for tb in self._testblocks.values():
-            self._draw_testblock(tb)
-        for relay in self._relays.values():
-            self._draw_relay(relay)
-        for rw in self._relay_wires.values():
-            self._draw_relay_wire(rw)
+        if self._scale >= self._SCALE_CT_VT:
+            for ct in self._cts.values():
+                self._draw_ct(ct)
+            for vt in self._vts.values():
+                self._draw_vt(vt)
+        if self._scale >= self._SCALE_CTTB_FT:
+            for cttb in self._cttbs.values():
+                self._draw_cttb(cttb)
+            for tb in self._testblocks.values():
+                self._draw_testblock(tb)
+        if self._scale >= self._SCALE_RELAY:
+            for relay in self._relays.values():
+                self._draw_relay(relay)
+            for rw in self._relay_wires.values():
+                self._draw_relay_wire(rw)
         # Draw in-progress bus preview
         self._draw_bus_preview()
 
-    # Labels are suppressed below this zoom level to avoid unreadable overlaps.
-    _SCALE_NAMES  = 0.45   # show device names
-    _SCALE_DETAIL = 0.75   # show kV class, voltages, ratios, winding labels
+    # ── Zoom-visibility thresholds ────────────────────────────────────────────
+    # Raise a value → that layer only appears when zoomed in further.
+    # Lower a value → that layer appears even when zoomed out.
+    # Default scale at startup is 1.0; scroll-wheel zooms in/out from there.
+    _SCALE_NAMES   = 0.45   # device name labels
+    _SCALE_DETAIL  = 0.75   # kV class, voltages, ratios, winding text
+    _SCALE_CT_VT   = 0.40   # CTs and VTs (instrument transformers)
+    _SCALE_CTTB_FT = 0.60   # CTTB and FT/ISO test blocks
+    _SCALE_RELAY   = 0.50   # protection relays and relay wires
 
     def _labels_on(self) -> bool:
         return self._scale >= self._SCALE_NAMES
@@ -1272,14 +1281,14 @@ class Diagram(tk.Frame):
                     self._draw_legacy_breaker_square(dx_seg, dy_seg, colour)
                     prev_sx, prev_sy = dx_seg, dy_seg
                 elif dev_kind == "breaker":
-                    sw_col = "#00AA00" if dev_obj.closed else "#CC0000"
+                    sw_col = "#CC0000" if dev_obj.closed else "#00AA00"
                     self._draw_breaker_symbol(prev_sx, prev_sy, sx1, sy1, sx2, sy2,
                                               lt, sw_col, dev_obj, gap)
                     t_after = min(1.0, lt + dt_local)
                     prev_sx = sx1 + (sx2 - sx1) * t_after
                     prev_sy = sy1 + (sy2 - sy1) * t_after
                 elif dev_kind == "disconnect":
-                    sw_col = "#00AA00" if dev_obj.closed else "#CC0000"
+                    sw_col = "#CC0000" if dev_obj.closed else "#00AA00"
                     self._draw_disconnect_symbol(prev_sx, prev_sy, sx1, sy1, sx2, sy2,
                                                  lt, sw_col, dev_obj, gap)
                     t_after = min(1.0, lt + dt_local)
@@ -1354,13 +1363,13 @@ class Diagram(tk.Frame):
         lx, ly = (x2 - x1) / length, (y2 - y1) / length
         px, py = -ly, lx
         if dc.closed:
-            # Blade at 45°: from one side of gap to other, offset in perpendicular direction.
+            # Blade in-line with conductor: spans the gap straight along the wire.
             bx1 = cx - lx * blade_len / 2
             by1 = cy - ly * blade_len / 2
-            bx2 = cx + lx * blade_len / 2 + px * blade_len / 2
-            by2 = cy + ly * blade_len / 2 + py * blade_len / 2
+            bx2 = cx + lx * blade_len / 2
+            by2 = cy + ly * blade_len / 2
         else:
-            # Blade at ~90° from conductor (open): perpendicular stub.
+            # Blade perpendicular (open): sticks out 90° from conductor.
             bx1 = cx
             by1 = cy
             bx2 = cx + px * blade_len
@@ -1392,7 +1401,7 @@ class Diagram(tk.Frame):
     def _draw_standalone_breaker(self, br: "DiagramBreaker") -> None:
         sx, sy  = self._w2s(br.cx, br.cy)
         sel     = self._selection == ("breaker", br.id)
-        sw_col  = "#00AA00" if br.closed else "#CC0000"
+        sw_col  = "#CC0000" if br.closed else "#00AA00"  # red=closed/live, green=open/safe
         s       = 11 * self._scale   # half-size of square body
         stub    = 26 * self._scale   # terminal stub length each side
         # Terminal stubs (left and right, meeting the square body)
@@ -1413,17 +1422,18 @@ class Diagram(tk.Frame):
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="s")
 
     def _draw_standalone_disconnect(self, dc: "DiagramDisconnect") -> None:
-        """IEC isolator: hinge at left terminal, blade pivots to right contact (closed)
-        or stands perpendicular (open)."""
-        sx, sy  = self._w2s(dc.cx, dc.cy)
-        sel     = self._selection == ("disconnect", dc.id)
-        sw_col  = "#00AA00" if dc.closed else "#CC0000"
-        half_gap = 12 * self._scale   # half the gap between terminals
-        stub     = 26 * self._scale   # terminal stub length each side
-        blade    = half_gap * 2       # blade length ≈ gap width
+        """IEC isolator: hinge at left terminal end.
+        Closed → blade in-line with stubs (straight through).
+        Open  → blade perpendicular (straight up from hinge)."""
+        sx, sy   = self._w2s(dc.cx, dc.cy)
+        sel      = self._selection == ("disconnect", dc.id)
+        sw_col   = "#CC0000" if dc.closed else "#00AA00"  # red=closed/live, green=open/safe
+        half_gap = 12 * self._scale
+        stub     = 26 * self._scale
+        blade    = half_gap * 2.6     # open-blade height
 
-        hinge_x   = sx - half_gap    # hinge = left terminal end
-        contact_x = sx + half_gap    # contact = right terminal start
+        hinge_x   = sx - half_gap
+        contact_x = sx + half_gap
 
         # Left terminal stub → hinge
         self.canvas.create_line(sx - stub - half_gap, sy, hinge_x, sy,
@@ -1436,19 +1446,20 @@ class Diagram(tk.Frame):
         self.canvas.create_oval(hinge_x-r, sy-r, hinge_x+r, sy+r,
                                 fill=sw_col, outline=sw_col)
         if dc.closed:
-            # Blade diagonal: hinge → contact point raised by blade length
-            self.canvas.create_line(hinge_x, sy, contact_x, sy - blade,
+            # Blade in-line: spans the gap horizontally, same level as stubs
+            self.canvas.create_line(hinge_x, sy, contact_x, sy,
                                     width=LINE_WIDTH+1, fill=sw_col, capstyle=tk.ROUND)
         else:
             # Blade perpendicular: straight up from hinge
-            self.canvas.create_line(hinge_x, sy, hinge_x, sy - blade * 1.3,
+            self.canvas.create_line(hinge_x, sy, hinge_x, sy - blade,
                                     width=LINE_WIDTH+1, fill=sw_col, capstyle=tk.ROUND)
         if sel:
             m = stub + half_gap + 5
-            self.canvas.create_rectangle(sx-m, sy - blade*1.3 - 4, sx+m, sy+6,
+            self.canvas.create_rectangle(sx-m, sy - blade - 4, sx+m, sy+6,
                                          outline="#0066CC", width=2, dash=(3, 3))
         if self._labels_on():
-            self.canvas.create_text(sx, sy - blade - 10, text=dc.name,
+            self.canvas.create_text(sx, sy - (blade if not dc.closed else half_gap) - 8,
+                                    text=dc.name,
                                     font=("TkDefaultFont", 8), fill="#444444", anchor="s")
 
     # ── Transformer (standalone, world-space IEC coupled-coil symbol) ─────
@@ -3713,11 +3724,11 @@ class Diagram(tk.Frame):
                 r = 7
                 self.canvas.create_oval(tap_sx-r, tap_sy-r, tap_sx+r, tap_sy+r,
                                         fill="#0066CC", outline="white", width=2)
-            # Ghost symbol at cursor (matches the actual placed symbol)
+            # Ghost symbol at cursor — shown as closed (red) to hint it will be live
             s    = 11 * self._scale
             stub = 22 * self._scale
             sx, sy = event.x, event.y
-            ghost = "#00AA00"
+            ghost = "#CC0000"
             if self._tool == TOOL_BREAKER:
                 self.canvas.create_line(sx-stub-s, sy, sx-s, sy, width=LINE_WIDTH, fill=ghost)
                 self.canvas.create_line(sx+s, sy, sx+stub+s, sy, width=LINE_WIDTH, fill=ghost)
