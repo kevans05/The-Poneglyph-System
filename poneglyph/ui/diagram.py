@@ -127,8 +127,9 @@ class DiagramConnection:
     id: str
     name: str
     kind: str           # "tline" | "feeder"
-    from_bus: str
+    from_bus: str       # "" = free start point
     from_tap: tuple = (0.0, 0.0)          # world (x, y) tap point on from_bus
+    from_point: Optional[tuple] = None    # world point when from_bus is ""
     to_bus: Optional[str] = None
     to_tap: Optional[tuple] = None        # world (x, y) tap point on to_bus
     to_point: Optional[tuple] = None
@@ -139,16 +140,17 @@ class DiagramConnection:
     label_oy: float = 0.0
 
     def start_point(self, buses: dict) -> Optional[tuple]:
-        b = buses.get(self.from_bus)
-        if b is None:
-            return None
-        return b.nearest_tap(*self.from_tap)
+        if self.from_bus:
+            b = buses.get(self.from_bus)
+            if b is not None:
+                return b.nearest_tap(*self.from_tap)
+        return self.from_point
 
     def end_point(self, buses: dict) -> Optional[tuple]:
         if self.to_bus:
             b = buses.get(self.to_bus)
             if b is None:
-                return None
+                return self.to_point
             tap = self.to_tap if self.to_tap else (b.nodes[0] if b.nodes else (0.0, 0.0))
             return b.nearest_tap(*tap)
         return self.to_point
@@ -629,8 +631,8 @@ TOOL_RELAY_WIRE_V = "relay_wire_v"   # voltage only: VT / TestBlock sources
 TOOL_HINTS = {
     TOOL_SELECT:      "Select: click to select; drag a bus, transformer, source or load to move it.",
     TOOL_BUS:         "Bus: click to place nodes (90° constrained). Double-click or right-click to finish. Creates branching shapes.",
-    TOOL_TLINE:       "T-Line: click a source bus, then click a destination bus.",
-    TOOL_FEEDER:      "Feeder: click a bus, then click an empty point for the load end.",
+    TOOL_TLINE:       "T-Line: click two points (snaps to bus if close). Escape to cancel.",
+    TOOL_FEEDER:      "Feeder: click two points (snaps to bus if close). Escape to cancel.",
     TOOL_TRANSFORMER: "Transformer: click to place. Near a bus → snaps to it automatically.",
     TOOL_SOURCE:      "Power Source: click to place. Near a bus → snaps to it (defines the slack bus).",
     TOOL_LOAD:        "Load: click to place. Near a bus → snaps to it.",
@@ -639,8 +641,8 @@ TOOL_HINTS = {
     TOOL_CTTB:        "CT Test Block: click anywhere to place a CTTB, then use CT Wire to connect.",
     TOOL_TESTBLOCK:   "FT/ISO Block: click anywhere to place an FT block, then use VT Wire to connect.",
     TOOL_DELETE:      "Delete: click any element to remove it.",
-    TOOL_BREAKER:     "Circuit Breaker: click on an existing connection line to place a breaker.",
-    TOOL_DISCONNECT:  "Disconnect Switch: click on an existing connection line to place a disconnect switch.",
+    TOOL_BREAKER:     "Circuit Breaker: click two points to draw a line with a breaker (snaps to bus). Escape to cancel.",
+    TOOL_DISCONNECT:  "Disconnect Switch: click two points to draw a line with a disconnect (snaps to bus). Escape to cancel.",
     TOOL_RELAY:       "Relay: click anywhere to place a protection relay.",
     TOOL_RELAY_WIRE:  "Relay Wire: click a CT/VT/CTTB/FT source, then click a relay winding.",
     TOOL_RELAY_WIRE_I: "CT Wire: click a CT or CTTB, then click a relay or another CTTB.",
@@ -716,8 +718,13 @@ class Diagram(tk.Frame):
         self._drag_axis:      Optional[str]   = None   # "h" | "v" | "free" — locked at drag start
         self._term_anchor:    Optional[tuple] = None   # screen (sx,sy) of the fixed terminal end
         self._snap_grid_on:   bool            = True   # snap all placements/drags to grid
-        self._conn_from_bus:  Optional[str]   = None
-        self._conn_from_tap:  tuple           = (0.0, 0.0)
+        self._conn_from_bus:   Optional[str]   = None
+        self._conn_from_tap:   tuple           = (0.0, 0.0)
+        self._conn_from_point: Optional[tuple] = None   # free start when no bus hit
+        # Breaker/disconnect 2-click state
+        self._sw_from_bus:   Optional[str]   = None
+        self._sw_from_tap:   tuple           = (0.0, 0.0)
+        self._sw_from_point: Optional[tuple] = None
         self._pan_start_pt:   Optional[tuple] = None
         self._sticky_tool:    bool            = False   # hold-Shift keeps tool active
 
@@ -753,7 +760,10 @@ class Diagram(tk.Frame):
     def set_tool(self, tool: str, sticky: bool = False) -> None:
         self._tool        = tool
         self._sticky_tool = sticky
-        self._conn_from_bus  = None
+        self._conn_from_bus   = None
+        self._conn_from_point = None
+        self._sw_from_bus     = None
+        self._sw_from_point   = None
         # Cancel any in-progress bus drawing
         self._bus_draw_nodes = []
         self._preview_point  = None
@@ -2776,6 +2786,18 @@ class Diagram(tk.Frame):
     def _on_escape(self, _e=None) -> None:
         if self._bus_draw_nodes:
             self._finish_bus()
+        elif self._conn_from_bus is not None or self._conn_from_point is not None:
+            self._conn_from_bus   = None
+            self._conn_from_point = None
+            self.redraw()
+            if self._on_status:
+                self._on_status(TOOL_HINTS.get(self._tool, ""))
+        elif self._sw_from_bus is not None or self._sw_from_point is not None:
+            self._sw_from_bus   = None
+            self._sw_from_point = None
+            self.redraw()
+            if self._on_status:
+                self._on_status(TOOL_HINTS.get(self._tool, ""))
 
     # ── Mouse events ──────────────────────────────────────────────────────
 
@@ -2973,18 +2995,19 @@ class Diagram(tk.Frame):
 
         elif self._tool in (TOOL_TLINE, TOOL_FEEDER):
             bus_id = self._hit_bus(wx, wy)
-            if self._conn_from_bus is None:
+            wx_s, wy_s = self._sg(wx, wy)
+            if self._conn_from_bus is None and self._conn_from_point is None:
+                # First click — snap to bus or use free point
                 if bus_id:
                     self._conn_from_bus = bus_id
                     self._conn_from_tap = (wx, wy)
-                    self.redraw()
-                    if self._on_status:
-                        self._on_status(
-                            f"From '{self._buses[bus_id].name}' — now click the destination bus."
-                        )
+                    msg = f"From '{self._buses[bus_id].name}' — now click the other end."
                 else:
-                    if self._on_status:
-                        self._on_status("T-Line: click on a bus bar to start.")
+                    self._conn_from_point = (wx_s, wy_s)
+                    msg = "Now click the other end (snaps to bus if close)."
+                self.redraw()
+                if self._on_status:
+                    self._on_status(msg)
             else:
                 self._finish_connection(wx, wy, bus_id)
 
@@ -3089,26 +3112,50 @@ class Diagram(tk.Frame):
             self._set_selection("testblock", tid)
             self._revert_to_select(event)
 
-        elif self._tool == TOOL_BREAKER:
-            result = self._nearest_connection(event.x, event.y)
-            if result:
-                conn_id, t = result
-                bid = self._new_id("BKR", self._breakers)
-                self._breakers[bid] = DiagramBreaker(bid, bid, conn_id, t)
-                self._set_selection("breaker", bid)
-                self._revert_to_select(event)
-
-        elif self._tool == TOOL_DISCONNECT:
-            result = self._nearest_connection(event.x, event.y)
-            if result:
-                conn_id, t = result
-                did = self._new_id("DSW", self._disconnects)
-                self._disconnects[did] = DiagramDisconnect(did, did, conn_id, t)
-                self._set_selection("disconnect", did)
-                self._revert_to_select(event)
-            else:
+        elif self._tool in (TOOL_BREAKER, TOOL_DISCONNECT):
+            bus_id  = self._hit_bus(wx, wy)
+            wx_s, wy_s = self._sg(wx, wy)
+            if self._sw_from_bus is None and self._sw_from_point is None:
+                # First click — set from point
+                if bus_id:
+                    self._sw_from_bus   = bus_id
+                    self._sw_from_tap   = (wx, wy)
+                    msg = f"From '{self._buses[bus_id].name}' — now click the other end."
+                else:
+                    self._sw_from_point = (wx_s, wy_s)
+                    msg = "Now click the other end (snaps to bus if close)."
+                self.redraw()
                 if self._on_status:
-                    self._on_status("Disconnect: click on a connection line to place a switch.")
+                    self._on_status(msg)
+            else:
+                # Second click — build connection segment + device
+                from_bus = self._sw_from_bus or ""
+                from_pt  = self._sw_from_point
+                if from_bus and from_bus not in self._buses:
+                    from_bus, from_pt = "", self._sw_from_tap
+                to_bus  = (bus_id if bus_id and bus_id != from_bus else None)
+                to_pt   = (None if to_bus else (wx_s, wy_s))
+                to_tap  = ((wx, wy) if to_bus else None)
+                cid = self._new_id("TLINE", self._connections)
+                conn = DiagramConnection(
+                    cid, cid, "tline", from_bus,
+                    from_tap=self._sw_from_tap, from_point=from_pt,
+                    to_bus=to_bus, to_tap=to_tap, to_point=to_pt,
+                    has_breaker_from=False,
+                )
+                self._connections[cid] = conn
+                if self._tool == TOOL_BREAKER:
+                    sid = self._new_id("BKR", self._breakers)
+                    self._breakers[sid] = DiagramBreaker(sid, sid, cid, 0.5)
+                    self._set_selection("breaker", sid)
+                else:
+                    sid = self._new_id("DSW", self._disconnects)
+                    self._disconnects[sid] = DiagramDisconnect(sid, sid, cid, 0.5)
+                    self._set_selection("disconnect", sid)
+                self._sw_from_bus   = None
+                self._sw_from_point = None
+                self._revert_to_select(event)
+                self.redraw()
 
         elif self._tool == TOOL_RELAY:
             wx, wy = self._sg(wx, wy)
@@ -3486,15 +3533,18 @@ class Diagram(tk.Frame):
 
         if self._tool in (TOOL_TLINE, TOOL_FEEDER):
             self.redraw()
-            if self._conn_from_bus:
-                # Phase 2 — dragging from locked bus: dashed preview to cursor
-                bus = self._buses.get(self._conn_from_bus)
-                if bus:
-                    tap_pt = bus.nearest_tap(*self._conn_from_tap)
+            in_progress = self._conn_from_bus or self._conn_from_point
+            if in_progress:
+                # Phase 2 — preview line from locked start to cursor
+                if self._conn_from_bus:
+                    bus = self._buses.get(self._conn_from_bus)
+                    tap_pt = bus.nearest_tap(*self._conn_from_tap) if bus else self._conn_from_tap
                     sx, sy = self._w2s(*tap_pt)
-                    self.canvas.create_line(sx, sy, event.x, event.y,
-                                            width=LINE_WIDTH, fill="#888888", dash=(4, 4))
-                # Highlight destination bus when hovering over one
+                else:
+                    sx, sy = self._w2s(*self._conn_from_point)
+                self.canvas.create_line(sx, sy, event.x, event.y,
+                                        width=LINE_WIDTH, fill="#888888", dash=(4, 4))
+                # Highlight destination bus when hovering close
                 dest_id = self._hit_bus(wx, wy)
                 if dest_id and dest_id != self._conn_from_bus:
                     for i, j in self._buses[dest_id].edges:
@@ -3512,25 +3562,42 @@ class Diagram(tk.Frame):
                         self.canvas.create_line(nx1, ny1, nx2, ny2,
                                                 fill="#0066CC", width=3)
 
-        elif self._tool == TOOL_DISCONNECT:
+        elif self._tool in (TOOL_BREAKER, TOOL_DISCONNECT):
             self.redraw()
-            result = self._nearest_connection(event.x, event.y)
-            if result:
-                conn_id, t = result
-                conn = self._connections.get(conn_id)
-                if conn:
-                    start = conn.start_point(self._buses)
-                    end   = conn.end_point(self._buses)
-                    if start and end:
-                        hx1, hy1 = self._w2s(*start)
-                        hx2, hy2 = self._w2s(*end)
-                        self.canvas.create_line(hx1, hy1, hx2, hy2,
-                                                fill="#E67E22", width=3)
-                        px = hx1 + (hx2 - hx1) * t
-                        py = hy1 + (hy2 - hy1) * t
-                        r = 7
-                        self.canvas.create_oval(px - r, py - r, px + r, py + r,
-                                                fill="#E67E22", outline="white", width=2)
+            sw_color = "#E08000" if self._tool == TOOL_BREAKER else "#E67E22"
+            in_progress = self._sw_from_bus or self._sw_from_point
+            if in_progress:
+                # Phase 2 — preview line from locked start
+                if self._sw_from_bus:
+                    bus = self._buses.get(self._sw_from_bus)
+                    tap_pt = bus.nearest_tap(*self._sw_from_tap) if bus else self._sw_from_tap
+                    sx, sy = self._w2s(*tap_pt)
+                else:
+                    sx, sy = self._w2s(*self._sw_from_point)
+                self.canvas.create_line(sx, sy, event.x, event.y,
+                                        width=LINE_WIDTH, fill="#888888", dash=(4, 4))
+                # Preview device symbol at midpoint
+                mx, my = (sx + event.x) / 2, (sy + event.y) / 2
+                r = 7
+                self.canvas.create_oval(mx - r, my - r, mx + r, my + r,
+                                        fill=sw_color, outline="white", width=2)
+                # Highlight destination bus if hovering near one
+                dest_id = self._hit_bus(wx, wy)
+                if dest_id and dest_id != self._sw_from_bus:
+                    for i, j in self._buses[dest_id].edges:
+                        nx1, ny1 = self._w2s(*self._buses[dest_id].nodes[i])
+                        nx2, ny2 = self._w2s(*self._buses[dest_id].nodes[j])
+                        self.canvas.create_line(nx1, ny1, nx2, ny2,
+                                                fill="#0066CC", width=3)
+            else:
+                # Phase 1 — highlight bus or nearby connection line
+                hover_id = self._hit_bus(wx, wy)
+                if hover_id:
+                    for i, j in self._buses[hover_id].edges:
+                        nx1, ny1 = self._w2s(*self._buses[hover_id].nodes[i])
+                        nx2, ny2 = self._w2s(*self._buses[hover_id].nodes[j])
+                        self.canvas.create_line(nx1, ny1, nx2, ny2,
+                                                fill="#0066CC", width=3)
 
         elif self._tool in (TOOL_TRANSFORMER, TOOL_SOURCE, TOOL_LOAD):
             snap_id = self._snap_bus(wx, wy)
@@ -3561,26 +3628,39 @@ class Diagram(tk.Frame):
 
     def _finish_connection(self, wx: float, wy: float, to_bus_id: Optional[str]) -> None:
         kind = "tline" if self._tool == TOOL_TLINE else "feeder"
-        if self._conn_from_bus not in self._buses:
-            self._conn_from_bus = None
-            return
-        cid = self._new_id(kind.upper(), self._connections)
-        from_tap = self._conn_from_tap
-        if kind == "feeder":
-            conn = DiagramConnection(cid, cid, kind, self._conn_from_bus,
-                                     from_tap=from_tap, to_point=(wx, wy))
-        elif to_bus_id and to_bus_id != self._conn_from_bus:
-            conn = DiagramConnection(cid, cid, kind, self._conn_from_bus,
-                                     from_tap=from_tap, to_bus=to_bus_id, to_tap=(wx, wy))
-        else:
+        wx_s, wy_s = self._sg(wx, wy)
+
+        from_bus   = self._conn_from_bus or ""
+        from_tap   = self._conn_from_tap
+        from_pt    = self._conn_from_point
+
+        # Validate from-bus is still present (may have been deleted)
+        if from_bus and from_bus not in self._buses:
+            from_bus = ""
+            from_pt  = self._conn_from_point or self._conn_from_tap
+
+        # Reject same-bus tline (feeder always allowed since it ends at a free point)
+        if kind == "tline" and from_bus and to_bus_id == from_bus:
             if self._on_status:
-                msg = ("Same bus — click a different bus." if to_bus_id
-                       else "No bus found there — click directly on a bus bar.")
-                self._on_status(f"From '{self._buses[self._conn_from_bus].name}' — {msg}")
+                self._on_status(f"Same bus — click a different bus or free space.")
             return
+
+        # Build to-end
+        if to_bus_id and to_bus_id != from_bus:
+            to_bus, to_tap, to_pt = to_bus_id, (wx, wy), None
+        else:
+            to_bus, to_tap, to_pt = None, None, (wx_s, wy_s)
+
+        cid = self._new_id(kind.upper(), self._connections)
+        conn = DiagramConnection(
+            cid, cid, kind, from_bus,
+            from_tap=from_tap, from_point=from_pt,
+            to_bus=to_bus, to_tap=to_tap, to_point=to_pt,
+        )
         self._connections[cid] = conn
         self._set_selection("conn", cid)
-        self._conn_from_bus = None
+        self._conn_from_bus   = None
+        self._conn_from_point = None
         self.redraw()
 
     def _delete_bus(self, bus_id: str) -> None:
