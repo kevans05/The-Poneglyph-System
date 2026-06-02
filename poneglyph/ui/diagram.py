@@ -3160,10 +3160,13 @@ class Diagram(tk.Frame):
                 return bus.id
         return None
 
-    def _standalone_terminals(self):
-        """Yield world (x, y) terminal points of standalone CBs and disconnects.
-        These are the far ends of each device's two stubs — the points a T-Line
-        endpoint can snap to in order to wire the device into the circuit."""
+    def _device_terminals(self):
+        """Yield world (x, y) terminal points that a T-Line/Feeder endpoint can
+        snap to in order to wire a device into the circuit:
+          • standalone CB / disconnect stub ends
+          • transformer HV / LV terminals (when not already on a bus)
+          • source / load lead ends (when not already on a bus)."""
+        # Standalone breakers
         for br in self._breakers.values():
             if br.connection_id:
                 continue
@@ -3171,6 +3174,7 @@ class Diagram(tk.Frame):
             ext = 26 + 11  # stub + half body, world units
             yield (br.cx - ext * lx, br.cy - ext * ly)
             yield (br.cx + ext * lx, br.cy + ext * ly)
+        # Standalone disconnects
         for dc in self._disconnects.values():
             if dc.connection_id:
                 continue
@@ -3178,13 +3182,27 @@ class Diagram(tk.Frame):
             ext = 26 + 12  # stub + half gap, world units
             yield (dc.cx - ext * lx, dc.cy - ext * ly)
             yield (dc.cx + ext * lx, dc.cy + ext * ly)
+        # Transformer HV / LV terminals (free ends only)
+        for xfmr in self._transformers.values():
+            if not xfmr.hv_bus or xfmr.hv_bus not in self._buses:
+                yield xfmr.hv_terminal
+            if not xfmr.lv_bus or xfmr.lv_bus not in self._buses:
+                yield xfmr.lv_terminal
+        # Source lead end (free only) — bottom of the circle
+        for src in self._sources.values():
+            if not src.bus or src.bus not in self._buses:
+                yield (src.cx, src.cy + SRC_R)
+        # Load lead end (free only) — top of the lead
+        for ld in self._loads.values():
+            if not ld.bus or ld.bus not in self._buses:
+                yield (ld.cx, ld.cy - LOAD_AH - LOAD_LEAD)
 
     def _snap_free_endpoint(
         self, sx: float, sy: float, max_px: float = 14.0
     ) -> Optional[tuple]:
         """Return the nearest snappable free point within max_px pixels, or None.
         Snap targets: free (non-bus) connection endpoints, plus the terminals of
-        standalone breakers and disconnects."""
+        standalone breakers/disconnects, transformers, sources, and loads."""
         best_d = max_px
         best_pt: Optional[tuple] = None
 
@@ -3203,8 +3221,8 @@ class Diagram(tk.Frame):
             # Check to_point (only when to_bus is empty)
             if conn.to_point is not None:
                 _consider(conn.to_point)
-        # Standalone device terminals
-        for wpt in self._standalone_terminals():
+        # Device terminals (CB, disconnect, transformer, source, load)
+        for wpt in self._device_terminals():
             _consider(wpt)
         return best_pt
 
