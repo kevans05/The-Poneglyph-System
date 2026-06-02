@@ -541,6 +541,8 @@ class DiagramVT:
     bus_id: str
     tap_x: float
     tap_y: float = 0.0
+    conn_id: str = ""   # "" = on a bus; otherwise taps off a T-Line/Feeder
+    conn_t: float = 0.5  # position along the connection when conn_id is set
     ratio_primary: float = 11000.0
     ratio_secondary: float = 110.0
     vt_type: str = "VT"  # "VT" | "CVT"
@@ -770,7 +772,7 @@ TOOL_HINTS = {
     TOOL_SOURCE: "Power Source: click to place. Near a bus → snaps to it (defines the slack bus).",
     TOOL_LOAD: "Load: click to place. Near a bus → snaps to it.",
     TOOL_CT: "Current Transformer: click on an existing line.",
-    TOOL_VT: "Voltage Transformer: click on a bus.",
+    TOOL_VT: "Voltage Transformer: click on a bus or a T-Line to attach.",
     TOOL_CTTB: "CT Test Block: click anywhere to place a CTTB, then use CT Wire to connect.",
     TOOL_TESTBLOCK: "FT/ISO Block: click anywhere to place an FT block, then use VT Wire to connect.",
     TOOL_DELETE: "Delete: click any element to remove it.",
@@ -2440,11 +2442,21 @@ class Diagram(tk.Frame):
 
     # ── VT / CVT ──────────────────────────────────────────────────────────
 
-    def _draw_vt(self, vt: DiagramVT) -> None:
+    def _vt_tap_point(self, vt: DiagramVT) -> Optional[tuple]:
+        """World (x, y) where the VT taps its primary — on a connection or a bus."""
+        if getattr(vt, "conn_id", ""):
+            conn = self._connections.get(vt.conn_id)
+            if conn is not None:
+                return self._conn_point_at_t(conn, getattr(vt, "conn_t", 0.5))
         bus = self._buses.get(vt.bus_id)
-        if bus is None:
+        if bus is not None:
+            return bus.nearest_tap(vt.tap_x, vt.tap_y)
+        return None
+
+    def _draw_vt(self, vt: DiagramVT) -> None:
+        tap_pt = self._vt_tap_point(vt)
+        if tap_pt is None:
             return
-        tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
         sx, sy = self._w2s(*tap_pt)
 
         sel = self._selection == ("vt", vt.id)
@@ -2740,10 +2752,9 @@ class Diagram(tk.Frame):
 
     def _vt_secondary_bottom_world(self, vt: "DiagramVT"):
         """Return world (x, y) at the bottom of the VT secondary wire start."""
-        bus = self._buses.get(vt.bus_id)
-        if bus is None:
+        tap_pt = self._vt_tap_point(vt)
+        if tap_pt is None:
             return None
-        tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
         # Mirror geometry from _draw_vt (bump style) — drop=30 world units
         sx, sy = self._w2s(*tap_pt)
         R = 11 * self._scale
@@ -3320,12 +3331,10 @@ class Diagram(tk.Frame):
     def _hit_vt(self, wx: float, wy: float) -> Optional[str]:
         sx_click, sy_click = self._w2s(wx, wy)
         for vt in self._vts.values():
-            bus = self._buses.get(vt.bus_id)
-            if bus is not None:
-                tap_pt = bus.nearest_tap(vt.tap_x, vt.tap_y)
-                tap_sx, tap_sy = self._w2s(*tap_pt)
-            else:
-                tap_sx, tap_sy = self._w2s(vt.tap_x, vt.tap_y)
+            tap_pt = self._vt_tap_point(vt)
+            if tap_pt is None:
+                tap_pt = (vt.tap_x, vt.tap_y)
+            tap_sx, tap_sy = self._w2s(*tap_pt)
             # Hit the whole VT symbol body (not just the tap point)
             body_h = 90 * self._scale
             sym_w  = 26 * self._scale
@@ -4106,6 +4115,20 @@ class Diagram(tk.Frame):
                 self._vts[vid] = DiagramVT(vid, vid, bus_id, tap_pt[0], tap_pt[1])
                 self._set_selection("vt", vid)
                 self._revert_to_select(event)
+            else:
+                # Attach to a T-Line/Feeder if clicked on one
+                hit = self._nearest_connection(event.x, event.y, max_px=14.0)
+                if hit:
+                    conn_id, t = hit
+                    vid = self._new_id("VT", self._vts)
+                    vt = DiagramVT(vid, vid, "", 0.0, 0.0)
+                    vt.conn_id = conn_id
+                    vt.conn_t = t
+                    self._vts[vid] = vt
+                    self._set_selection("vt", vid)
+                    self._revert_to_select(event)
+                elif self._on_status:
+                    self._on_status("VT: click on a bus or a T-Line to attach.")
 
         elif self._tool == TOOL_CTTB:
             # Free-place at clicked world coordinate
@@ -5002,6 +5025,13 @@ class Diagram(tk.Frame):
         self._connections.pop(conn_id, None)
         for cid in [k for k, c in self._cts.items() if c.connection_id == conn_id]:
             self._cts.pop(cid)
+        # Remove in-series devices and line-tapped VTs that lived on this line
+        for bid in [k for k, b in self._breakers.items() if b.connection_id == conn_id]:
+            self._breakers.pop(bid)
+        for did in [k for k, dc in self._disconnects.items() if dc.connection_id == conn_id]:
+            self._disconnects.pop(did)
+        for vid in [k for k, v in self._vts.items() if getattr(v, "conn_id", "") == conn_id]:
+            self._vts.pop(vid)
         self._set_selection(None, None)
         self.redraw()
 
