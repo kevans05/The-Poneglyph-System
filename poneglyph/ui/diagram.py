@@ -3160,27 +3160,52 @@ class Diagram(tk.Frame):
                 return bus.id
         return None
 
+    def _standalone_terminals(self):
+        """Yield world (x, y) terminal points of standalone CBs and disconnects.
+        These are the far ends of each device's two stubs — the points a T-Line
+        endpoint can snap to in order to wire the device into the circuit."""
+        for br in self._breakers.values():
+            if br.connection_id:
+                continue
+            lx, ly, _px, _py = self._sw_dirs(getattr(br, "rotation", 0))
+            ext = 26 + 11  # stub + half body, world units
+            yield (br.cx - ext * lx, br.cy - ext * ly)
+            yield (br.cx + ext * lx, br.cy + ext * ly)
+        for dc in self._disconnects.values():
+            if dc.connection_id:
+                continue
+            lx, ly, _px, _py = self._sw_dirs(getattr(dc, "rotation", 0))
+            ext = 26 + 12  # stub + half gap, world units
+            yield (dc.cx - ext * lx, dc.cy - ext * ly)
+            yield (dc.cx + ext * lx, dc.cy + ext * ly)
+
     def _snap_free_endpoint(
         self, sx: float, sy: float, max_px: float = 14.0
     ) -> Optional[tuple]:
-        """Return the nearest free (non-bus) connection endpoint within max_px pixels, or None."""
+        """Return the nearest snappable free point within max_px pixels, or None.
+        Snap targets: free (non-bus) connection endpoints, plus the terminals of
+        standalone breakers and disconnects."""
         best_d = max_px
         best_pt: Optional[tuple] = None
+
+        def _consider(wpt):
+            nonlocal best_d, best_pt
+            ex, ey = self._w2s(*wpt)
+            d = math.hypot(sx - ex, sy - ey)
+            if d < best_d:
+                best_d = d
+                best_pt = wpt
+
         for conn in self._connections.values():
             # Check from_point (only when from_bus is empty)
             if not conn.from_bus and conn.from_point is not None:
-                ex, ey = self._w2s(*conn.from_point)
-                d = math.hypot(sx - ex, sy - ey)
-                if d < best_d:
-                    best_d = d
-                    best_pt = conn.from_point
+                _consider(conn.from_point)
             # Check to_point (only when to_bus is empty)
             if conn.to_point is not None:
-                ex, ey = self._w2s(*conn.to_point)
-                d = math.hypot(sx - ex, sy - ey)
-                if d < best_d:
-                    best_d = d
-                    best_pt = conn.to_point
+                _consider(conn.to_point)
+        # Standalone device terminals
+        for wpt in self._standalone_terminals():
+            _consider(wpt)
         return best_pt
 
     def _snap_bus(self, wx: float, wy: float) -> Optional[str]:
@@ -4559,14 +4584,20 @@ class Diagram(tk.Frame):
                         sx1, sy1, sx2, sy2, width=LINE_WIDTH, fill=colour, dash=(4, 4)
                     )
                 last = self._conn_pts[-1]
-                snapped_preview = self._snap_90(last, wx, wy)
+                # If hovering over a snap target, run the preview straight to it;
+                # otherwise snap the preview to 90°.
+                dest_id = self._hit_bus(wx, wy)
+                snap_ep = None if dest_id else self._snap_free_endpoint(event.x, event.y)
+                if snap_ep is not None:
+                    preview_end = snap_ep
+                else:
+                    preview_end = self._snap_90(last, wx, wy)
                 sx1, sy1 = self._w2s(*last)
-                sx2, sy2 = self._w2s(*snapped_preview)
+                sx2, sy2 = self._w2s(*preview_end)
                 self.canvas.create_line(
                     sx1, sy1, sx2, sy2, width=LINE_WIDTH, fill=colour, dash=(4, 4)
                 )
                 # Highlight snap target
-                dest_id = self._hit_bus(wx, wy)
                 if dest_id and dest_id != self._conn_from_bus:
                     for i, j in self._buses[dest_id].edges:
                         nx1, ny1 = self._w2s(*self._buses[dest_id].nodes[i])
@@ -4574,20 +4605,18 @@ class Diagram(tk.Frame):
                         self.canvas.create_line(
                             nx1, ny1, nx2, ny2, fill="#0066CC", width=3
                         )
-                elif not dest_id:
-                    ep = self._snap_free_endpoint(event.x, event.y)
-                    if ep:
-                        ex, ey = self._w2s(*ep)
-                        r = 7
-                        self.canvas.create_oval(
-                            ex - r,
-                            ey - r,
-                            ex + r,
-                            ey + r,
-                            fill="#0066CC",
-                            outline="white",
-                            width=2,
-                        )
+                elif snap_ep is not None:
+                    ex, ey = self._w2s(*snap_ep)
+                    r = 7
+                    self.canvas.create_oval(
+                        ex - r,
+                        ey - r,
+                        ex + r,
+                        ey + r,
+                        fill="#0066CC",
+                        outline="white",
+                        width=2,
+                    )
                 # Start dot
                 sx0, sy0 = self._w2s(*self._conn_pts[0])
                 r = LINE_WIDTH * self._scale
