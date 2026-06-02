@@ -12,6 +12,8 @@ class MeasurementPoint:
     device_id: str          # e.g. "CT-1"
     device_name: str
     device_type: str        # "ct" | "vt" | "cttb" | "testblock" | "relay"
+    phase: str = ""         # "A"|"B"|"C"|"N"|"AB"|"BC"|"CA"
+    connection: str = "Wye" # mirrors CT secondary_config
     channel: int = 1        # 1 = reference, 2 = lagging
     # Predicted (from SLD model)
     pred_magnitude: float = 0.0
@@ -69,6 +71,21 @@ class VectorGroup:
 
 
 @dataclass
+class ForcedNeutralResult:
+    """Recorded forced-neutral test for one device."""
+    device_id: str
+    device_name: str
+    shorted_phases: list            # e.g. ["B", "C"]
+    ref_phase: str = "A"            # phase left energized as reference
+    ref_mag: float = 0.0
+    ref_ang: float = 0.0
+    n_mag: float = 0.0
+    n_ang: float = 0.0
+    passed: bool = False
+    notes: str = ""
+
+
+@dataclass
 class LoadTestRecord:
     """A complete saved load test session."""
     id: str                             # UUID
@@ -80,6 +97,13 @@ class LoadTestRecord:
     blocking_note: str = ""             # who was contacted, SIO/FVO reference
     points: list = field(default_factory=list)   # list of MeasurementPoint dicts
     vector_groups: list = field(default_factory=list)  # list of VectorGroup dicts
+    forced_neutral_results: list = field(default_factory=list)
+    # Voltage reference
+    voltage_ref_id: str = ""
+    voltage_ref_name: str = ""
+    voltage_ref_mag: float = 0.0
+    voltage_ref_ang: float = 0.0
+    meter_ch2_lags_ch1: bool = False
     drawings: list = field(default_factory=list) # list of drawing name strings
     notes: str = ""
 

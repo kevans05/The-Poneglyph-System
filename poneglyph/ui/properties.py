@@ -766,19 +766,24 @@ class PropertiesPanel(tk.Frame):
         ttk.Combobox(self._body, textvariable=v_sec_cfg, values=SEC_CONFIGS,
                      state="readonly", width=20).grid(row=15, column=1, sticky="w")
 
+        tk.Label(self._body, text="Phases present", anchor="e").grid(
+            row=16, column=0, sticky="e", padx=(0, 4))
+        v_phases = tk.StringVar(value=getattr(ct, "phases_present", "ABCN"))
+        tk.Entry(self._body, textvariable=v_phases, width=10).grid(row=16, column=1, sticky="w")
+
         # ── Polarity ──────────────────────────────────────────────────────
         tk.Label(self._body, text="Polarity", font=("TkDefaultFont", 9, "bold"),
-                 fg="#333").grid(row=16, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                 fg="#333").grid(row=17, column=0, columnspan=2, sticky="w", pady=(6, 0))
         v_polarity = tk.BooleanVar(value=ct.polarity_standard)
         tk.Checkbutton(self._body, text="Show dot (standard IEEE/IEC)",
                        variable=v_polarity).grid(
-            row=17, column=0, columnspan=2, sticky="w")
+            row=18, column=0, columnspan=2, sticky="w")
         v_flipped = tk.BooleanVar(value=ct.polarity_flipped)
         tk.Checkbutton(self._body, text="Flip — secondary exits opposite end  (P key)",
                        variable=v_flipped).grid(
-            row=18, column=0, columnspan=2, sticky="w")
+            row=19, column=0, columnspan=2, sticky="w")
 
-        next_row, dev_vars = self._device_fields(ct, 19)
+        next_row, dev_vars = self._device_fields(ct, 20)
 
         def apply():
             ct.name  = v_name.get().strip() or ct.name
@@ -797,6 +802,7 @@ class PropertiesPanel(tk.Frame):
             except ValueError: pass
             ct.primary_config   = v_pri_cfg.get()
             ct.secondary_config = v_sec_cfg.get()
+            ct.phases_present   = v_phases.get().upper().strip()
             ct.polarity_standard = v_polarity.get()
             ct.polarity_flipped  = v_flipped.get()
             for attr, var in dev_vars.items():

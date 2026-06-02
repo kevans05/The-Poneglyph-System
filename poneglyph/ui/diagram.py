@@ -394,6 +394,7 @@ class DiagramCT:
     # ── Winding configurations ────────────────────────────────────────────
     primary_config:   str = "Series"          # Series | Parallel | Window (core-balance)
     secondary_config: str = "Wye"             # Wye | Delta | Open-Delta | Zero-Sequence
+    phases_present:   str = "ABCN"            # which phases are measured (subset of ABCN for wye)
     # ── Placement ─────────────────────────────────────────────────────────
     xfmr_id: str = ""        # transformer id when placed on a lead (else "")
     xfmr_lead: str = ""      # "hv" or "lv"
