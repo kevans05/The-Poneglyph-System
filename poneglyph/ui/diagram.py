@@ -1617,6 +1617,13 @@ class Diagram(tk.Frame):
                 anchor="w",
             )
 
+        # Draggable endpoint handles when selected
+        if sel:
+            r = 5
+            for hx, hy in (spts[0], spts[-1]):
+                self.canvas.create_oval(hx - r, hy - r, hx + r, hy + r,
+                                        fill="white", outline="#0066CC", width=2)
+
     def _draw_legacy_breaker_square(self, bx: float, by: float, colour: str) -> None:
         """Original filled-square breaker symbol (for has_breaker_from)."""
         h = 5 * self._scale
@@ -3034,6 +3041,26 @@ class Diagram(tk.Frame):
 
     # ── Helper: nearest connection ────────────────────────────────────────
 
+    def _conn_point_at_t(self, conn, t: float) -> tuple:
+        """World (x, y) at fraction t along a connection's polyline."""
+        pts = conn.all_points(self._buses)
+        if len(pts) < 2:
+            return pts[0] if pts else (0.0, 0.0)
+        seg = [math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+               for i in range(len(pts) - 1)]
+        total = sum(seg) or 1.0
+        target = max(0.0, min(1.0, t)) * total
+        accum = 0.0
+        for i, sl in enumerate(seg):
+            if sl < 1e-9:
+                continue
+            if accum + sl >= target:
+                lt = (target - accum) / sl
+                return (pts[i][0] + lt * (pts[i + 1][0] - pts[i][0]),
+                        pts[i][1] + lt * (pts[i + 1][1] - pts[i][1]))
+            accum += sl
+        return pts[-1]
+
     def _nearest_connection(self, sx: float, sy: float, max_px: float = 20.0):
         """Return (conn_id, t) for the connection whose line is closest to screen point (sx,sy), or None."""
         best_dist = max_px
@@ -3738,6 +3765,28 @@ class Diagram(tk.Frame):
                                 self._bus_insert_node(bus, idx)
                                 return
 
+            # ── Connection endpoint editing (when a conn is selected) ──────
+            if self._selection and self._selection[0] == "conn":
+                conn = self._connections.get(self._selection[1])
+                if conn:
+                    end_tol = max(8, 8 * self._scale)
+                    start = conn.start_point(self._buses)
+                    end = conn.end_point(self._buses)
+                    if start is not None:
+                        ssx, ssy = self._w2s(*start)
+                        if math.hypot(event.x - ssx, event.y - ssy) <= end_tol:
+                            self._drag_id = conn.id
+                            self._drag_kind = "conn_from"
+                            self._drag_origin = (wx, wy)
+                            return
+                    if end is not None:
+                        esx, esy = self._w2s(*end)
+                        if math.hypot(event.x - esx, event.y - esy) <= end_tol:
+                            self._drag_id = conn.id
+                            self._drag_kind = "conn_to"
+                            self._drag_origin = (wx, wy)
+                            return
+
             # ── VT secondary waypoint editing (when a VT is selected) ───────
             if self._selection and self._selection[0] == "vt":
                 vt = self._vts.get(self._selection[1])
@@ -3867,14 +3916,10 @@ class Diagram(tk.Frame):
                 self._begin_drag("testblock", tb_id, wx, wy)
             elif br_id:
                 self._set_selection("breaker", br_id)
-                br = self._breakers[br_id]
-                if not br.connection_id:
-                    self._begin_drag("breaker", br_id, wx, wy)
+                self._begin_drag("breaker", br_id, wx, wy)
             elif dc_id:
                 self._set_selection("disconnect", dc_id)
-                dc = self._disconnects[dc_id]
-                if not dc.connection_id:
-                    self._begin_drag("disconnect", dc_id, wx, wy)
+                self._begin_drag("disconnect", dc_id, wx, wy)
             elif bus_id:
                 self._begin_drag("bus", bus_id, wx, wy)
             elif conn_id:
@@ -4477,14 +4522,44 @@ class Diagram(tk.Frame):
                             xfmr.cy = tap[1]
             elif self._drag_kind == "breaker":
                 br = self._breakers.get(self._drag_id)
-                if br and not br.connection_id:
+                if br:
+                    if br.connection_id:
+                        # Detach from line: seed cx/cy at its on-line position
+                        conn = self._connections.get(br.connection_id)
+                        if conn:
+                            br.cx, br.cy = self._conn_point_at_t(conn, br.t)
+                        br.connection_id = ""
                     br.cx += dx
                     br.cy += dy
             elif self._drag_kind == "disconnect":
                 dc = self._disconnects.get(self._drag_id)
-                if dc and not dc.connection_id:
+                if dc:
+                    if dc.connection_id:
+                        conn = self._connections.get(dc.connection_id)
+                        if conn:
+                            dc.cx, dc.cy = self._conn_point_at_t(conn, dc.t)
+                        dc.connection_id = ""
                     dc.cx += dx
                     dc.cy += dy
+            elif self._drag_kind in ("conn_from", "conn_to"):
+                conn = self._connections.get(self._drag_id)
+                if conn:
+                    bus_id = self._hit_bus(wx, wy)
+                    snap_ep = (None if bus_id
+                               else self._snap_free_endpoint(event.x, event.y))
+                    if bus_id:
+                        target = self._buses[bus_id].nearest_tap(wx, wy)
+                    elif snap_ep is not None:
+                        target = snap_ep
+                    else:
+                        target = self._sg(wx, wy)
+                    if self._drag_kind == "conn_from":
+                        conn.from_bus = ""        # detach; finalized on release
+                        conn.from_point = target
+                    else:
+                        conn.to_bus = None
+                        conn.to_tap = None
+                        conn.to_point = target
             elif self._drag_kind == "source":
                 src = self._sources[self._drag_id]
                 src.cx += dx
@@ -4527,6 +4602,33 @@ class Diagram(tk.Frame):
                     relay.cy += dy
             self._drag_origin = (gx, gy)
             self.redraw()
+            # Highlight the T-Line a dragged CB/disconnect would attach to
+            if self._drag_kind in ("breaker", "disconnect"):
+                hit = self._nearest_connection(event.x, event.y, max_px=18.0)
+                if hit:
+                    conn = self._connections.get(hit[0])
+                    if conn:
+                        spts = [self._w2s(*p) for p in conn.all_points(self._buses)]
+                        flat = [c for p in spts for c in p]
+                        if len(flat) >= 4:
+                            self.canvas.create_line(*flat, fill="#0066CC",
+                                                    width=3, dash=(4, 3))
+            # Snap bubble when dragging a line endpoint onto a bus / terminal
+            elif self._drag_kind in ("conn_from", "conn_to"):
+                bus_id = self._hit_bus(wx, wy)
+                if bus_id:
+                    for i, j in self._buses[bus_id].edges:
+                        nx1, ny1 = self._w2s(*self._buses[bus_id].nodes[i])
+                        nx2, ny2 = self._w2s(*self._buses[bus_id].nodes[j])
+                        self.canvas.create_line(nx1, ny1, nx2, ny2,
+                                                fill="#0066CC", width=3)
+                else:
+                    ep = self._snap_free_endpoint(event.x, event.y)
+                    if ep:
+                        ex, ey = self._w2s(*ep)
+                        r = 7
+                        self.canvas.create_oval(ex - r, ey - r, ex + r, ey + r,
+                                                fill="#0066CC", outline="white", width=2)
 
     def _on_release(self, event: tk.Event) -> None:
         if self._drag_kind in ("xfmr_hv", "xfmr_lv", "src_term", "load_term"):
@@ -4573,6 +4675,41 @@ class Diagram(tk.Frame):
                     ld.tap_y = tap[1]
                 else:
                     ld.bus = None
+            self.redraw()
+
+        elif self._drag_kind in ("conn_from", "conn_to"):
+            # Finalize a dragged line endpoint: snap to bus if released over one
+            wx, wy = self._s2w(event.x, event.y)
+            bus_id = self._hit_bus(wx, wy)
+            conn = self._connections.get(self._drag_id)
+            if conn is not None and bus_id:
+                tap = self._buses[bus_id].nearest_tap(wx, wy)
+                if self._drag_kind == "conn_from":
+                    conn.from_bus = bus_id
+                    conn.from_tap = tap
+                    conn.from_point = None
+                else:
+                    conn.to_bus = bus_id
+                    conn.to_tap = tap
+                    conn.to_point = None
+            self.redraw()
+
+        elif self._drag_kind in ("breaker", "disconnect"):
+            # Drop onto a T-Line/Feeder → attach as an in-series device
+            hit = self._nearest_connection(event.x, event.y, max_px=18.0)
+            if hit:
+                conn_id, t = hit
+                if self._drag_kind == "breaker":
+                    dev = self._breakers.get(self._drag_id)
+                else:
+                    dev = self._disconnects.get(self._drag_id)
+                if dev is not None:
+                    dev.connection_id = conn_id
+                    dev.t = t
+                    if self._on_status:
+                        self._on_status(
+                            f"{dev.name} attached to {self._connections[conn_id].name}"
+                        )
             self.redraw()
 
         self._drag_id = None
