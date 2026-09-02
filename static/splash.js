@@ -14,7 +14,9 @@ window.addEventListener('load', () => {
                     if (resp.active && resp.info) {
                         _activeSiteInfo = resp.info;
                         _updateSiteIndicator(resp.info.station);
-                        refreshData();
+                        refreshData().then(() => {
+                            if (typeof zoomToFit === "function") zoomToFit(0);
+                        });
                     } else {
                         showSiteSelector({ onLoaded: () => {} });
                     }

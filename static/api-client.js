@@ -16,8 +16,8 @@ let compareSource = null; // Stores the ID of the first device selected for comp
  * Fetches the latest system state from the backend and triggers a redraw.
  */
 function refreshData() {
-  if (typeof simActive !== 'undefined' && simActive) return; 
-  fetch("/api/topology")
+  if (typeof simActive !== 'undefined' && simActive) return Promise.resolve();
+  return fetch("/api/topology")
     .then((r) => r.json())
     .then((data) => {
       currentData = data;

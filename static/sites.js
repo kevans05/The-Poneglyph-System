@@ -88,7 +88,9 @@ function _loadSite(station) {
         _activeSiteInfo = resp.info;
         _updateSiteIndicator(station);
         hideSiteSelector();
-        refreshData();
+        refreshData().then(() => {
+            if (typeof zoomToFit === "function") zoomToFit(0);
+        });
         if (typeof _onSiteLoaded === "function") _onSiteLoaded(station);
     }).catch(() => {
         btn.textContent = "LOAD DOCK";
