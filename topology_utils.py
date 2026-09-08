@@ -3,8 +3,7 @@ topology_utils.py — Pure topology mutation helpers.
 
 apply_reconfiguration() is the single entry point for all structural changes
 to the in-memory topology dict.  It is called from api.py after the HTTP
-request is validated and from sim_engine when mutations arrive while the
-simulation is running.
+request is validated.
 
 All mutations operate on the raw topology dict (lists of device dicts) rather
 than instantiated model objects, so they are fast and require no re-import.
@@ -194,11 +193,6 @@ def apply_reconfiguration(data, req, active_site=None, active_session_id=None):
                             if (c if isinstance(c, str) else c.get("id")) != target_id
                         ]
                 break
-    elif action == "set_reference":
-        if "reference" not in data:
-            data["reference"] = {}
-        data["reference"]["device_id"] = req.get("device_id")
-        data["reference"]["phase"] = req.get("phase", "A")
     elif action == "update_wire_bend":
         src = req.get("src")
         tgt = req.get("tgt")

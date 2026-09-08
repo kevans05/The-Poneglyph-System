@@ -32,7 +32,6 @@ const TYPE_ABBREV = {
   IsoBlock: "ISO",
   AuxiliaryTransformer: "AUX",
   Meter: "MTR",
-  Indicator: "IND",
   ShuntCapacitor: "CAP",
   ShuntReactor: "RCT",
   SurgeArrester: "SA",
@@ -63,7 +62,6 @@ const TYPE_LABELS = {
   IsoBlock: "ISO BLOCK",
   AuxiliaryTransformer: "AUX TX",
   Meter: "POWER METER",
-  Indicator: "INDICATOR LIGHT",
   ShuntCapacitor: "SHUNT CAP",
   ShuntReactor: "SHUNT RCT",
   SurgeArrester: "SURGE ARR",
@@ -205,8 +203,14 @@ function formatSI(value, unit) {
 }
 
 /**
- * Snaps a coordinate to the predefined grid.
+ * Snaps a coordinate to the placement grid. The grid size defaults to
+ * GRID_SIZE but is overridable from the settings modal.
  */
 function snapToGrid(coord) {
-  return Math.round(coord / GRID_SIZE) * GRID_SIZE;
+  let size = GRID_SIZE;
+  if (typeof window !== "undefined" && window.PoneglyphSettings) {
+    const g = Number(window.PoneglyphSettings.get("gridSnap"));
+    if (g > 0) size = g;
+  }
+  return Math.round(coord / size) * size;
 }

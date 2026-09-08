@@ -2,7 +2,6 @@
 
 let _bpSISelectedPhase = "A";
 let _bpInSIMode = false;
-let compareData = null;
 
 // ── Protection View Filter ─────────────────────────────────────────────────────
 // When active, hides "infrastructure" node types (wires, raw CT/VT sensors) so

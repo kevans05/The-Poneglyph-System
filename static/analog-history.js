@@ -7,17 +7,21 @@
  * recorded values for that device (across all sessions).
  */
 function showAnalogHistoryModal(deviceId, summaryKeys) {
-  // Filter to keys that are likely numeric measurements (skip HEADERs, status strings)
-  const node = currentData && currentData.nodes && currentData.nodes.find(n => n.id === deviceId);
-  const summary = (node && node.summary) || {};
-  const measKeys = summaryKeys.filter(k => typeof summary[k] === "number" && summary[k] !== "HEADER");
+  // Offer every standard analog measurement key (per-phase V / I / angle, etc.).
+  // The recorded-value list itself comes from the site database, not the model.
+  const measKeys =
+    (typeof unitsMap !== "undefined" ? Object.keys(unitsMap) : []).concat(
+      Array.isArray(summaryKeys) ? summaryKeys : [],
+    );
+  const seen = new Set();
+  const uniqKeys = measKeys.filter(k => k && !seen.has(k) && seen.add(k));
 
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10600;display:flex;align-items:center;justify-content:center;";
   const box = document.createElement("div");
   box.style.cssText = "background:#0c0c0c;border:1px solid #fa0;padding:20px;min-width:480px;max-width:620px;max-height:80vh;overflow-y:auto;font-family:'Consolas','Courier New',monospace;display:flex;flex-direction:column;gap:8px;";
 
-  const keyOpts = measKeys.map(k => `<option value="${k}">${k}</option>`).join("");
+  const keyOpts = uniqKeys.map(k => `<option value="${k}">${k}</option>`).join("");
   box.innerHTML = `
     <div style="font-size:11px;color:#fa0;letter-spacing:1px;border-bottom:1px solid #1a1a1a;padding-bottom:8px;">ANALOG HISTORY — ${deviceId}</div>
     <div style="display:flex;gap:8px;align-items:center;">
@@ -61,7 +65,7 @@ function showAnalogHistoryModal(deviceId, summaryKeys) {
     });
   };
   // Auto-load the first key if available
-  if (measKeys.length) document.getElementById("_ah-load").click();
+  if (uniqKeys.length) document.getElementById("_ah-load").click();
 }
 
 function _saveDeviceNotes(deviceId, safeId) {

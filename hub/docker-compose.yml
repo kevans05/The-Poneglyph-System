@@ -1,0 +1,33 @@
+# Poneglyph Hub
+#
+#   docker compose up -d --build                     # start the hub
+#   docker compose run --rm hub python hub.py adduser cutty "Cutty Flamm"
+#   docker compose run --rm hub python hub.py listusers
+#
+# The named volume `poneglyph_hub_data` is the only durable state; the
+# container is disposable. Put a TLS-terminating reverse proxy in front for
+# anything beyond a trusted LAN.
+
+services:
+  hub:
+    build: .
+    image: poneglyph-hub:1
+    restart: unless-stopped
+    ports:
+      - "8900:8900"
+    volumes:
+      - poneglyph_hub_data:/data
+    environment:
+      HUB_DB: /data/hub.db
+      HUB_PORT: "8900"
+      # HUB_TOKEN_TTL: "7776000"   # 90 days (default)
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8900/api/hub/ping',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  poneglyph_hub_data:

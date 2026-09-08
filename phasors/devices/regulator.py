@@ -136,49 +136,6 @@ class VoltageRegulator(Bus):
     def downstream_current(self):
         return self.current
 
-    # --------------------------------------------------------- sim_step (AVR)
-
-    def sim_step(self, sim_time_ms: float) -> list:
-        events = super().sim_step(sim_time_ms)
-
-        if self._avr_prev_time is None:
-            self._avr_prev_time = sim_time_ms
-            return events
-
-        dt_ms = sim_time_ms - self._avr_prev_time
-        self._avr_prev_time = sim_time_ms
-
-        if not self.avr_enabled or dt_ms <= 0:
-            return events
-
-        v = self.voltage
-        if not v or not v.is_energized():
-            self._avr_hold_ms = 0.0
-            return events
-
-        v_ln_nom = self.nominal_kv * 1000.0 / math.sqrt(3.0)
-        v_avg = (v.a.magnitude + v.b.magnitude + v.c.magnitude) / 3.0
-        v_pu = v_avg / v_ln_nom if v_ln_nom > 0 else 1.0
-        deadband = self.avr_deadband_pct / 100.0
-
-        if abs(v_pu - 1.0) <= deadband:
-            self._avr_hold_ms = 0.0
-            return events
-
-        self._avr_hold_ms += dt_ms
-        if self._avr_hold_ms < self.avr_delay_ms:
-            return events
-
-        self._avr_hold_ms = 0.0
-        if v_pu > 1.0 + deadband and self.tap_pos > -self.max_steps:
-            self.tap_pos -= 1
-            self._cache.clear()
-        elif v_pu < 1.0 - deadband and self.tap_pos < self.max_steps:
-            self.tap_pos += 1
-            self._cache.clear()
-
-        return events
-
     # --------------------------------------------------------- summary
 
     def get_summary_dict(self):

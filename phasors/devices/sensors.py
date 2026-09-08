@@ -210,9 +210,6 @@ class CurrentTransformer(InstrumentTransformer):
 
     def get_summary_dict(self):
         stats = {"Location": self.location, "Type": "CT", "Ratio": f"{self.ratio}:1", "Bushing": self.bushing}
-        if getattr(self, "fault_state", None):
-            stats["--- FAULT ACTIVE ---"] = "HEADER"
-            stats["Fault Type"] = self.fault_state.get("fault_type")
         sec_i = self.secondary_current
         from ..utilities.power_utilities import append_3phase_details
         return append_3phase_details(stats, None, sec_i) # ONLY CURRENT

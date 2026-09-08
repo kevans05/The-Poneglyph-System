@@ -20,6 +20,8 @@ import sqlite3
 import time
 import uuid
 
+import topo_merge
+
 SITES_DIR = "sites"
 
 
@@ -49,10 +51,12 @@ CREATE TABLE IF NOT EXISTS site_info (
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
-    id       TEXT PRIMARY KEY,        -- UUID
-    epoch    INTEGER NOT NULL,
-    label    TEXT    NOT NULL,
-    topology TEXT    NOT NULL         -- full substation.json blob
+    id        TEXT PRIMARY KEY,       -- UUID
+    epoch     INTEGER NOT NULL,
+    label     TEXT    NOT NULL,
+    topology  TEXT    NOT NULL,       -- full substation.json blob
+    author    TEXT    DEFAULT '',     -- operator display name
+    author_id TEXT    DEFAULT ''      -- operator signature (PoneglyphIdentity id)
 );
 CREATE INDEX IF NOT EXISTS idx_snap_epoch ON snapshots(epoch DESC);
 
@@ -83,6 +87,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     device      TEXT    DEFAULT '',
     instrument  TEXT    DEFAULT 'manual',
     technician  TEXT    DEFAULT '',
+    technician_id TEXT  DEFAULT '',
     test_id     TEXT    REFERENCES tests(id) ON DELETE CASCADE,
     snapshot_id TEXT    REFERENCES snapshots(id) ON DELETE CASCADE
 );
@@ -107,10 +112,35 @@ CREATE TABLE IF NOT EXISTS device_history (
     type        TEXT,
     status      TEXT,
     config      TEXT,                  -- JSON blob of params
-    snapshot_id TEXT    REFERENCES snapshots(id) ON DELETE CASCADE
+    snapshot_id TEXT    REFERENCES snapshots(id) ON DELETE CASCADE,
+    author      TEXT    DEFAULT '',    -- operator display name
+    author_id   TEXT    DEFAULT ''     -- operator signature
 );
 CREATE INDEX IF NOT EXISTS idx_dev_hist_id    ON device_history(device_id);
 CREATE INDEX IF NOT EXISTS idx_dev_hist_epoch ON device_history(epoch DESC);
+
+-- Poneglyph Hub: local mirror of the substation version graph + the link row.
+CREATE TABLE IF NOT EXISTS substation_versions (
+    id            TEXT PRIMARY KEY,           -- content hash (topo_merge.content_hash)
+    parent_id     TEXT    NOT NULL DEFAULT '',
+    merge_parent  TEXT    NOT NULL DEFAULT '',
+    branch        TEXT    NOT NULL DEFAULT 'main',
+    epoch         INTEGER NOT NULL,
+    author        TEXT    NOT NULL DEFAULT '',
+    author_id     TEXT    NOT NULL DEFAULT '',
+    message       TEXT    NOT NULL DEFAULT '',
+    topology      TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hub_sync (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    hub_url       TEXT    NOT NULL DEFAULT '',
+    substation_id TEXT    NOT NULL DEFAULT '',
+    base_id       TEXT    NOT NULL DEFAULT '',   -- last version pulled clean
+    head_id       TEXT    NOT NULL DEFAULT '',   -- local tip
+    branch        TEXT    NOT NULL DEFAULT 'main',
+    linked_epoch  INTEGER NOT NULL DEFAULT 0
+);
 
 -- Device serial number changelog.
 -- Each row records a serial number assignment or change for a physical device.
@@ -164,6 +194,16 @@ CREATE TABLE IF NOT EXISTS drawing_revision_log (
 );
 CREATE INDEX IF NOT EXISTS idx_draw_rev_log ON drawing_revision_log(drawing_id);
 
+-- Cached list of every revision the corporate drawing system holds for one
+-- drawing number.  Bound to attached drawings so a technician holding rev C
+-- can see that A / B / D exist and swap to one.  Refreshed on demand.
+CREATE TABLE IF NOT EXISTS drawing_revision_sets (
+    drawing_number TEXT    PRIMARY KEY,
+    revisions      TEXT    NOT NULL DEFAULT '[]',  -- JSON: [{revision,state,title,document_url,...}]
+    fetched_epoch  INTEGER NOT NULL DEFAULT 0,
+    source         TEXT    NOT NULL DEFAULT 'corporate-search'
+);
+
 CREATE TABLE IF NOT EXISTS maintenance_log (
     id             TEXT    PRIMARY KEY,   -- UUID
     device_id      TEXT    NOT NULL,      -- logical device ID in the topology
@@ -185,11 +225,17 @@ _MIGRATIONS = [
     ("site_info",  "number_code", "TEXT    DEFAULT ''"),
     ("site_info",  "gps_lat",     "REAL"),
     ("site_info",  "gps_lon",     "REAL"),
-    ("sessions",   "technician",  "TEXT    DEFAULT ''"),
-    ("sessions",   "test_id",     "TEXT"),
+    ("sessions",   "technician",    "TEXT    DEFAULT ''"),
+    ("sessions",   "technician_id", "TEXT    DEFAULT ''"),
+    ("sessions",   "test_id",       "TEXT"),
+    ("snapshots",       "author",    "TEXT    DEFAULT ''"),
+    ("snapshots",       "author_id", "TEXT    DEFAULT ''"),
+    ("device_history",  "author",    "TEXT    DEFAULT ''"),
+    ("device_history",  "author_id", "TEXT    DEFAULT ''"),
     ("tests",          "vref_label",        "TEXT    DEFAULT ''"),
     ("tests",          "vref_magnitude",    "REAL"),
     ("tests",          "capture_points",    "TEXT    DEFAULT \"[]\""),
+    ("tests",          "origin",            "TEXT    DEFAULT 'local'"),
     ("device_serials", "manufacturer",      "TEXT    DEFAULT ''"),
     ("device_serials", "model_number",      "TEXT    DEFAULT ''"),
     ("device_serials", "asset_tag",         "TEXT    DEFAULT ''"),
@@ -198,6 +244,8 @@ _MIGRATIONS = [
     ("device_serials", "in_service_date",   "TEXT    DEFAULT ''"),
     ("device_serials", "firmware_version",  "TEXT    DEFAULT ''"),
     ("device_serials", "status",            "TEXT    DEFAULT 'active'"),
+    ("device_drawings", "drawing_number",   "TEXT    DEFAULT ''"),
+    ("test_drawings",   "drawing_number",   "TEXT    DEFAULT ''"),
 ]
 
 
@@ -251,7 +299,9 @@ def create_site(
     return path
 
 def list_sites() -> list[dict]:
-    """Return metadata for every site DB found in SITES_DIR."""
+    """Return metadata for every site DB found in SITES_DIR, including its Hub
+    link state — lazily migrates each DB first so older site files pick up
+    newer tables/columns (hub_sync included) just by being listed."""
     if not os.path.exists(SITES_DIR):
         return []
     sites = []
@@ -260,6 +310,7 @@ def list_sites() -> list[dict]:
             continue
         path = os.path.join(SITES_DIR, fname)
         try:
+            init_db(path)
             with _conn(path) as c:
                 info = c.execute("SELECT * FROM site_info LIMIT 1").fetchone()
                 if info is None:
@@ -269,14 +320,25 @@ def list_sites() -> list[dict]:
                 last_sess = c.execute(
                     "SELECT epoch FROM sessions ORDER BY epoch DESC LIMIT 1"
                 ).fetchone()
+                sync_row = c.execute(
+                    "SELECT hub_url, substation_id, base_id, head_id FROM hub_sync WHERE id = 1"
+                ).fetchone()
+            ahead = 0
+            if sync_row and sync_row["substation_id"] and sync_row["base_id"] and sync_row["head_id"]:
+                ahead = len(local_versions_between(path, sync_row["base_id"], sync_row["head_id"]))
             sites.append({
                 "station": info["station"],
                 "description": info["description"],
+                "number_code": info["number_code"] if "number_code" in info.keys() else "",
                 "created_epoch": info["created_epoch"],
                 "last_epoch": last_sess["epoch"] if last_sess else info["created_epoch"],
                 "session_count": sess_count,
                 "snapshot_count": snap_count,
                 "db_path": path,
+                "hub_linked": bool(sync_row and sync_row["substation_id"]),
+                "hub_url": (sync_row["hub_url"] if sync_row else "") or "",
+                "hub_substation_id": (sync_row["substation_id"] if sync_row else "") or "",
+                "hub_ahead": ahead,
             })
         except Exception:
             pass
@@ -331,8 +393,13 @@ def save_snapshot(
     label: str,
     topology: dict | str,
     record_device_history: bool = True,
+    author: str = "",
+    author_id: str = "",
 ) -> str:
     """Persist a topology snapshot. Returns the UUID row id.
+
+    `author` / `author_id` record which operator made the change (display name
+    and PoneglyphIdentity signature).
 
     When `record_device_history` is True, also writes one row per device to
     `device_history` for long-term per-device config audit trail. Disable for
@@ -342,10 +409,12 @@ def save_snapshot(
     blob = json.dumps(topo_dict, indent=2)
     row_id = str(uuid.uuid4())
     now = int(time.time())
+    author = author or ""
+    author_id = author_id or ""
     with _conn(db_path) as c:
         c.execute(
-            "INSERT INTO snapshots (id, epoch, label, topology) VALUES (?,?,?,?)",
-            (row_id, now, label, blob),
+            "INSERT INTO snapshots (id, epoch, label, topology, author, author_id) VALUES (?,?,?,?,?,?)",
+            (row_id, now, label, blob, author, author_id),
         )
         if record_device_history:
             history_rows = []
@@ -362,12 +431,14 @@ def save_snapshot(
                     d.get("status"),
                     json.dumps(config),
                     row_id,
+                    author,
+                    author_id,
                 ))
             if history_rows:
                 c.executemany(
                     """INSERT INTO device_history
-                       (id, device_id, epoch, type, status, config, snapshot_id)
-                       VALUES (?,?,?,?,?,?,?)""",
+                       (id, device_id, epoch, type, status, config, snapshot_id, author, author_id)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     history_rows,
                 )
     _touch(db_path)
@@ -376,7 +447,7 @@ def save_snapshot(
 def list_snapshots(db_path: str, limit: int = 100) -> list[dict]:
     with _conn(db_path) as c:
         rows = c.execute(
-            "SELECT id, epoch, label FROM snapshots ORDER BY epoch DESC LIMIT ?",
+            "SELECT id, epoch, label, author, author_id FROM snapshots ORDER BY epoch DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -418,6 +489,7 @@ def list_tests(db_path: str) -> list[dict]:
     with _conn(db_path) as c:
         rows = c.execute(
             """SELECT t.id, t.epoch, t.name, t.description, t.created_by, t.status,
+                      t.origin,
                       COUNT(DISTINCT d.id) AS drawing_count,
                       COUNT(DISTINCT s.id) AS session_count
                FROM tests t
@@ -453,12 +525,13 @@ def delete_test(db_path: str, test_id: str):
 
 # ── Test Drawings ─────────────────────────────────────────────────────────────
 
-def add_drawing(db_path: str, test_id: str, title: str, url: str = "", revision: str = "", notes: str = "") -> str:
+def add_drawing(db_path: str, test_id: str, title: str, url: str = "", revision: str = "",
+                notes: str = "", drawing_number: str = "") -> str:
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
-            "INSERT INTO test_drawings (id, test_id, title, url, revision, notes) VALUES (?,?,?,?,?,?)",
-            (row_id, test_id, title, url or "", revision or "", notes or ""),
+            "INSERT INTO test_drawings (id, test_id, title, url, revision, notes, drawing_number) VALUES (?,?,?,?,?,?,?)",
+            (row_id, test_id, title, url or "", revision or "", notes or "", drawing_number or ""),
         )
     return row_id
 
@@ -477,13 +550,13 @@ def delete_drawing(db_path: str, drawing_id: str):
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
 
-def start_session(db_path: str, label: str = "", device: str = "", instrument: str = "manual", technician: str = "", test_id: str | None = None, snapshot_id: str | None = None) -> str:
+def start_session(db_path: str, label: str = "", device: str = "", instrument: str = "manual", technician: str = "", test_id: str | None = None, snapshot_id: str | None = None, technician_id: str = "") -> str:
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
-            """INSERT INTO sessions (id, epoch, label, device, instrument, technician, test_id, snapshot_id)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (row_id, int(time.time()), label, device or "", instrument, technician or "", test_id, snapshot_id),
+            """INSERT INTO sessions (id, epoch, label, device, instrument, technician, technician_id, test_id, snapshot_id)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (row_id, int(time.time()), label, device or "", instrument, technician or "", technician_id or "", test_id, snapshot_id),
         )
     _touch(db_path)
     return row_id
@@ -494,7 +567,7 @@ def list_sessions(db_path: str, limit: int = 100, test_id: str | None = None) ->
     with _conn(db_path) as c:
         rows = c.execute(
             f"""SELECT s.id, s.epoch, s.label, s.device, s.instrument,
-                       s.technician, s.test_id, s.snapshot_id,
+                       s.technician, s.technician_id, s.test_id, s.snapshot_id,
                        t.name AS test_name,
                        COUNT(m.id) AS reading_count
                FROM sessions s
@@ -597,12 +670,140 @@ def get_test_report_data(db_path: str, test_id: str) -> dict | None:
 
 def get_device_config_history(db_path: str, device_id: str, limit: int = 100) -> list[dict]:
     with _conn(db_path) as c:
-        rows = c.execute("""SELECT h.epoch, h.type, h.status, h.config, h.snapshot_id, s.label as snapshot_label FROM device_history h LEFT JOIN snapshots s ON s.id = h.snapshot_id WHERE h.device_id = ? ORDER BY h.epoch DESC LIMIT ?""", (device_id, limit)).fetchall()
+        rows = c.execute("""SELECT h.epoch, h.type, h.status, h.config, h.snapshot_id, h.author, h.author_id, s.label as snapshot_label FROM device_history h LEFT JOIN snapshots s ON s.id = h.snapshot_id WHERE h.device_id = ? ORDER BY h.epoch DESC LIMIT ?""", (device_id, limit)).fetchall()
     return [dict(r) for r in rows]
 
 def update_test_capture_points(db_path: str, test_id: str, devices: list[str]):
     with _conn(db_path) as c:
         c.execute("UPDATE tests SET capture_points = ? WHERE id = ?", (json.dumps(devices), test_id))
+
+
+# ── Hub test bundles ─────────────────────────────────────────────────────────
+
+def export_test_bundle(db_path: str, test_id: str,
+                       substation_id: str = "", substation_version: str = "") -> dict | None:
+    """Assemble a self-contained bundle for one test: the test row, its
+    sessions, every measurement, and its drawings. Shape matches the hub's
+    POST /api/hub/tests contract."""
+    with _conn(db_path) as c:
+        test = c.execute("SELECT * FROM tests WHERE id = ?", (test_id,)).fetchone()
+        if not test:
+            return None
+        sessions = c.execute(
+            "SELECT * FROM sessions WHERE test_id = ? ORDER BY epoch ASC, rowid ASC",
+            (test_id,),
+        ).fetchall()
+        sess_ids = [s["id"] for s in sessions]
+        measurements = []
+        if sess_ids:
+            ph = ",".join("?" * len(sess_ids))
+            measurements = c.execute(
+                f"""SELECT id, session_id, epoch, device_id, key, value
+                    FROM measurements WHERE session_id IN ({ph})
+                    ORDER BY epoch ASC, rowid ASC""",
+                sess_ids,
+            ).fetchall()
+        drawings = c.execute(
+            "SELECT id, title, url, revision, notes, drawing_number FROM test_drawings WHERE test_id = ? ORDER BY rowid ASC",
+            (test_id,),
+        ).fetchall()
+
+    if not substation_version:
+        substation_version = (sessions[0]["snapshot_id"] if sessions else "") or ""
+
+    t = dict(test)
+    return {
+        "test": {
+            "id": t["id"],
+            "name": t.get("name", ""),
+            "description": t.get("description", ""),
+            "status": t.get("status", ""),
+            "epoch": t.get("epoch"),
+            "created_by": t.get("created_by", ""),
+            "capture_points": json.loads(t.get("capture_points") or "[]"),
+            "vref_label": t.get("vref_label", ""),
+            "vref_magnitude": t.get("vref_magnitude"),
+        },
+        "sessions": [dict(s) for s in sessions],
+        "measurements": [dict(m) for m in measurements],
+        "drawings": [dict(d) for d in drawings],
+        "substation": {"id": substation_id, "version": substation_version},
+    }
+
+
+def import_test_bundle(db_path: str, bundle: dict, origin: str = "hub") -> dict:
+    """Insert a pulled bundle into this site DB. Idempotent by row id — an
+    already-present test / session / measurement / drawing is left untouched.
+    Returns {test_id, imported}."""
+    t = bundle.get("test") or {}
+    test_id = str(t.get("id") or "").strip()
+    if not test_id:
+        raise ValueError("bundle.test.id is required")
+
+    now = int(time.time())
+    with _conn(db_path) as c:
+        existed = c.execute("SELECT 1 FROM tests WHERE id = ?", (test_id,)).fetchone()
+        c.execute(
+            """INSERT OR IGNORE INTO tests
+               (id, epoch, name, description, created_by, status,
+                vref_label, vref_magnitude, capture_points, origin)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                test_id,
+                t.get("epoch") or now,
+                t.get("name", ""),
+                t.get("description", ""),
+                t.get("created_by", ""),
+                t.get("status", "COMPLETE"),
+                t.get("vref_label", "") or "",
+                t.get("vref_magnitude"),
+                json.dumps(t.get("capture_points") or []),
+                origin,
+            ),
+        )
+        for s in bundle.get("sessions") or []:
+            c.execute(
+                """INSERT OR IGNORE INTO sessions
+                   (id, epoch, label, device, instrument, technician,
+                    technician_id, test_id, snapshot_id)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    s.get("id"),
+                    s.get("epoch") or now,
+                    s.get("label", "") or "",
+                    s.get("device", "") or "",
+                    s.get("instrument", "manual") or "manual",
+                    s.get("technician", "") or "",
+                    s.get("technician_id", "") or "",
+                    test_id,
+                    s.get("snapshot_id"),
+                ),
+            )
+        meas = bundle.get("measurements") or []
+        if meas:
+            c.executemany(
+                """INSERT OR IGNORE INTO measurements
+                   (id, session_id, epoch, device_id, key, value)
+                   VALUES (?,?,?,?,?,?)""",
+                [
+                    (m.get("id"), m.get("session_id"), m.get("epoch") or now,
+                     m.get("device_id"), m.get("key"), m.get("value"))
+                    for m in meas
+                ],
+            )
+        for d in bundle.get("drawings") or []:
+            c.execute(
+                """INSERT OR IGNORE INTO test_drawings
+                   (id, test_id, title, url, revision, notes, drawing_number)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    d.get("id"), test_id, d.get("title", "") or "",
+                    d.get("url", "") or "", d.get("revision", "") or "",
+                    d.get("notes", "") or "", d.get("drawing_number", "") or "",
+                ),
+            )
+    _touch(db_path)
+    return {"test_id": test_id, "imported": not existed}
 
 
 # ── Device Serial Numbers ─────────────────────────────────────────────────────
@@ -749,14 +950,16 @@ def add_device_drawing(
     url: str = "",
     revision: str = "",
     notes: str = "",
+    drawing_number: str = "",
 ) -> str:
     """Attach a drawing reference to a topology device. Returns the UUID."""
     row_id = str(uuid.uuid4())
     with _conn(db_path) as c:
         c.execute(
-            """INSERT INTO device_drawings (id, device_id, title, url, revision, notes)
-               VALUES (?,?,?,?,?,?)""",
-            (row_id, device_id, title.strip(), url.strip(), revision.strip(), notes.strip()),
+            """INSERT INTO device_drawings (id, device_id, title, url, revision, notes, drawing_number)
+               VALUES (?,?,?,?,?,?,?)""",
+            (row_id, device_id, title.strip(), url.strip(), revision.strip(),
+             notes.strip(), (drawing_number or "").strip()),
         )
     _touch(db_path)
     return row_id
@@ -766,7 +969,7 @@ def list_device_drawings(db_path: str, device_id: str) -> list[dict]:
     """Return all drawings attached to a device, in insertion order."""
     with _conn(db_path) as c:
         rows = c.execute(
-            "SELECT id, title, url, revision, notes FROM device_drawings WHERE device_id = ? ORDER BY rowid ASC",
+            "SELECT id, title, url, revision, notes, drawing_number FROM device_drawings WHERE device_id = ? ORDER BY rowid ASC",
             (device_id,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -832,3 +1035,151 @@ def get_drawing_revision_history(db_path: str, drawing_id: str) -> list[dict]:
             (drawing_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Hub substation version graph (local mirror) ──────────────────────────────
+
+def get_hub_sync(db_path: str) -> dict | None:
+    with _conn(db_path) as c:
+        row = c.execute("SELECT * FROM hub_sync WHERE id = 1").fetchone()
+    return dict(row) if row else None
+
+
+def set_hub_sync(db_path: str, **fields):
+    cur = get_hub_sync(db_path) or {
+        "hub_url": "", "substation_id": "", "base_id": "",
+        "head_id": "", "branch": "main", "linked_epoch": int(time.time()),
+    }
+    cur.update({k: v for k, v in fields.items() if v is not None})
+    with _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO hub_sync (id, hub_url, substation_id, base_id, head_id, branch, linked_epoch)
+               VALUES (1,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 hub_url=excluded.hub_url, substation_id=excluded.substation_id,
+                 base_id=excluded.base_id, head_id=excluded.head_id,
+                 branch=excluded.branch, linked_epoch=excluded.linked_epoch""",
+            (cur["hub_url"], cur["substation_id"], cur["base_id"],
+             cur["head_id"], cur.get("branch", "main"), cur["linked_epoch"]),
+        )
+    return get_hub_sync(db_path)
+
+
+def clear_hub_sync(db_path: str):
+    with _conn(db_path) as c:
+        c.execute("DELETE FROM hub_sync WHERE id = 1")
+
+
+def add_local_version(db_path: str, v: dict):
+    topo = v["topology"]
+    with _conn(db_path) as c:
+        c.execute(
+            """INSERT OR IGNORE INTO substation_versions
+               (id, parent_id, merge_parent, branch, epoch, author, author_id, message, topology)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                str(v["id"]), str(v.get("parent_id") or ""), str(v.get("merge_parent") or ""),
+                str(v.get("branch") or "main"), int(v.get("epoch") or time.time()),
+                str(v.get("author") or ""), str(v.get("author_id") or ""),
+                str(v.get("message") or ""),
+                topo if isinstance(topo, str) else json.dumps(topo),
+            ),
+        )
+
+
+def get_local_version(db_path: str, version_id: str) -> dict | None:
+    with _conn(db_path) as c:
+        row = c.execute(
+            "SELECT * FROM substation_versions WHERE id = ?", (version_id,)
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["topology"] = json.loads(d["topology"])
+    return d
+
+
+def _local_ancestry(c, version_id: str) -> set:
+    seen, stack = set(), [version_id]
+    while stack:
+        vid = stack.pop()
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        row = c.execute(
+            "SELECT parent_id, merge_parent FROM substation_versions WHERE id = ?", (vid,)
+        ).fetchone()
+        if row:
+            if row["parent_id"]:
+                stack.append(row["parent_id"])
+            if row["merge_parent"]:
+                stack.append(row["merge_parent"])
+    return seen
+
+
+def local_versions_between(db_path: str, base_id: str, head_id: str) -> list[dict]:
+    """Versions in head_id's ancestry but not base_id's, oldest first."""
+    with _conn(db_path) as c:
+        want = _local_ancestry(c, head_id) - _local_ancestry(c, base_id)
+        rows = c.execute(
+            "SELECT * FROM substation_versions ORDER BY epoch ASC, rowid ASC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        if r["id"] in want:
+            d = dict(r)
+            d["topology"] = json.loads(d["topology"])
+            out.append(d)
+    return out
+
+
+def record_version(db_path: str, topology: dict, *, author: str = "", author_id: str = "",
+                   message: str = "", branch: str = "main", parent_id: str = "",
+                   merge_parent: str = "") -> str:
+    """Hash `topology`, append it as a version if its content differs from the
+    given parent, and return the version id (parent_id if unchanged)."""
+    if parent_id:
+        parent = get_local_version(db_path, parent_id)
+        if parent and topo_merge.topo_equal(parent["topology"], topology) and not merge_parent:
+            return parent_id
+    vid = topo_merge.content_hash(topology, parent_id, branch)
+    add_local_version(db_path, {
+        "id": vid, "parent_id": parent_id, "merge_parent": merge_parent,
+        "branch": branch, "epoch": int(time.time()),
+        "author": author, "author_id": author_id, "message": message,
+        "topology": topology,
+    })
+    return vid
+
+
+# ── Drawing revision sets (sibling revisions from the corporate system) ───────
+
+def get_drawing_revision_set(db_path: str, drawing_number: str) -> dict | None:
+    with _conn(db_path) as c:
+        row = c.execute(
+            "SELECT drawing_number, revisions, fetched_epoch, source FROM drawing_revision_sets WHERE drawing_number = ?",
+            ((drawing_number or "").strip(),),
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["revisions"] = json.loads(d["revisions"] or "[]")
+    except Exception:
+        d["revisions"] = []
+    return d
+
+
+def save_drawing_revision_set(db_path: str, drawing_number: str, revisions: list,
+                              source: str = "corporate-search") -> None:
+    with _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO drawing_revision_sets (drawing_number, revisions, fetched_epoch, source)
+               VALUES (?,?,?,?)
+               ON CONFLICT(drawing_number) DO UPDATE SET
+                 revisions=excluded.revisions, fetched_epoch=excluded.fetched_epoch,
+                 source=excluded.source""",
+            ((drawing_number or "").strip(), json.dumps(revisions or []),
+             int(time.time()), source),
+        )
+    _touch(db_path)

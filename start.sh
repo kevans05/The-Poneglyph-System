@@ -15,7 +15,7 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-REQUIRED=("openpyxl" "serial")
+REQUIRED=("openpyxl")
 MISSING=()
 for pkg in "${REQUIRED[@]}"; do
     python3 -c "import $pkg" 2>/dev/null || MISSING+=("$pkg")

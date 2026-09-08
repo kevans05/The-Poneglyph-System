@@ -90,6 +90,14 @@ svg {
     stroke-linecap: round;
 }
 
+/* Zoomed-out single-line conductor (stroke set inline from the voltage-class
+   palette; this is the fallback when colour-by-voltage-class is disabled). */
+.link-wire.single-line {
+    stroke: #9aa;
+    stroke-width: 2.5px;
+    filter: drop-shadow(0 0 3px #99aaaa66);
+}
+
 /* Secondary / protection circuit wire (CT → CTTB → Relay) */
 .secondary-wire {
     stroke: #bbb;
@@ -194,24 +202,6 @@ svg {
 }
 .ang-conv-btn:hover { border-color: #3af; color: #3af; }
 
-/* REF picker button — distinct teal accent */
-.ref-pick-btn { color: #3af; border-color: #1a4060; }
-.ref-pick-btn:hover { background: #0a1a28; border-color: #3af; }
-
-/* Reference picker popup items */
-.ref-pick-item {
-    padding: 7px 14px;
-    cursor: pointer;
-    color: #ccc;
-    font-size: 10px;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid #1a1a1a;
-}
-.ref-pick-item:hover { background: #1a2a3a; color: #fff; }
-.ref-pick-selected { color: #3af; background: #0a1a2a; }
-.ref-pick-clear { color: #f66; }
-.ref-pick-clear:hover { background: #1a0a0a; }
-
 .window-content {
     padding: 12px 14px;
     max-height: 62vh;
@@ -220,7 +210,7 @@ svg {
     flex: 1;
 }
 
-/* Section labels like "TELEMETRY DATA" */
+/* Section labels like "DEVICE STATE" or "ENGINEERING CONTROLS" */
 .section-title {
     color: #ccc;
     font-size: 9px;
@@ -252,53 +242,188 @@ svg {
     font-family: monospace;
 }
 
-/* The black box where the phasor diagram is drawn */
-.phasor-box {
-    width: 100%;
-    background: #000;
-    margin-top: 5px;
-    border: 1px solid #1e1e1e;
-    border-radius: 2px;
+/* ── Connections editor (device window) ───────────────────────────────────── */
+.conn-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-family: "Consolas", "Courier New", monospace;
+    margin-bottom: 4px;
 }
-
-/* ── Phasor scale controls ─────────────────────────────────────────────────── */
-.phasor-scale-ctrl {
+.conn-sub {
     display: flex;
     align-items: center;
-    gap: 3px;
-    padding: 4px 8px;
-    background: #0a0a0a;
-    border-top: 1px solid #1a1a1a;
-    flex-wrap: wrap;
+    justify-content: space-between;
+    font-size: 8px;
+    letter-spacing: 1px;
+    color: #6a7a8a;
+    margin-top: 8px;
+    border-bottom: 1px solid #1a1a1a;
+    padding-bottom: 2px;
 }
-.psc-label {
-    font-size: 9px;
-    color: #666;
-    letter-spacing: 0.5px;
-    margin-right: 1px;
+.conn-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 11px;
+    color: #cdd;
 }
-.psc-btn {
-    background: #111;
-    border: 1px solid #2a2a2a;
-    color: #888;
-    font-family: "Consolas", "Courier New", monospace;
+.conn-tag {
+    flex: 0 0 30px;
+    font-size: 8px;
+    color: #7a8a9a;
+    text-align: center;
+    border: 1px solid #2a3540;
+    border-radius: 2px;
+    padding: 1px 0;
+}
+.conn-dev { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conn-dev.conn-none { color: #a86; font-style: italic; }
+.conn-term { flex: 1 1 auto; color: #dbe; }
+.conn-term b { color: #fff; }
+
+.conn-sign {
+    flex: 0 0 20px;
+    height: 18px;
+    background: #0d0d0d;
+    border: 1px solid #333;
+    font-weight: bold;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 2px;
+    line-height: 1;
+}
+.conn-x {
+    flex: 0 0 18px;
+    height: 18px;
+    background: #1a0808;
+    border: 1px solid #4a2020;
+    color: #c66;
     font-size: 10px;
+    cursor: pointer;
+    border-radius: 2px;
+    line-height: 1;
+    padding: 0;
+}
+.conn-x:hover { border-color: #f55; color: #f88; }
+
+.conn-add {
+    margin-top: 3px;
+    background: #0a1f14;
+    border: 1px solid #1f6b47;
+    color: #3fdc8f;
+    font-family: inherit;
+    font-size: 9px;
+    letter-spacing: 0.5px;
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 2px;
+}
+.conn-add:hover { background: #0f3020; }
+.conn-addrow { display: flex; gap: 4px; }
+.conn-addrow .conn-add { flex: 1; text-align: center; }
+
+.conn-modes { display: flex; gap: 3px; }
+.conn-mode {
+    background: #0d0d0d;
+    border: 1px solid #2a2a2a;
+    color: #667;
+    font-family: inherit;
+    font-size: 8px;
     padding: 1px 6px;
     cursor: pointer;
     border-radius: 2px;
-    line-height: 1.4;
 }
-.psc-btn:hover { border-color: #555; color: #ccc; }
-.psc-val {
+.conn-mode.on { border-color: #3af; color: #3af; background: #04121c; }
+
+.conn-trace {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
     font-size: 10px;
-    color: #aaa;
-    min-width: 44px;
-    text-align: center;
-    font-family: "Consolas", "Courier New", monospace;
+    padding: 2px 0;
+    line-height: 1.6;
 }
-.psc-auto { font-size: 9px; letter-spacing: 0.5px; }
-.psc-auto-active { color: #3af !important; border-color: #1a3a5a !important; }
-.psc-sep { width: 10px; }
+.trace-hop { color: #9ab; }
+.trace-arrow { color: #556; }
+.trace-prim { color: #3fdc8f; font-weight: bold; margin-left: 3px; }
+.trace-kv {
+    color: #cdd;
+    background: #142028;
+    border: 1px solid #2a3a44;
+    border-radius: 2px;
+    padding: 0 4px;
+    font-size: 9px;
+}
+
+/* ── Inline device-parameter form ─────────────────────────────────────────── */
+.win-params { display: flex; flex-direction: column; gap: 3px; }
+
+.cfg-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+    border-bottom: 1px solid #101010;
+}
+.cfg-row > label {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 10px;
+    color: #888;
+}
+.cfg-input {
+    flex: 0 0 42%;
+    box-sizing: border-box;
+    background: #111;
+    border: 1px solid #333;
+    color: #eee;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    padding: 3px 6px;
+    border-radius: 2px;
+}
+.cfg-input:focus { border-color: #3af; outline: none; }
+select.cfg-input { flex-basis: 52%; }
+
+.cfg-check-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 0;
+    border-bottom: 1px solid #101010;
+    font-size: 10px;
+    color: #bbb;
+    cursor: pointer;
+}
+.cfg-check-row input { accent-color: #0a0; margin: 0; }
+
+.cfg-subhead {
+    font-size: 9px;
+    color: #0af;
+    letter-spacing: 1px;
+    margin-top: 12px;
+    border-top: 1px solid #1a1a1a;
+    padding-top: 8px;
+}
+
+.cfg-apply {
+    width: 100%;
+    margin-top: 10px;
+    background: #001a00;
+    color: #0f0;
+    border: 1px solid #0a0;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    padding: 6px;
+    cursor: pointer;
+    border-radius: 2px;
+}
+.cfg-apply:hover { background: #003000; }
+.cfg-apply:disabled { opacity: 0.6; cursor: default; }
 
 /* ── Device drawings strip (inside device info windows) ─────────────────────── */
 .device-drawing-strip {
@@ -1013,11 +1138,6 @@ svg {
     transition: right 0.2s;
 }
 
-/* Shift canvas controls left when sim log panel is open so they don't overlap */
-body.sim-log-open #canvas-controls {
-    right: 296px;
-}
-
 #canvas-controls > * { pointer-events: all; }
 
 .canvas-ctrl-row {
@@ -1341,102 +1461,4 @@ body.sim-log-open #canvas-controls {
 }
 #links:hover .wire-bend-handle {
   opacity: 0.7;
-}
-
-/* Simulation Mode Styles */
-body.sim-mode-active #header {
-    background-color: #180505;
-    border-bottom: 2px solid #f55;
-}
-
-body.sim-mode-active #canvas-container {
-    background-color: #0c0202;
-}
-
-#sim-bar button:hover {
-    background: #411 !important;
-    color: #fff !important;
-}
-
-#sim-speed-slider {
-    accent-color: #f55;
-}
-
-#sim-log-panel {
-    display: none;
-    position: absolute;
-    right: 0;
-    top: 0;
-    width: 280px;
-    height: 100%;
-    background: #0d0101;
-    border-left: 1px solid #500;
-    font-family: monospace;
-    font-size: 11px;
-    color: #ccc;
-    z-index: 100;
-    flex-direction: column;
-}
-
-#sim-log-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 5px 10px;
-    background: #200;
-    border-bottom: 1px solid #500;
-    color: #f55;
-    font-weight: bold;
-    letter-spacing: 1px;
-    flex-shrink: 0;
-}
-
-#sim-log-header button {
-    background: none;
-    border: 1px solid #500;
-    color: #888;
-    cursor: pointer;
-    padding: 1px 6px;
-    font-size: 10px;
-    font-family: monospace;
-}
-
-#sim-log-header button:hover {
-    border-color: #f55;
-    color: #f55;
-}
-
-#sim-log-entries {
-    overflow-y: auto;
-    flex: 1;
-    padding: 2px 0;
-}
-
-.sim-log-entry {
-    display: flex;
-    gap: 5px;
-    padding: 2px 8px;
-    border-bottom: 1px solid #1a0000;
-    line-height: 1.5;
-    word-break: break-all;
-}
-
-.sim-log-entry:hover {
-    background: #1a0505;
-}
-
-.sim-log-time {
-    color: #555;
-    min-width: 55px;
-    flex-shrink: 0;
-}
-
-.sim-log-type {
-    min-width: 72px;
-    flex-shrink: 0;
-    font-weight: bold;
-}
-
-.sim-log-detail {
-    color: #999;
 }

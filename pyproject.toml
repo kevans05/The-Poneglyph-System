@@ -9,7 +9,6 @@ description = "Web-based SCADA simulator and field measurement platform for elec
 requires-python = ">=3.10"
 dependencies = [
     "openpyxl>=3.1.0",
-    "pyserial>=3.5",
 ]
 
 [project.scripts]

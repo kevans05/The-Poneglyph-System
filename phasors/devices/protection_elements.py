@@ -9,8 +9,8 @@ Interface
 ---------
 ProtectionElement.step(i_sys, v_sys, dt_ms) → list[event_dict]
     Advance the element by dt_ms milliseconds.  Returns zero or more event
-    dicts (RELAY_PICKUP / RELAY_DROPOUT).  device_id is NOT set here;
-    Relay.sim_step fills it in after collecting events from all elements.
+    dicts (RELAY_PICKUP / RELAY_DROPOUT).  Live evaluation calls step() with
+    dt_ms = 0 for the instantaneous bit; event dicts are otherwise unused now.
 
 ProtectionElement.get_bit() → bool
     The logical bit exposed to relay equations (e.g. "51P1 OR 50P1").
