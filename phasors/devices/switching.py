@@ -43,9 +43,8 @@ class Switch(Bus):
                     if conn["device"].get_terminal_state(conn["from"]):
                         res = True; break
         
-        # LATCHING LOGIC: If a trip is detected, permanently update manual state to OPEN.
-        # In SIM mode, we handle this timing in sim_step instead.
-        if res and self._manual_closed.get(ph, True) and not getattr(self, "is_sim", False):
+        # LATCHING LOGIC: if a trip is detected, latch the manual state to OPEN.
+        if res and self._manual_closed.get(ph, True):
             self._manual_closed[ph] = False
 
         self._cache[cache_key] = res
@@ -64,51 +63,12 @@ class Switch(Bus):
                     if conn["device"].get_terminal_state(conn["from"]):
                         res = True; break
         
-        # LATCHING LOGIC: If a close signal is detected, permanently update manual state to CLOSED.
-        # In SIM mode, we handle this timing in sim_step instead.
-        if res and not self._manual_closed.get(ph, False) and not getattr(self, "is_sim", False):
+        # LATCHING LOGIC: if a close signal is detected, latch the manual state to CLOSED.
+        if res and not self._manual_closed.get(ph, False):
             self._manual_closed[ph] = True
 
         self._cache[cache_key] = res
         return res
-
-    def sim_step(self, sim_time_ms):
-        fault_events = self._sim_step_fault(sim_time_ms)
-        """Simulation-specific logic for timed operations."""
-        if not getattr(self, "is_sim", False): return []
-        
-        # Initialize sim state if needed
-        if not hasattr(self, "_sim_pending_ops"):
-            self._sim_pending_ops = {} # {phase: {"target": bool, "time": ms}}
-            
-            self.operating_time_ms = 50.0 if self.__class__.__name__ == "CircuitBreaker" else 1000.0
-
-        events = fault_events
-        for ph in 'abc':
-            tripped = self._is_ph_tripped(ph)
-            closed_driven = self._is_ph_closed(ph)
-            
-            # If a trip signal is active and we are closed (and not already opening)
-            if tripped and self._manual_closed.get(ph, True):
-                if self._sim_pending_ops.get(ph, {}).get("target") != False:
-                    self._sim_pending_ops[ph] = {"target": False, "time": sim_time_ms + self.operating_time_ms}
-            
-            # If a close signal is active and we are open (and not already closing)
-            elif closed_driven and not self._manual_closed.get(ph, False):
-                if self._sim_pending_ops.get(ph, {}).get("target") != True:
-                    self._sim_pending_ops[ph] = {"target": True, "time": sim_time_ms + self.operating_time_ms}
-            
-            # Check if pending operation is complete
-            if ph in self._sim_pending_ops:
-                op = self._sim_pending_ops[ph]
-                if sim_time_ms >= op["time"]:
-                    self._manual_closed[ph] = op["target"]
-                    del self._sim_pending_ops[ph]
-                    self._cache.clear()
-                    # Event for the frame buffer
-                    events.append({"type": "SWITCH_OP", "delay": 0, "data": {"device_id": self.name, "phase": ph, "state": op["target"]}})
-        
-        return events
 
     def is_ph_closed(self, ph) -> bool:
         cache_key = f"is_ph_closed_{ph}"
@@ -249,27 +209,6 @@ class Switch(Bus):
         finally:
             self._evaluating_dc = False
 
-    def _ensure_sim_state(self):
-        if not hasattr(self, "_sim_pending_ops"):
-            self._sim_pending_ops = {}
-            self.operating_time_ms = 50.0 if self.__class__.__name__ == "CircuitBreaker" else 1000.0
-
-    def handle_trip_signal(self, phase="abc", sim_time_ms=0):
-        self._ensure_sim_state()
-        phases = list("abc") if phase == "abc" else [phase.lower()]
-        for ph in phases:
-            if self._manual_closed.get(ph, True):
-                if self._sim_pending_ops.get(ph, {}).get("target") != False:
-                    self._sim_pending_ops[ph] = {"target": False, "time": sim_time_ms + self.operating_time_ms}
-
-    def handle_close_signal(self, phase="abc", sim_time_ms=0):
-        self._ensure_sim_state()
-        phases = list("abc") if phase == "abc" else [phase.lower()]
-        for ph in phases:
-            if not self._manual_closed.get(ph, True):
-                if self._sim_pending_ops.get(ph, {}).get("target") != True:
-                    self._sim_pending_ops[ph] = {"target": True, "time": sim_time_ms + self.operating_time_ms}
-
     def add_dc_input_conn(self, source_device, from_label=None, to_label=None):
         conn = {"device": source_device, "from": from_label, "to": to_label}
         if conn not in self.dc_input_conns: self.dc_input_conns.append(conn)
@@ -287,10 +226,7 @@ class Switch(Bus):
         is_delta = self.connection_type == "delta"
         stats = {"Status": self.status, "Connection": "Delta (Δ)" if is_delta else "Wye (Y)"}
         if self.is_single_pole: stats["Mode"] = "Single Pole Independent"
-        v, i = self.voltage, self.current
-        if v: stats["Line Voltage (LL)"] = v.a.magnitude * math.sqrt(3)
-        if i: stats["3-Phase Current"] = max(i.a.magnitude, i.b.magnitude, i.c.magnitude)
-        return append_3phase_details(stats, v, i, is_delta=is_delta)
+        return stats
 
 class Disconnect(Switch):
     def __str__(self): return f"Disconnect: {self.name:<10} | Status: {self.status}"
@@ -306,55 +242,3 @@ class CircuitBreaker(Switch):
         stats["Continuous Rating"] = self.continuous_amps
         stats["Interrupt Rating"] = f"{self.interrupt_ka} kA"
         return stats
-
-    
-
-    
-
-    def inject_fault(self, data):
-        """
-        data: {
-            "fault_type": str (3PH, SLG-A, LL-AB, etc.),
-            "impedance": float,
-            "persistence": str (persistent, transient),
-            "duration": float (ms),
-            "arcing": bool,
-            "internal": bool
-        }
-        """
-        self.fault_state = data
-        self._fault_start_time = None # Set on first sim_step
-        if hasattr(self, "_cache"): self._cache.clear()
-
-    def clear_fault(self):
-        self.fault_state = None
-        self._fault_start_time = None
-        if hasattr(self, "_cache"): self._cache.clear()
-
-    def _sim_step_fault(self, sim_time_ms):
-        if not getattr(self, "fault_state", None): return []
-        
-        fs = self.fault_state
-        if self._fault_start_time is None:
-            self._fault_start_time = sim_time_ms
-        
-        elapsed = sim_time_ms - self._fault_start_time
-        
-        # 1. Handle Transient persistence
-        if fs.get("persistence") == "transient":
-            duration = float(fs.get("duration", 100.0))
-            if elapsed >= duration:
-                self.clear_fault()
-                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name, "reason": "transient_expired"}}]
-        
-        # 2. Handle Arcing (fluctuating impedance)
-        if fs.get("arcing"):
-            import random
-            base_z = float(fs.get("impedance", 0.01))
-            # Arc resistance fluctuates between 1x and 5x base impedance
-            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
-            if hasattr(self, "_cache"): self._cache.clear()
-        else:
-            fs["current_impedance"] = fs.get("impedance", 0.01)
-
-        return []

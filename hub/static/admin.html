@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Poneglyph Hub — Admin</title>
+<style>
+  :root {
+    --ink: #050505;
+    --surface: #111;
+    --surface-2: #0c0c0c;
+    --line: #222;
+    --line-2: #111;
+    --text: #ccc;
+    --dim: #666;
+    --dimmer: #444;
+    --accent: #3fdc8f;
+    --accent-dim: #1f6b47;
+    --cool: #3af;
+    --amber: #d8a24a;
+    --red: #a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+  }
+  a { color: var(--cool); }
+  input, select {
+    background: var(--surface);
+    border: 1px solid #333;
+    color: #eee;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 11px;
+  }
+  input[type="checkbox"] { width: auto; padding: 0; }
+  button {
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    padding: 5px 12px;
+    cursor: pointer;
+    background: var(--surface);
+    border: 1px solid #333;
+    color: var(--text);
+  }
+  button:hover { border-color: #555; }
+  button.primary { background: #001a0f; border-color: var(--accent); color: var(--accent); }
+  button.cool    { background: #04121c; border-color: var(--cool); color: var(--cool); }
+  button.danger  { background: #1a0000; border-color: #622; color: var(--red); }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th {
+    text-align: left; font-size: 9px; letter-spacing: 1px; color: var(--dim);
+    background: var(--surface-2); padding: 6px 10px; border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+  tr:hover td { background: #0d0d0d; }
+  .badge {
+    display: inline-block; font-size: 9px; padding: 1px 6px;
+    border: 1px solid currentColor; letter-spacing: 1px;
+  }
+  .row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+  .row-actions button { padding: 3px 8px; font-size: 9px; }
+  .muted { color: var(--dimmer); }
+  .center-screen {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+    padding: 24px 28px; width: 340px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .card h1 { font-size: 11px; color: var(--accent); letter-spacing: 2px; margin: 0 0 4px; text-transform: uppercase; font-weight: normal; }
+  .card .sub { font-size: 10px; color: var(--dim); margin: -6px 0 8px; line-height: 1.5; }
+  .card label { font-size: 9px; color: var(--dim); letter-spacing: 1px; }
+  .card input { width: 100%; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .err { font-size: 10px; color: var(--red); min-height: 14px; }
+  #app { display: none; }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 4px 15px;
+    border-bottom: 1px solid var(--line); background: var(--surface-2);
+  }
+  header h1 {
+    font-size: 11px; letter-spacing: 1px; color: #888; margin: 0;
+    text-transform: uppercase; font-weight: normal;
+  }
+  header .tag {
+    font-size: 9px; color: var(--accent); border: 1px solid var(--accent-dim);
+    padding: 1px 6px; border-radius: 3px; letter-spacing: 1px;
+  }
+  header .who { margin-left: auto; font-size: 10px; color: var(--dim); display: flex; gap: 10px; align-items: center; }
+  nav { display: flex; gap: 2px; padding: 0 20px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+  nav button {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--dim); padding: 10px 14px; font-size: 10px; letter-spacing: 1px; border-radius: 0;
+  }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  main { padding: 18px 20px; max-width: 1100px; margin: 0 auto; }
+  section { display: none; }
+  section.active { display: block; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+  .stat {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+    padding: 12px 18px; min-width: 100px;
+  }
+  .stat .n { font-size: 20px; color: var(--accent); font-weight: bold; }
+  .stat .l { font-size: 9px; color: var(--dim); letter-spacing: 1px; margin-top: 2px; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+    margin-bottom: 16px; overflow: hidden;
+  }
+  .panel-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2);
+  }
+  .panel-hdr span { font-size: 9px; letter-spacing: 1px; color: var(--dim); }
+  .panel-body { padding: 14px; }
+  .table-wrap { overflow-x: auto; }
+  .add-form {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end;
+    padding: 12px 14px; border-top: 1px solid var(--line); background: #0d0d0d;
+  }
+  .add-form .field { min-width: 130px; }
+  .versions-row td { background: #080808; padding: 0 10px 10px; }
+  .vlist { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .vitem {
+    font-size: 10px; border-left: 2px solid var(--line); padding: 4px 0 4px 8px;
+    display: flex; gap: 10px; flex-wrap: wrap;
+  }
+  .vitem .h { color: var(--cool); font-family: inherit; }
+  .toast {
+    position: fixed; bottom: 16px; right: 16px; background: var(--surface);
+    border: 1px solid var(--line); padding: 8px 14px; font-size: 10px; border-radius: 4px;
+    display: none; z-index: 50;
+  }
+  .empty { color: var(--dimmer); font-size: 10px; padding: 10px 0; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="center-screen">
+  <div class="card">
+    <h1 id="gate-title">The Poneglyph Hub</h1>
+    <div class="sub" id="gate-sub">Checking hub status…</div>
+    <div id="gate-fields"></div>
+    <div class="err" id="gate-err"></div>
+    <button class="primary" id="gate-btn" style="display:none;">SIGN IN</button>
+  </div>
+</div>
+
+<div id="app">
+  <header>
+    <h1>The Poneglyph Hub</h1>
+    <span class="tag">ADMIN</span>
+    <div class="who">
+      <span id="who-name"></span>
+      <button id="logout-btn">LOG OUT</button>
+    </div>
+  </header>
+  <nav>
+    <button data-tab="stats" class="active">OVERVIEW</button>
+    <button data-tab="users">USERS</button>
+    <button data-tab="substations">SUBSTATIONS</button>
+    <button data-tab="tests">TESTS</button>
+  </nav>
+  <main>
+    <section id="tab-stats" class="active">
+      <div class="stats" id="stats-strip"></div>
+      <div class="panel">
+        <div class="panel-hdr"><span>ABOUT THIS HUB</span></div>
+        <div class="panel-body" style="font-size:11px; color:#999; line-height:1.7;">
+          The test pool is append-only and idempotent by test id — publishing never conflicts.
+          The substation library is a version graph: the hub only fast-forwards or accepts a
+          two-parent merge commit; the structural 3-way merge itself runs on each desktop client.
+          Deleting a user does not remove what they published or authored — history keeps their name.
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-users">
+      <div class="panel">
+        <div class="panel-hdr"><span id="users-count">USERS</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>USERNAME</th><th>DISPLAY NAME</th><th>SIGNATURE</th>
+              <th>ROLE</th><th>STATUS</th><th>CREATED</th><th></th>
+            </tr></thead>
+            <tbody id="users-tbody"></tbody>
+          </table>
+        </div>
+        <div class="add-form">
+          <div class="field"><label>USERNAME</label><input id="nu-user" /></div>
+          <div class="field"><label>DISPLAY NAME</label><input id="nu-name" /></div>
+          <div class="field"><label>PASSWORD</label><input id="nu-pass" type="password" /></div>
+          <label style="display:flex; align-items:center; gap:5px; font-size:10px; color:#999;">
+            <input type="checkbox" id="nu-admin" /> admin
+          </label>
+          <button class="primary" id="nu-add">+ ADD USER</button>
+          <span class="err" id="nu-err" style="flex-basis:100%;"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-substations">
+      <div class="panel">
+        <div class="panel-hdr"><span id="subs-count">SUBSTATIONS</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>NAME</th><th>ONE-LINE SUMMARY</th><th>VERSIONS</th><th>UPDATED</th><th></th>
+            </tr></thead>
+            <tbody id="subs-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-tests">
+      <div class="panel">
+        <div class="panel-hdr"><span id="tests-count">PUBLISHED TESTS</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>NAME</th><th>SUBSTATION</th><th>SESSIONS</th><th>READINGS</th>
+              <th>PUBLISHED BY</th><th>DATE</th><th></th>
+            </tr></thead>
+            <tbody id="tests-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const TOKEN_KEY = "poneglyph_hub_admin_token";
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"
+  }[c]));
+}
+function fmtEpoch(e) { return e ? new Date(e * 1000).toLocaleString() : "—"; }
+function toast(msg, isErr) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.style.borderColor = isErr ? "#622" : "#1f6b47";
+  t.style.color = isErr ? "#c66" : "#3fdc8f";
+  t.style.display = "block";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.style.display = "none"; }, 3200);
+}
+
+function token() { return localStorage.getItem(TOKEN_KEY) || ""; }
+function setToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
+
+function api(path, opts) {
+  opts = opts || {};
+  const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  const tok = token();
+  if (tok) headers["Authorization"] = "Bearer " + tok;
+  return fetch(path, {
+    method: opts.method || "GET",
+    headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  }).then(r => r.json().catch(() => ({})).then(data => {
+    if (r.status === 401) { setToken(""); showGate(); throw new Error("session expired"); }
+    if (!r.ok) throw new Error(data.error || ("request failed (" + r.status + ")"));
+    return data;
+  }));
+}
+
+// ── Gate: bootstrap or login ─────────────────────────────────────────────────
+
+function showGate() {
+  document.getElementById("app").style.display = "none";
+  const gate = document.getElementById("gate");
+  gate.style.display = "flex";
+  const sub = document.getElementById("gate-sub");
+  const fields = document.getElementById("gate-fields");
+  const btn = document.getElementById("gate-btn");
+  const err = document.getElementById("gate-err");
+  err.textContent = "";
+
+  fetch("/api/hub/admin/bootstrap-needed").then(r => r.json()).then(({ needed }) => {
+    btn.style.display = "block";
+    if (needed) {
+      sub.textContent = "No accounts yet — create the first admin account to get started.";
+      fields.innerHTML = `
+        <div class="field"><label>USERNAME</label><input id="bs-user" /></div>
+        <div class="field" style="margin-top:8px;"><label>DISPLAY NAME</label><input id="bs-name" /></div>
+        <div class="field" style="margin-top:8px;"><label>PASSWORD</label><input id="bs-pass" type="password" /></div>`;
+      btn.textContent = "CREATE ADMIN ACCOUNT";
+      btn.onclick = () => {
+        const username = document.getElementById("bs-user").value.trim();
+        const password = document.getElementById("bs-pass").value;
+        const display_name = document.getElementById("bs-name").value.trim();
+        if (!username || !password) { err.textContent = "username and password required"; return; }
+        btn.disabled = true;
+        fetch("/api/hub/admin/bootstrap", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password, display_name }),
+        }).then(r => r.json()).then(d => {
+          btn.disabled = false;
+          if (d.error) { err.textContent = d.error; return; }
+          setToken(d.token);
+          boot();
+        });
+      };
+    } else {
+      sub.textContent = "Sign in with your hub account.";
+      fields.innerHTML = `
+        <div class="field"><label>USERNAME</label><input id="li-user" /></div>
+        <div class="field" style="margin-top:8px;"><label>PASSWORD</label><input id="li-pass" type="password" /></div>`;
+      btn.textContent = "SIGN IN";
+      const submit = () => {
+        const username = document.getElementById("li-user").value.trim();
+        const password = document.getElementById("li-pass").value;
+        if (!username || !password) { err.textContent = "username and password required"; return; }
+        btn.disabled = true;
+        fetch("/api/hub/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        }).then(r => r.json()).then(d => {
+          btn.disabled = false;
+          if (d.error) { err.textContent = d.error; return; }
+          if (!d.is_admin) { err.textContent = "this account is not an admin"; return; }
+          setToken(d.token);
+          boot();
+        }).catch(() => { btn.disabled = false; err.textContent = "network error"; });
+      };
+      btn.onclick = submit;
+      fields.querySelector("#li-pass").addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+    }
+  }).catch(() => { sub.textContent = "Could not reach the hub."; });
+}
+
+// ── App shell ─────────────────────────────────────────────────────────────────
+
+function boot() {
+  if (!token()) { showGate(); return; }
+  api("/api/hub/whoami").then(who => {
+    document.getElementById("gate").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    document.getElementById("who-name").textContent =
+      (who.display_name || who.username) + (who.is_admin ? " · admin" : "");
+    loadAll();
+  }).catch(() => showGate());
+}
+
+document.getElementById("logout-btn").onclick = () => {
+  api("/api/hub/logout", { method: "POST" }).catch(() => {}).then(() => { setToken(""); showGate(); });
+};
+
+document.querySelectorAll("nav button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll("main section").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    document.getElementById("tab-" + b.dataset.tab).classList.add("active");
+  };
+});
+
+function loadAll() {
+  loadStats();
+  loadUsers();
+  loadSubstations();
+  loadTests();
+}
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+
+function loadStats() {
+  api("/api/hub/admin/stats").then(s => {
+    const items = [
+      ["accounts", "USERS"], ["substations", "SUBSTATIONS"], ["versions", "VERSIONS"],
+      ["tests", "PUBLISHED TESTS"], ["tokens", "ACTIVE TOKENS"],
+    ];
+    document.getElementById("stats-strip").innerHTML = items.map(([k, l]) =>
+      `<div class="stat"><div class="n">${s[k] != null ? s[k] : "—"}</div><div class="l">${l}</div></div>`
+    ).join("");
+  }).catch(() => {});
+}
+
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+function loadUsers() {
+  api("/api/hub/admin/users").then(({ users }) => {
+    document.getElementById("users-count").textContent = "USERS (" + users.length + ")";
+    const tbody = document.getElementById("users-tbody");
+    if (!users.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No accounts.</td></tr>'; return; }
+    tbody.innerHTML = users.map(u => `
+      <tr>
+        <td>${esc(u.username)}</td>
+        <td>${esc(u.display_name)}</td>
+        <td class="muted">${u.identity_id ? esc(u.identity_id.slice(0, 8)) : "—"}</td>
+        <td>${u.is_admin
+          ? '<span class="badge" style="color:#3fdc8f;">ADMIN</span>'
+          : '<span class="badge" style="color:#666;">TECHNICIAN</span>'}</td>
+        <td>${u.disabled
+          ? '<span class="badge" style="color:#c66;">DISABLED</span>'
+          : '<span class="badge" style="color:#3fdc8f;">ACTIVE</span>'}</td>
+        <td class="muted">${fmtEpoch(u.created_epoch)}</td>
+        <td>
+          <div class="row-actions">
+            <button data-act="admin" data-u="${esc(u.username)}" data-v="${u.is_admin ? 0 : 1}">
+              ${u.is_admin ? "REVOKE ADMIN" : "MAKE ADMIN"}</button>
+            <button data-act="disable" data-u="${esc(u.username)}" data-v="${u.disabled ? 0 : 1}">
+              ${u.disabled ? "ENABLE" : "DISABLE"}</button>
+            <button data-act="reset" data-u="${esc(u.username)}">RESET PW</button>
+            <button class="danger" data-act="delete" data-u="${esc(u.username)}">DELETE</button>
+          </div>
+        </td>
+      </tr>`).join("");
+
+    tbody.querySelectorAll("button[data-act]").forEach(b => {
+      b.onclick = () => {
+        const u = b.dataset.u, act = b.dataset.act;
+        if (act === "admin") {
+          api("/api/hub/admin/users/set-admin", { method: "POST", body: { username: u, is_admin: b.dataset.v === "1" } })
+            .then(r => { if (r.error) return toast(r.error, true); toast("updated"); loadUsers(); })
+            .catch(e => toast(e.message, true));
+        } else if (act === "disable") {
+          api("/api/hub/admin/users/set-disabled", { method: "POST", body: { username: u, disabled: b.dataset.v === "1" } })
+            .then(() => { toast("updated"); loadUsers(); }).catch(e => toast(e.message, true));
+        } else if (act === "reset") {
+          const pw = prompt("New password for " + u + ":");
+          if (!pw) return;
+          api("/api/hub/admin/users/reset-password", { method: "POST", body: { username: u, password: pw } })
+            .then(() => toast("password reset")).catch(e => toast(e.message, true));
+        } else if (act === "delete") {
+          if (!confirm("Delete account " + u + "? This cannot be undone. Their published work is kept.")) return;
+          api("/api/hub/admin/users/delete", { method: "POST", body: { username: u } })
+            .then(r => { if (r.error) return toast(r.error, true); toast("deleted"); loadUsers(); loadStats(); })
+            .catch(e => toast(e.message, true));
+        }
+      };
+    });
+  }).catch(e => toast(e.message, true));
+}
+
+document.getElementById("nu-add").onclick = () => {
+  const username = document.getElementById("nu-user").value.trim();
+  const display_name = document.getElementById("nu-name").value.trim();
+  const password = document.getElementById("nu-pass").value;
+  const is_admin = document.getElementById("nu-admin").checked;
+  const err = document.getElementById("nu-err");
+  err.textContent = "";
+  if (!username || !password) { err.textContent = "username and password required"; return; }
+  api("/api/hub/admin/users", { method: "POST", body: { username, display_name, password, is_admin } })
+    .then(r => {
+      if (r.error) { err.textContent = r.error; return; }
+      ["nu-user", "nu-name", "nu-pass"].forEach(id => document.getElementById(id).value = "");
+      document.getElementById("nu-admin").checked = false;
+      toast("user created");
+      loadUsers(); loadStats();
+    })
+    .catch(e => { err.textContent = e.message; });
+};
+
+// ── Substations ───────────────────────────────────────────────────────────────
+
+function loadSubstations() {
+  api("/api/hub/substations").then(({ substations }) => {
+    document.getElementById("subs-count").textContent = "SUBSTATIONS (" + substations.length + ")";
+    const tbody = document.getElementById("subs-tbody");
+    if (!substations.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">None uploaded yet.</td></tr>'; return; }
+    tbody.innerHTML = substations.map(s => `
+      <tr>
+        <td>${esc(s.id)}</td>
+        <td>${esc(s.name)}</td>
+        <td class="muted">${esc(s.summary || "—")}</td>
+        <td>${s.version_count}</td>
+        <td class="muted">${fmtEpoch(s.updated_epoch)}</td>
+        <td>
+          <div class="row-actions">
+            <button data-act="hist" data-id="${esc(s.id)}">HISTORY</button>
+            <button class="danger" data-act="del" data-id="${esc(s.id)}">DELETE</button>
+          </div>
+        </td>
+      </tr>
+      <tr class="versions-row" id="vrow-${esc(s.id)}" style="display:none;"><td colspan="6"></td></tr>`
+    ).join("");
+
+    tbody.querySelectorAll("button[data-act='hist']").forEach(b => {
+      b.onclick = () => {
+        const row = document.getElementById("vrow-" + b.dataset.id);
+        const cell = row.querySelector("td");
+        if (row.style.display !== "none") { row.style.display = "none"; return; }
+        row.style.display = "table-row";
+        cell.innerHTML = '<div class="muted" style="padding:8px 0;">Loading…</div>';
+        api("/api/hub/substations/" + encodeURIComponent(b.dataset.id) + "?full=1").then(({ versions }) => {
+          const rev = versions.slice().reverse();
+          cell.innerHTML = '<div class="vlist">' + rev.map(v => `
+            <div class="vitem">
+              <span class="h">${esc(v.id.slice(0, 10))}</span>
+              <span>${esc(v.author || "—")}</span>
+              <span class="muted">${esc(v.message || "")}</span>
+              ${v.merge_parent ? '<span class="badge" style="color:#d8a24a;">MERGE</span>' : ''}
+              <span class="muted" style="margin-left:auto;">${fmtEpoch(v.epoch)}</span>
+            </div>`).join("") + "</div>";
+        });
+      };
+    });
+    tbody.querySelectorAll("button[data-act='del']").forEach(b => {
+      b.onclick = () => {
+        if (!confirm("Delete substation " + b.dataset.id + " and its ENTIRE version history from the hub? This cannot be undone.")) return;
+        api("/api/hub/admin/substations/delete", { method: "POST", body: { substation_id: b.dataset.id } })
+          .then(r => { if (r.error) return toast(r.error, true); toast("deleted"); loadSubstations(); loadStats(); })
+          .catch(e => toast(e.message, true));
+      };
+    });
+  }).catch(e => toast(e.message, true));
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+function loadTests() {
+  api("/api/hub/tests").then(({ tests }) => {
+    document.getElementById("tests-count").textContent = "PUBLISHED TESTS (" + tests.length + ")";
+    const tbody = document.getElementById("tests-tbody");
+    if (!tests.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">None published yet.</td></tr>'; return; }
+    tbody.innerHTML = tests.map(t => `
+      <tr>
+        <td>${esc(t.name || "(untitled)")}</td>
+        <td class="muted">${esc(t.substation_id || "—")}</td>
+        <td>${t.session_count}</td>
+        <td>${t.reading_count}</td>
+        <td>${esc(t.published_by || "—")}</td>
+        <td class="muted">${fmtEpoch(t.published_epoch)}</td>
+        <td><button class="danger" data-id="${esc(t.test_id)}">DELETE</button></td>
+      </tr>`).join("");
+    tbody.querySelectorAll("button[data-id]").forEach(b => {
+      b.onclick = () => {
+        if (!confirm("Remove this published test from the hub? Published copies already pulled by other technicians are unaffected.")) return;
+        api("/api/hub/admin/tests/delete", { method: "POST", body: { test_id: b.dataset.id } })
+          .then(r => { if (r.error) return toast(r.error, true); toast("deleted"); loadTests(); loadStats(); })
+          .catch(e => toast(e.message, true));
+      };
+    });
+  }).catch(e => toast(e.message, true));
+}
+
+boot();
+</script>
+</body>
+</html>

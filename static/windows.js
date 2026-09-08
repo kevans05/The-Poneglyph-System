@@ -10,6 +10,206 @@ let connectionSource = null;
 let _winCascade = 0;
 let _configModalDragged = false;
 
+// Belt-and-braces filter: the backend already strips computed power-flow
+// telemetry from /api/topology, but snapshot payloads or a stale server could
+// still carry per-phase voltages/currents/angles/power. Keep the device window
+// showing structural state only.
+const _TELEMETRY_KEY_RE =
+  /(voltage|current|v-angle|i-angle|\bangle\b|power|watt|\bvars?\b|frequency|\bfreq\b|\bpf\b|power factor|kva|mva|phasor|magnitude)/i;
+
+// Energization state is a steady-state-solve artifact (no simulation now), so
+// drop it — but keep a real switch status ("CLOSED" / "OPEN [...]").
+const _DEAD_STATUS_RE = /de-?energi[sz]ed|dead|open circuit|no load/i;
+
+function _structuralEntries(summary) {
+  return Object.entries(summary || {}).filter(
+    ([k, v]) =>
+      v !== "HEADER" &&
+      !(k.startsWith("---") && k.trimEnd().endsWith("---")) &&
+      !_TELEMETRY_KEY_RE.test(k) &&
+      !(k === "Status" && typeof v === "string" && _DEAD_STATUS_RE.test(v)),
+  );
+}
+
+// Secondary device types (instrument / protection / metering).
+const _SECONDARY_DEV = new Set([
+  "CurrentTransformer", "VoltageTransformer", "DualWindingVT", "CTTB",
+  "FTBlock", "IsoBlock", "Relay", "Meter", "AuxiliaryTransformer",
+]);
+
+// Walk a secondary device's analog inputs back to the primary equipment it
+// ultimately watches. Returns one entry per branch: { trail:[ids], primId }.
+function _tracePrimaryPaths(node) {
+  const byId = (i) => ((currentData && currentData.nodes) || []).find((n) => n.id === i);
+  const out = [];
+  const walk = (n, trail, guard) => {
+    if (!n || guard > 15 || trail.includes(n.id)) return;
+    const t = trail.concat(n.id);
+    const ins = (n.inputs || []).map(byId).filter(Boolean);
+    if (ins.length === 0) {
+      const host = (n.summary && n.summary.Location) || null;
+      out.push({ trail: t, primId: host, leaf: n.id });
+    } else {
+      ins.forEach((i) => walk(i, t, guard + 1));
+    }
+  };
+  walk(node, [], 0);
+  return out;
+}
+
+// Interactive connection editor: primary wiring, secondary/protection feeds,
+// and — for a CTTB or Relay — the input summation as signed I(x) terms you can
+// flip, remove, or add to. Lives here, not in the parameters form.
+function _connectionsBlock(node) {
+  const rid = (v) => (typeof v === "string" ? v : v && v.id);
+  const nid = node.id;
+  const q = (s) => String(s).replace(/'/g, "\\'");
+  const edges = (currentData && currentData.edges) || [];
+
+  const primary = [], sec = [], sec2 = [];
+  edges.forEach((e) => {
+    const s = rid(e.source), t = rid(e.target);
+    if (s !== nid && t !== nid) return;
+    const rec = { other: s === nid ? t : s, mine: s === nid };
+    if (!e.type || e.type === "primary") {
+      rec.b = rec.mine ? e.source_bushing : e.target_bushing;
+      primary.push(rec);
+    } else if (e.type === "protection") sec.push(rec);
+    else if (e.type === "protection2") sec2.push(rec);
+  });
+
+  const host = node.summary && node.summary.Location;
+  const isSummation = ["CTTB", "Relay"].includes(node.type);
+  const isSensor = ["CurrentTransformer", "VoltageTransformer", "DualWindingVT", "AuxiliaryTransformer"].includes(node.type);
+  const isShunt = ["VoltageSource", "Load", "ShuntCapacitor", "ShuntReactor", "SurgeArrester", "SVC", "NeutralGroundingResistor", "Bus", "Line", "PowerLine", "Wire"].includes(node.type);
+
+  // remove-wire button for a classified entry (call delete on the source side)
+  const rmx = (rec) => {
+    const src = rec.mine ? nid : rec.other;
+    const tgt = rec.mine ? rec.other : nid;
+    return `<button class="conn-x" title="remove wire" onclick="breakConnection('${q(src)}','${q(tgt)}')">✕</button>`;
+  };
+  const devRow = (inner) => `<div class="conn-row">${inner}</div>`;
+  const addBtn = (label, call) => `<button class="conn-add" onclick="${call}">${label}</button>`;
+
+  let h = '<div class="section-title">CONNECTIONS</div><div class="conn-block">';
+
+  if (host && host !== nid) {
+    h += devRow(`<span class="conn-tag">MOUNT</span><span class="conn-dev">${host}</span>`);
+  }
+
+  // ── Trace back to the primary equipment this secondary device watches ────
+  if (_SECONDARY_DEV.has(node.type)) {
+    const paths = _tracePrimaryPaths(node);
+    if (paths.length) {
+      h += '<div class="conn-sub">TRACE TO PRIMARY</div>';
+      const kvOf =
+        typeof window !== "undefined" && typeof window.nodeVoltageKv === "function"
+          ? (id) => window.nodeVoltageKv(((currentData && currentData.nodes) || []).find((n) => n.id === id))
+          : () => 0;
+      paths.forEach((p) => {
+        const hops = p.trail
+          .map((idp, i) => (i ? '<span class="trace-arrow">←</span>' : "") + `<span class="trace-hop">${idp}</span>`)
+          .join("");
+        const kv = p.primId ? kvOf(p.primId) : 0;
+        const prim = p.primId
+          ? `<span class="trace-prim">⇒ ${p.primId}</span>` + (kv > 0 ? `<span class="trace-kv">${kv} kV</span>` : "")
+          : `<span class="trace-prim conn-none">⇒ not traced to primary</span>`;
+        h += `<div class="conn-trace">${hops} ${prim}</div>`;
+      });
+    }
+  }
+
+  // ── Summation math (CTTB / Relay) ────────────────────────────────────────
+  if (isSummation) {
+    const pol = (node.params && node.params.input_polarities) || {};
+    const inputs = node.inputs || [];
+    let head = '<div class="conn-sub">Σ INPUTS';
+    if (node.type === "CTTB") {
+      const diff = (node.params && node.params.mode) === "DIFFERENTIAL";
+      head += `<span class="conn-modes">` +
+        `<button class="conn-mode${!diff ? " on" : ""}" onclick="setSummationMode('${q(nid)}','SUM')">Σ SUM</button>` +
+        `<button class="conn-mode${diff ? " on" : ""}" onclick="setSummationMode('${q(nid)}','DIFFERENTIAL')">± DIFF</button>` +
+        `</span>`;
+    }
+    h += head + "</div>";
+
+    if (inputs.length === 0) {
+      h += devRow(`<span class="conn-dev conn-none">no inputs wired</span>`);
+    } else {
+      inputs.forEach((inId) => {
+        const p = pol[inId] === -1 ? -1 : 1;
+        const col = p === 1 ? "#3fdc8f" : "#f66";
+        h += devRow(
+          `<button class="conn-sign" style="color:${col};border-color:${col};" title="flip polarity" ` +
+          `onclick="toggleInputPolarity('${q(nid)}','${q(inId)}',${p})">${p === 1 ? "+" : "−"}</button>` +
+          `<span class="conn-term">I(<b>${inId}</b>)</span>` +
+          `<button class="conn-x" title="remove input" onclick="breakConnection('${q(inId)}','${q(nid)}')">✕</button>`,
+        );
+      });
+    }
+    h += addBtn("＋ ADD INPUT", `addSummationInput('${q(nid)}')`);
+
+    const outs = sec.filter((x) => x.mine);
+    h += '<div class="conn-sub">OUTPUT →</div>';
+    if (outs.length === 0) {
+      h += devRow(`<span class="conn-dev conn-none">not wired onward</span>`);
+    } else {
+      outs.forEach((o) => (h += devRow(`<span class="conn-dev">→ ${o.other}</span>${rmx(o)}`)));
+    }
+    h += addBtn("＋ WIRE OUTPUT →", `startSecondaryConnectionMode('${q(nid)}')`);
+    return h + "</div>";
+  }
+
+  // ── Primary wiring ───────────────────────────────────────────────────────
+  h += '<div class="conn-sub">PRIMARY</div>';
+  if (primary.length === 0) {
+    h += devRow(`<span class="conn-dev conn-none">— not wired —</span>`);
+  } else {
+    primary.forEach((p) =>
+      (h += devRow(
+        `<span class="conn-tag">${p.b || "•"}</span><span class="conn-dev">↔ ${p.other}</span>${rmx(p)}`,
+      )),
+    );
+  }
+  if (isShunt) {
+    h += addBtn("＋ ADD CONNECTION →", `startConnectionMode('${q(nid)}','X')`);
+  } else {
+    h += '<div class="conn-addrow">' +
+      `<button class="conn-add" onclick="startConnectionMode('${q(nid)}','H')">＋ ON&nbsp;H</button>` +
+      `<button class="conn-add" onclick="startConnectionMode('${q(nid)}','X')">＋ ON&nbsp;X</button>` +
+      "</div>";
+  }
+
+  // ── Secondary / protection feeds ─────────────────────────────────────────
+  const showSec =
+    sec.length || sec2.length || isSensor ||
+    ["FTBlock", "IsoBlock", "Meter"].includes(node.type);
+  if (showSec) {
+    h += '<div class="conn-sub">SECONDARY</div>';
+    if (sec.length === 0 && sec2.length === 0) {
+      h += devRow(`<span class="conn-dev conn-none">— none —</span>`);
+    } else {
+      sec.forEach((s) =>
+        (h += devRow(`<span class="conn-dev">${s.mine ? "→" : "←"} ${s.other}</span>${rmx(s)}`)),
+      );
+      sec2.forEach((s) =>
+        (h += devRow(
+          `<span class="conn-tag">W2</span><span class="conn-dev">${s.mine ? "→" : "←"} ${s.other}</span>${rmx(s)}`,
+        )),
+      );
+    }
+    if (isSensor) {
+      h += addBtn("＋ WIRE OUTPUT →", `startSecondaryConnectionMode('${q(nid)}')`);
+      if (node.type === "DualWindingVT") {
+        h += addBtn("＋ WIRE W2 OUTPUT →", `startSecondary2ConnectionMode('${q(nid)}')`);
+      }
+    }
+  }
+
+  return h + "</div>";
+}
+
 // Detached popup windows: deviceId → popup window reference
 let _popupWindows = {};
 
@@ -98,7 +298,7 @@ function mountAnalFramework() {
   refreshData();
 }
 
-function updateStatusBar(reference, syncErrors) {
+function updateStatusBar(syncErrors) {
   const bar = d3.select("#status-bar");
   let html = "";
 
@@ -109,27 +309,12 @@ function updateStatusBar(reference, syncErrors) {
       html += `⚠ SYNC FAULT: ${err.sources.join(" ↔ ")} — ${issues}</span>`;
     });
     bar.style("background", "#0d0000").style("color", "#f44");
-  } else if (compareData) {
-    html += `<span style="background:#420; color:#fa0; padding:2px 8px; margin-right:15px; border:1px solid #fa0;">COMPARISON MODE ACTIVE: ${compareData.filename}</span>`;
-    html += `<span onclick="exitCompareMode()" style=\"text-decoration:underline; cursor:pointer; margin-right:20px; color:#f88;">[ EXIT COMPARE ]</span>`;
-    bar.style("background", "#111").style("color", "#0f0");
-  } else if (reference && reference.device_id) {
-    html += `PHASE REFERENCE ACTIVE: <span style="color:#fff; font-weight:bold;">${reference.device_id} (Phase ${reference.phase})</span>`;
-    html += ' <span onclick="setAsReference(null, null)" style=\"text-decoration:underline; cursor:pointer; margin-left:20px; color:#f88;">[ CLEAR REFERENCE ]</span>';
-    bar.style("background", "#002200").style("color", "#0f0");
   } else {
-    html += "Navigation System Standby (Internal 0° Reference).";
+    html += "Load-Test Console — ready.";
     bar.style("background", "#111").style("color", "#0f0");
   }
 
   bar.html(html).style("display", "block");
-}
-
-function setAsReference(deviceId, phase) {
-  reconfigureAPI(null, "set_reference", {
-    device_id: deviceId,
-    phase: phase,
-  }).then(() => refreshData());
 }
 
 function openWindow(node) {
@@ -158,7 +343,6 @@ function openWindow(node) {
     '<button class="ang-conv-btn" onclick="_toggleAngleConv()" title="Toggle angle convention">' +
     (_use360Lag ? "360°" : "±180°") +
     '</button>' +
-    '<button class="ang-conv-btn ref-pick-btn" onclick="_showRefPicker(\'' + escapedId + '\')" title="Set device as 0° phase reference">⊙ REF</button>' +
     '<button class="ang-conv-btn" onclick="detachWindow(\'' + escapedId + '\')" title="Open in new window" style="font-size:12px;">⤢</button>' +
     '<span style="cursor:pointer;color:#888;padding:2px 4px;" onclick="closeWindow(\'' + escapedId + '\')" title="Close">✕</span>' +
     '</span></div>' +
@@ -235,8 +419,14 @@ function _syncWindowToPopup(id, node) {
     const target = popup.document.getElementById("win-" + safeId);
     if (!target) return;
     target.innerHTML = src.innerHTML;
-    if (typeof popup.drawPhasors === "function") {
-      popup.drawPhasors(id, node.summary, node.type);
+    // The inline config form uses live JS handlers that don't survive an
+    // innerHTML copy — in the popup, offer the modal editor instead.
+    const pcfg = popup.document.getElementById("cfg-body-" + safeId);
+    if (pcfg) {
+      pcfg.innerHTML =
+        '<button class="eng-btn" style="width:100%" onclick="showConfigModal(\'' +
+        id.replace(/'/g, "\\'") +
+        '\')">EDIT PARAMETERS…</button>';
     }
     // Sync angle button label
     const angBtn = popup.document.getElementById("detached-ang-btn");
@@ -251,9 +441,9 @@ function _syncWindowToPopup(id, node) {
   }
 }
 
-// Resolve the current node data from either live data or simulation data
+// Resolve the current node data from the live topology.
 function _resolveNode(id) {
-  const data = (typeof simData !== "undefined" && simData) ? simData : currentData;
+  const data = currentData;
   return data && data.nodes && data.nodes.find(n => n.id === id);
 }
 
@@ -267,101 +457,24 @@ function _saveDeviceNotesFromPopup(deviceId, notes) {
   });
 }
 
-/**
- * Show a small dropdown beneath the REF button letting the user pick which
- * phase (A / B / C) of this device becomes the global 0° reference, or clear
- * the active reference entirely.
- */
-function _showRefPicker(nodeId) {
-  // Remove any existing picker
-  const existing = document.getElementById("_ref-picker-popup");
-  if (existing) { existing.remove(); return; }
-
-  const win = openWindows[nodeId];
-  if (!win) return;
-  const btn = win.querySelector(".ref-pick-btn");
-  if (!btn) return;
-
-  const popup = document.createElement("div");
-  popup.id = "_ref-picker-popup";
-  popup.style.cssText =
-    "position:absolute;background:#111;border:1px solid #3af;z-index:99999;" +
-    "font-family:'Consolas','Courier New',monospace;font-size:10px;min-width:160px;" +
-    "box-shadow:0 4px 16px rgba(0,0,0,0.8);";
-
-  const rect = btn.getBoundingClientRect();
-  popup.style.left = rect.left + "px";
-  popup.style.top = (rect.bottom + 4) + "px";
-
-  const currentRef = currentData && currentData.reference;
-  const isActive = currentRef && currentRef.device_id === nodeId;
-
-  const phases = ["A", "B", "C"];
-  let html = '<div style="padding:6px 10px;color:#3af;letter-spacing:1px;border-bottom:1px solid #222;font-size:9px;">SET 0° REFERENCE — ' + nodeId + '</div>';
-  phases.forEach(ph => {
-    const isSelected = isActive && currentRef.phase === ph;
-    html += `<div class="ref-pick-item${isSelected ? " ref-pick-selected" : ""}" onclick="_applyRef('${nodeId.replace(/'/g,"\\'")}','${ph}')">`;
-    html += `<span style="color:#3af;width:18px;display:inline-block;">${isSelected ? "●" : "○"}</span>`;
-    html += `Phase ${ph} → 0°</div>`;
-  });
-  html += '<div class="ref-pick-item ref-pick-clear" onclick="_applyRef(null,null)">✕ &nbsp;Clear reference</div>';
-  popup.innerHTML = html;
-  document.body.appendChild(popup);
-
-  // Close on outside click
-  setTimeout(() => {
-    document.addEventListener("click", function _closeRefPicker(e) {
-      if (!popup.contains(e.target)) {
-        popup.remove();
-        document.removeEventListener("click", _closeRefPicker);
-      }
-    });
-  }, 0);
-}
-
-function _applyRef(deviceId, phase) {
-  const popup = document.getElementById("_ref-picker-popup");
-  if (popup) popup.remove();
-  setAsReference(deviceId, phase);
-}
-
 // ── Summary row rendering helpers ─────────────────────────────────────────────
 
-function _renderSummaryRows(entries, compNode) {
+function _renderSummaryRows(entries) {
   let html = "";
   entries.forEach(function(entry) { var key = entry[0], value = entry[1];
     if (value === "HEADER") {
       html += `<div style="background:#1a1a1a; padding:2px 8px; font-size:10px; color:#aaa; margin-top:8px; text-align:center; border:1px solid #333; text-transform:uppercase;">${key.replace(/-/g, "").trim()}</div>`;
     } else {
-      let valDisplay = "", compDisplay = "";
+      let valDisplay;
       if (typeof value === "number") {
-        const isAngle = unitsMap[key] === "deg";
-        valDisplay = isAngle ? _fmtAngle(value) : formatSI(value, unitsMap[key] || "");
-        if (compNode?.summary?.[key] !== undefined) {
-          const histVal = compNode.summary[key];
-          const delta = value - histVal;
-          const deltaColor = delta > 0 ? "#0f0" : delta < 0 ? "#f00" : "#888";
-          const deltaSign = delta > 0 ? "+" : "";
-          const hd = isAngle ? _fmtAngle(histVal) : formatSI(histVal, unitsMap[key] || "");
-          const dd = isAngle ? (deltaSign + delta.toFixed(1) + "°") : formatSI(delta, unitsMap[key] || "");
-          compDisplay = `<div style="font-size:9px; color:#666; margin-top:-2px;">Historic: ${hd} <span style="color:${deltaColor}">(${dd})</span></div>`;
-        }
+        valDisplay = unitsMap[key] === "deg" ? _fmtAngle(value) : formatSI(value, unitsMap[key] || "");
       } else {
         valDisplay = value;
       }
-      const isPhaseDetail = key.startsWith("Phase") || key.startsWith("Pri Phase") || key.startsWith("Sec Current Phase") || key.startsWith("Sec Voltage Phase") || key.startsWith("Sec2 Voltage Phase");
-      const indent = isPhaseDetail ? "padding-left:20px;" : "";
-      html += `<div class="stat-row" style="${indent} flex-direction:column; align-items:stretch; border-bottom:1px solid #222; padding:4px 0;"><div style="display:flex; justify-content:space-between;"><span class="stat-label">${key}:</span><span class="stat-value">${valDisplay}</span></div>${compDisplay}</div>`;
+      html += `<div class="stat-row" style="flex-direction:column; align-items:stretch; border-bottom:1px solid #222; padding:4px 0;"><div style="display:flex; justify-content:space-between;"><span class="stat-label">${key}:</span><span class="stat-value">${valDisplay}</span></div></div>`;
     }
   });
   return html;
-}
-
-// Split entries at a key whose text includes markerSubstr. Returns [before, after] (marker entry excluded).
-function _splitSummaryAt(entries, markerSubstr) {
-  const idx = entries.findIndex(([k]) => k.includes(markerSubstr));
-  if (idx === -1) return [entries, []];
-  return [entries.slice(0, idx), entries.slice(idx + 1)];
 }
 
 // ── updateWindow ───────────────────────────────────────────────────────────────
@@ -372,88 +485,19 @@ function updateWindow(id, node) {
   const content = document.getElementById("win-" + safeId);
   if (!content) return;
 
-  let compNode = null;
-  if (compareData) compNode = compareData.nodes.find((n) => n.id === node.id);
-
   let html = "";
 
-  // 1. PHASOR DIAGRAMS + TELEMETRY — per-winding layout for multi-winding devices
-  if (node.type === "DualWindingVT") {
-    const allEntries = Object.entries(node.summary || {});
-    const [w1Entries, w2Entries] = _splitSummaryAt(allEntries, "WINDING 2");
-    html += `<div class="section-title">WINDING 1 — ANALYSIS</div><div class="phasor-box" id="phasor-sec-${safeId}"></div>`;
-    html += _renderSummaryRows(w1Entries, compNode);
-    html += `<div class="section-title">WINDING 2 — ANALYSIS</div><div class="phasor-box" id="phasor-sec2-${safeId}"></div>`;
-    html += _renderSummaryRows(w2Entries, compNode);
-
-  } else if (node.type === "PowerTransformer") {
-    const allEntries = Object.entries(node.summary || {});
-    const [sharedEntries, afterPri] = _splitSummaryAt(allEntries, "PRIMARY SIDE");
-    const [priEntries, secEntries] = _splitSummaryAt(afterPri, "SECONDARY SIDE");
-    html += _renderSummaryRows(sharedEntries, compNode);
-    html += `<div class="section-title">PRIMARY WINDING (H)</div><div class="phasor-box" id="phasor-pri-${safeId}"></div>`;
-    html += _renderSummaryRows(priEntries, compNode);
-    html += `<div class="section-title">SECONDARY WINDING (X)</div><div class="phasor-box" id="phasor-sec-${safeId}"></div>`;
-    html += _renderSummaryRows(secEntries, compNode);
-
-  } else {
-    // Standard single-winding device
-    html += `<div class="section-title">PHASOR ANALYSIS</div><div class="phasor-box" id="phasor-${safeId}"></div>`;
-
-    // Protection devices: show per-input breakdown first
-    const isProtection = ["Relay", "CTTB", "FTBlock"].includes(node.type);
-    const inputNodes = isProtection && node.inputs?.length > 0
-      ? node.inputs.map((id) => (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id)).filter(Boolean)
-      : [];
-
-    if (inputNodes.length > 0) {
-      html += '<div class="section-title">INPUT SOURCES</div>';
-      const isRelay = ["Relay", "CTTB"].includes(node.type);
-      const polarities = (isRelay && node.params?.input_polarities) ? node.params.input_polarities : {};
-      inputNodes.forEach((inp) => {
-        const s = inp.summary || {};
-        const pol = polarities[inp.id] === -1 ? -1 : 1;
-        const polLabel = pol === 1 ? "+" : "−";
-        const polColor = pol === 1 ? "#0a0" : "#f44";
-        const borderColor = pol === 1 ? "#1a4" : "#611";
-        html += `<div style="background:#0d0d0d; margin:3px 0; padding:6px 10px; border-left:3px solid ${borderColor};">`;
-        html += `<div style="font-size:9px; color:#888; margin-bottom:5px; display:flex; justify-content:space-between; align-items:center;">`;
-        html += `<span style="color:#aaa;">${inp.id}</span>`;
-        html += `<span style="color:#555;">[${inp.type}]</span>`;
-        if (isRelay) {
-          html += `<button onclick="toggleInputPolarity('${node.id}', '${inp.id}', ${pol})" style="margin-left:8px; background:#111; border:1px solid ${polColor}; color:${polColor}; font-size:11px; font-weight:bold; width:22px; height:18px; cursor:pointer; line-height:1;">${polLabel}</button>`;
-        }
-        html += `</div>`;
-        ["A", "B", "C"].forEach((p) => {
-          const iMag = s[`Sec Current Phase ${p}`], iAng = s[`Phase ${p} I-Angle`];
-          const vMag = s[`Sec Voltage Phase ${p}`], vAng = s[`Phase ${p} V-Angle`];
-          if (iMag !== undefined) html += `<div style="display:flex; justify-content:space-between; font-size:10px; padding:1px 0; color:#aaa;"><span style="color:#0a0; width:50px;">Ph${p} I</span><span>${pol === -1 ? '<span style="color:#f66">−</span>' : ''}${formatSI(iMag, "A")} &nbsp;∠&nbsp;${_fmtAngle(iAng || 0)}</span></div>`;
-          if (vMag !== undefined) html += `<div style="display:flex; justify-content:space-between; font-size:10px; padding:1px 0; color:#aaa;"><span style="color:#66f; width:50px;">Ph${p} V</span><span>${formatSI(vMag, "V")} &nbsp;∠&nbsp;${_fmtAngle(vAng || 0)}</span></div>`;
-        });
-        html += `</div>`;
-      });
-      let mathOp;
-      if (node.type === "CTTB") {
-        mathOp = node.params?.mode === "DIFFERENTIAL" ? "DIFFERENTIAL (I₁ − I₂)" : "VECTOR SUM (Σ I)";
-      } else if (isRelay) {
-        const signs = inputNodes.map((inp) => (polarities[inp.id] === -1 ? "−" : "+"));
-        const allPos = signs.every((s) => s === "+");
-        if (allPos) {
-          mathOp = "VECTOR SUM (Σ I)";
-        } else {
-          mathOp = signs.map((s, i) => `${i === 0 && s === "+" ? "" : s + " "}I${i + 1}`).join(" ").trim();
-        }
-      } else {
-        mathOp = "SUM";
-      }
-      html += `<div style="font-size:9px; color:#555; text-align:center; padding:4px; margin-bottom:2px; border:1px dashed #222;">MATH: ${mathOp}</div>`;
-      html += '<div class="section-title">COMBINED RESULT</div>';
-    } else {
-      html += '<div class="section-title">TELEMETRY DATA</div>';
-    }
-
-    html += _renderSummaryRows(Object.entries(node.summary || {}), compNode);
+  // Secondary devices: headline action — spin up a load test for the scheme.
+  if (_SECONDARY_DEV.has(node.type)) {
+    html +=
+      '<button class="cmd-btn" style="width:100%;background:#0d160d;color:#3fdc8f;border-color:#1f6b47;margin-bottom:8px;font-weight:bold;" ' +
+      "onclick=\"_generateLoadTest('" + node.id.replace(/'/g, "\\'") + "')\">⚡ GENERATE LOAD TEST</button>";
   }
+
+  html += '<div class="section-title">DEVICE STATE</div>';
+  html += _renderSummaryRows(_structuralEntries(node.summary));
+
+  html += _connectionsBlock(node);
 
   // Sync error banner (VoltageSource with conflicts)
   if (node.type === "VoltageSource" && node.sync_errors?.length > 0) {
@@ -482,44 +526,6 @@ function updateWindow(id, node) {
       "</button>";
   }
 
-  
-  // Relay Control (Multi-Output)
-  if (node.type === "Relay") {
-    const outputs = (node.params && (node.params && node.params.digital_outputs)) || ["TRIP", "OUT101", "OUT102"];
-    const overrides = (node.params && (node.params && node.params.output_manual_overrides)) || {};
-    
-    html += "<div class=\"section-title\">OUTPUT CONTROL (MANUAL)</div>";
-    html += "<div style=\"display:grid; grid-template-columns: 1fr 1fr; gap:4px;\">";
-    outputs.forEach(out => {
-      const isForced = overrides[out] === true;
-      const btnCol = isForced ? "#522" : "#111";
-      const txtCol = isForced ? "#f44" : "#888";
-      const label = isForced ? "FORCE " + out : "OVERRIDE " + out;
-      html += "<button class=\"eng-btn\" style=\"background:" + btnCol + "; color:" + txtCol + "; border-color:" + txtCol + "; font-size:9px;\" " +
-              "onclick=\"toggleTerminalOverride(\'" + node.id + "\', \'" + out + "\', " + (!isForced) + ")\">" + label + "</button>";
-    });
-    html += "</div>";
-
-    const isMech = node.summary["Category"] === "Electromechanical";
-    if (isMech) {
-      const isDropped = node.summary["Target / Flag"] === "DROPPED";
-      const tLabel = isDropped ? "RESET TARGET / FLAG" : "DROP TARGET";
-      const tCol = isDropped ? "#f80" : "#444";
-      html += "<button class=\"cmd-btn\" style=\"background:#111; color:" + tCol + "; border-color:" + tCol + "; margin-top:4px;\" " +
-              "onclick=\"toggleRelayTarget(\'" + node.id + "\', " + (!isDropped) + ")\">" + tLabel + "</button>";
-    }
-    html += "<button class=\"cmd-btn\" style=\"background:#001530; color:#3af; border-color:#3af; margin-top:4px;\" " +
-            "onclick=\"showLogicDesigner(\'" + node.id + "\')\">LOGIC DESIGNER <span>CONFIG</span></button>";
-    html += "<button class=\"cmd-btn\" style=\"background:#001a1a; color:#4ff; border-color:#4ff; margin-top:4px;\" " +
-            "onclick=\"showTCCPlot(\'" + node.id + "\')\">TCC COORDINATION PLOT</button>";
-
-    if (typeof simActive !== "undefined" && simActive) {
-      html += "<button class=\"cmd-btn\" style=\"background:#001a00; color:#4f4; border-color:#4f4; margin-top:4px;\" " +
-              "onclick=\"showRelaySettingsEditor(\'" + node.id + "\')\">RELAY SETTINGS <span>SIM</span></button>";
-      html += "<button class=\"cmd-btn\" style=\"background:#0a0018; color:#c8a0ff; border-color:#c8a0ff; margin-top:4px;\" " +
-              "onclick=\"showOscillography(\'" + node.id + "\')\">OSCILLOGRAPHY <span>SIM</span></button>";
-    }
-  }
   // 4. ENGINEERING CONTROLS (Grouped)
   html += '<div class="section-title">ENGINEERING CONTROLS</div>';
 
@@ -543,7 +549,6 @@ function updateWindow(id, node) {
       "VoltageTransformer",
       "DualWindingVT",
       "FTBlock",
-      "Indicator",
       "Meter",
       "AuxiliaryTransformer",
     ].includes(node.type)
@@ -559,11 +564,6 @@ function updateWindow(id, node) {
         "</div>";
       html +=
         '<div style="display:flex; gap:4px; margin-top:2px;">' +
-        '<button class="eng-btn" style="flex:1" onclick="startConnectionMode(\'' +
-        node.id +
-        "', '" +
-        b +
-        "')\">CONNECT <span>&rarr;</span></button>" +
         '<button class="eng-btn" style="flex:1" onclick="showPlantMenu(event.pageX, event.pageY, snapToGrid(' +
         gx +
         "+60), snapToGrid(" +
@@ -573,9 +573,6 @@ function updateWindow(id, node) {
         "', '" +
         b +
         "')\">PLANT <span>+</span></button>" +
-        "</div>";
-      html +=
-        '<div style="display:flex; gap:4px; margin-top:2px;">' +
         '<button class="eng-btn" style="flex:1" onclick="quickAddSensor(\'' +
         node.id +
         "', 'CT', '" +
@@ -595,93 +592,22 @@ function updateWindow(id, node) {
     });
   }
 
-  // Secondary/Protection Chaining
+  // Add a downstream protection stage from a sensor / summation device.
   if (
-    [
-      "CurrentTransformer",
-      "CTTB",
-      "Relay",
-      "VoltageTransformer",
-      "DualWindingVT",
-      "FTBlock",
-      "Indicator",
-      "Meter",
-      "AuxiliaryTransformer",
-    ].includes(node.type)
+    ["CurrentTransformer", "CTTB", "VoltageTransformer", "DualWindingVT", "FTBlock"].includes(node.type)
   ) {
     const isCurrent = ["CurrentTransformer", "CTTB"].includes(node.type);
-    const header = isCurrent ? "CURRENT ANALOG PATH" : "VOLTAGE ANALOG PATH";
-    const addType = isCurrent ? "CTTB" : "FT";
     html +=
-      '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">' +
-      header +
+      '<div style="display:flex; gap:4px; margin-top:8px;">' +
+      '<button class="eng-btn" style="flex:1" onclick="' + (isCurrent ? "addCTTB" : "addFTBlock") + "('" + node.id + "')\">+ " + (isCurrent ? "CTTB" : "FT") + " STAGE</button>" +
+      '<button class="eng-btn" style="flex:1" onclick="addRelay(\'' + node.id + "')\">+ RELAY</button>" +
       "</div>";
-    html +=
-      '<div style="display:flex; gap:4px; margin-top:2px;">' +
-      '<button class="eng-btn" style="flex:1" onclick="' +
-      (isCurrent ? "addCTTB" : "addFTBlock") +
-      "('" +
-      node.id +
-      "')\">+SUM (" +
-      addType +
-      ")</button>" +
-      '<button class="eng-btn" style="flex:1" onclick="addRelay(\'' +
-      node.id +
-      "')\">+RELAY</button>" +
-      '<button class="eng-btn" style="flex:1" onclick="startSecondaryConnectionMode(\'' +
-      node.id +
-      "')\">W1 CONN <span>&rarr;</span></button>" +
-      (node.type === 'DualWindingVT' ? '<button class="eng-btn" style="flex:1; background:#321; color:#ff9933;" onclick="startSecondary2ConnectionMode(\'' + node.id + '\')">W2 CONN <span>&rarr;</span></button>' : '') +
-      '<button class="eng-btn" style="flex:1; background:#320; color:#fa0;" onclick="startDCConnectionMode(\'' +
-      node.id +
-      "\')\">DC <span>&rarr;</span></button>" +
-      "</div>";
-  }
-
-
-  // 5. CONTROL & DC WIRING
-  const controlTypes = ["Relay", "Indicator", "Meter", "CircuitBreaker", "Disconnect", "CTTB", "FTBlock"];
-  if (controlTypes.includes(node.type)) {
-    html += '<div class="section-title">CONTROL & DC WIRING</div>';
-    html += '<div style="display:flex; gap:4px; margin-top:2px;">';
-    html += '<button class="eng-btn" style="flex:1; background:#320; color:#fa0;" onclick="startDCConnectionMode(\'' + node.id + '\')">DC <span>&rarr;</span></button>';
-    html += '<button class="eng-btn" style="flex:1; background:#311; color:#f66;" onclick="startTripConnectionMode(\'' + node.id + '\')">TRIP <span>&rarr;</span></button>';
-    html += '<button class="eng-btn" style="flex:1; background:#121; color:#6f6;" onclick="startCloseConnectionMode(\'' + node.id + '\')">CLOSE <span>&rarr;</span></button>';
-    html += '</div>';
-    
-    // Wire From Input (reverse mode)
-    html += '<div style="display:flex; gap:4px; margin-top:4px;">';
-    html += '<button class="eng-btn" style="flex:1; font-size:8px; opacity:0.7;" onclick="startDCConnectionMode(\'' + node.id + '\')">WIRE FROM INPUT Terminal</button>';
-    html += '</div>';
-  }
-
-  // Phase Reference Selection
-  if (
-    ["VoltageTransformer", "DualWindingVT", "CurrentTransformer"].includes(
-      node.type,
-    )
-  ) {
-    html +=
-      '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">SET AS PHASE REFERENCE</div>';
-    html += '<div style="display:flex; gap:4px; margin-top:2px;">';
-    const isDelta =
-      (node.summary && (node.summary && node.summary.Connection)) && (node.summary && (node.summary && node.summary.Connection)).includes("Delta");
-    const phases = isDelta ? ["AB", "BC", "CA"] : ["A", "B", "C"];
-    phases.forEach((ph) => {
-      html += `<button class="eng-btn" style="flex:1" onclick="setAsReference('${node.id}', '${ph}')">${ph}</button>`;
-    });
-    html += "</div>";
   }
 
   // 5. DEVICE MANAGEMENT
   html += '<div class="section-title">DEVICE CONFIGURATION</div>';
   html +=
     '<div style="display:flex; gap:4px;">' +
-    '<button class="eng-btn" style="flex:1" onclick="' +
-    (node.type === "Load" ? "showLoadConfigModal" : "showConfigModal") +
-    "('" +
-    node.id +
-    "')\">PARAMS <span>⚙</span></button>" +
     '<button class="eng-btn" style="flex:1" onclick="rotateDevice(\'' +
     node.id +
     "', " +
@@ -695,6 +621,14 @@ function updateWindow(id, node) {
     "')\">DELETE <span>🗑</span></button>" +
     "</div>";
 
+  // Device parameters — rendered inline below (no popup).
+  html += '<div class="section-title" style="margin-top:10px;">PARAMETERS</div>';
+  if (node.type === "Load") {
+    html += `<button class="eng-btn" style="width:100%;" onclick="showLoadConfigModal('${node.id}')">EDIT LOAD P / Q…</button>`;
+  } else {
+    html += `<div id="cfg-body-${safeId}" class="win-params"></div>`;
+  }
+
   // Serial number tracking — shows current serial and lets user record swaps
   const curSerial = (node.params && node.params.serial_number) || null;
   html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ASSET SERIAL NUMBER</div>';
@@ -706,7 +640,7 @@ function updateWindow(id, node) {
 
   // Analog history — lets technician review all recorded measurements for this device
   html += '<div style="font-size:9px; color:#666; margin-top:8px; border-bottom:1px solid #222;">ANALOG HISTORY</div>';
-  html += `<button class="eng-btn" style="width:100%; margin-top:2px;" onclick="showAnalogHistoryModal('${node.id}', ${JSON.stringify(Object.keys(node.summary || {}))})">VIEW RECORDED MEASUREMENTS</button>`;
+  html += `<button class="eng-btn" style="width:100%; margin-top:2px;" onclick="showAnalogHistoryModal('${node.id}')">VIEW RECORDED MEASUREMENTS</button>`;
 
   // Drawings — attached drawing references for this device
   html += '<div class="section-title" style="margin-top:12px;">DRAWINGS</div>';
@@ -719,8 +653,20 @@ function updateWindow(id, node) {
   html += `<textarea id="_dnotes-${safeId}" style="width:100%;box-sizing:border-box;margin-top:3px;background:#0d0d0d;border:1px solid #333;color:#bbb;font-family:inherit;font-size:10px;padding:5px 7px;resize:vertical;min-height:46px;outline:none;" placeholder="Add notes about this device…">${curNotes}</textarea>`;
   html += `<button class="eng-btn" style="width:100%;margin-top:2px;color:#3af;border-color:#1a3a5a;" onclick="_saveDeviceNotes('${node.id}','${safeId}')">SAVE NOTES</button>`;
 
+  // Preserve an in-progress parameter edit across a background refresh: if the
+  // user is typing in this window's inline config, keep the existing form.
+  const prevCfg = document.getElementById("cfg-body-" + safeId);
+  const keepCfg =
+    prevCfg && prevCfg.contains(document.activeElement) ? prevCfg : null;
+
   content.innerHTML = html;
-  drawPhasors(id, node.summary, node.type);
+
+  const cfgBody = document.getElementById("cfg-body-" + safeId);
+  if (cfgBody && keepCfg) {
+    cfgBody.replaceWith(keepCfg); // restore the form the user was editing
+  } else if (cfgBody && typeof renderInlineConfig === "function") {
+    renderInlineConfig(d3.select(cfgBody), node, () => refreshData());
+  }
   _renderWindowDrawingStrip(safeId, node.id);
   _syncWindowToPopup(id, node);
 }

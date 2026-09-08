@@ -49,8 +49,6 @@
             <span style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
                 <button class="ang-conv-btn" id="detached-ang-btn"
                     onclick="_toggleAngleConv()" title="Toggle angle convention">±180°</button>
-                <button class="ang-conv-btn ref-pick-btn" id="detached-ref-btn"
-                    onclick="_showRefPicker(window._detachedDeviceId)" title="Set 0° reference">⊙ REF</button>
                 <span style="cursor:pointer;color:#888;padding:2px 4px;"
                     onclick="window.close()" title="Close">✕</span>
             </span>
@@ -60,14 +58,11 @@
 
     <!-- Shared utilities -->
     <script src="/static/utils.js"></script>
-    <!-- Phasor rendering (needs D3 + utils already loaded) -->
-    <script src="/static/visualization.js"></script>
 
     <script>
-    // ── Globals expected by visualization.js ──────────────────────────────────
+    // ── Globals shared with the opener's window/render helpers ────────────────
     var openWindows   = {};
     var currentData   = null;
-    var compareData   = null;
     var _use360Lag    = true;
 
     // Device ID this popup is displaying
@@ -132,12 +127,10 @@
     // ── Proxy functions — all interactive controls forward to parent ──────────
     function toggleDevice(id)                         { window.opener.toggleDevice(id); }
     function toggleInputPolarity(nId, iId, pol)       { window.opener.toggleInputPolarity(nId, iId, pol); }
-    function toggleTerminalOverride(id, out, forced)  { window.opener.toggleTerminalOverride(id, out, forced); }
-    function toggleRelayTarget(id, dropped)           { window.opener.toggleRelayTarget(id, dropped); }
-    function showLogicDesigner(id)                    { window.opener.showLogicDesigner(id); }
-    function showTCCPlot(id)                          { window.opener.showTCCPlot(id); }
-    function showRelaySettingsEditor(id)              { window.opener.showRelaySettingsEditor(id); }
-    function showOscillography(id, w)                 { window.opener.detachOscillography(id, w || 30000); }
+    function setSummationMode(id, mode)               { window.opener.setSummationMode(id, mode); }
+    function addSummationInput(id)                    { window.opener.addSummationInput(id); }
+    function breakConnection(sId, tId)               { window.opener.breakConnection(sId, tId); }
+    function _generateLoadTest(id)                    { window.opener._generateLoadTest(id); }
     function startConnectionMode(id, b)               { window.opener.startConnectionMode(id, b); }
     function showPlantMenu(x, y, gx, gy, id, b)       { window.opener.showPlantMenu(x, y, gx, gy, id, b); }
     function quickAddSensor(id, t, b)                 { window.opener.quickAddSensor(id, t, b); }
@@ -146,10 +139,6 @@
     function addRelay(id)                             { window.opener.addRelay(id); }
     function startSecondaryConnectionMode(id)         { window.opener.startSecondaryConnectionMode(id); }
     function startSecondary2ConnectionMode(id)        { window.opener.startSecondary2ConnectionMode(id); }
-    function startDCConnectionMode(id)                { window.opener.startDCConnectionMode(id); }
-    function startTripConnectionMode(id)              { window.opener.startTripConnectionMode(id); }
-    function startCloseConnectionMode(id)             { window.opener.startCloseConnectionMode(id); }
-    function setAsReference(id, phase)                { window.opener.setAsReference(id, phase); }
     function showConfigModal(id)                      { window.opener.showConfigModal(id); }
     function showLoadConfigModal(id)                  { window.opener.showLoadConfigModal(id); }
     function rotateDevice(id, rot)                    { window.opener.rotateDevice(id, rot); }
@@ -159,7 +148,6 @@
     function showSerialHistory(id)                    { window.opener.showSerialHistory(id); }
     function showAnalogHistoryModal(id, keys)         { window.opener.showAnalogHistoryModal(id, keys); }
     function _openDrawingsManager(id)                 { window.opener._openDrawingsManager(id); }
-    function _showRefPicker(id)                       { window.opener._showRefPicker(id); }
 
     // Notes: reads textarea from this popup's DOM, not parent's
     function _saveDeviceNotes(deviceId, safeId) {

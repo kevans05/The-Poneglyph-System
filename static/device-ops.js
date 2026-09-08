@@ -15,74 +15,6 @@ function startConnectionMode(sourceId, bushing) {
     );
 }
 
-function startTripConnectionMode(sourceId) {
-  connectionSource = { id: sourceId, isTrip: true };
-  d3.select("#status-bar")
-    .style("display", "block")
-    .style("background", "#f44")
-    .style("color", "#fff")
-    .html(
-      "TRIP CIRCUIT MODE: Select target Breaker/Switch to connect " +
-        sourceId +
-        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
-    );
-}
-
-function startCloseConnectionMode(sourceId) {
-  connectionSource = { id: sourceId, isClose: true };
-  d3.select("#status-bar")
-    .style("display", "block")
-    .style("background", "#0a0")
-    .style("color", "#fff")
-    .html(
-      "CLOSE CIRCUIT MODE: Select target Breaker/Switch to connect " +
-        sourceId +
-        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
-    );
-}
-
-function startDCConnectionMode(sourceId, fromLabel, isReverse) {
-  if (fromLabel === undefined) fromLabel = null;
-  if (isReverse === undefined) isReverse = false;
-  const node = (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === sourceId);
-  if (!fromLabel && node) {
-    let outputs;
-    if (isReverse) {
-        outputs = (node.params && node.params.digital_inputs) || (node.type === 'Relay' ? ["IN101", "IN102"] : ["TRIP_COIL", "CLOSE_COIL", "TRIP_A", "TRIP_B", "TRIP_C", "CLOSE_A", "CLOSE_B", "CLOSE_C"]);
-    } else {
-        outputs = (node.params && node.params.digital_outputs);
-        if (!outputs) {
-            if (node.type === 'Relay') {
-                outputs = ["TRIP", "OUT101", "OUT102"];
-            } else if (node.type === 'CircuitBreaker') {
-                outputs = ["52A", "52B", "52A_A", "52B_A", "52A_B", "52B_B", "52A_C", "52B_C"];
-            } else if (node.type === 'Disconnect') {
-                outputs = ["89A", "89B", "89A_A", "89B_A", "89A_B", "89B_B", "89A_C", "89B_C"];
-            } else {
-                outputs = ["DC_OUT"];
-            }
-        }
-    }
-    if (outputs.length > 1) {
-        showTerminalPicker(isReverse ? "SELECT TARGET TERMINAL" : "SELECT SOURCE TERMINAL", outputs, (label) => startDCConnectionMode(sourceId, label, isReverse));
-        return;
-    }
-    fromLabel = outputs[0];
-  }
-
-  connectionSource = { id: sourceId, isDC: true, from: fromLabel, isReverse: isReverse };
-  const prompt = isReverse ? "WIRE FROM INPUT: Select source device to drive " : "DC CONNECTION: Select target device to connect ";
-  d3.select("#status-bar")
-    .style("display", "block")
-    .style("background", "#ff8800")
-    .style("color", "#000")
-    .html(
-      prompt +
-        sourceId + " (" + fromLabel + ")" +
-        " ... <span onclick=\"cancelConnectionMode()\" style=\"text-decoration:underline; cursor:pointer; margin-left:20px;\">CANCEL</span>",
-    );
-}
-
 function startSecondaryConnectionMode(sourceId) {
   connectionSource = { id: sourceId, isSecondary: true };
   d3.select("#status-bar")
@@ -123,32 +55,15 @@ const _SINGLE_BUSHING_TYPES = new Set([
   "Wire", "Bus", "VoltageSource", "Load",
   "ShuntCapacitor", "ShuntReactor", "SurgeArrester", "SVC", "NeutralGroundingResistor",
   "CurrentTransformer", "VoltageTransformer", "DualWindingVT",
-  "CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Relay", "Meter", "Indicator",
+  "CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Relay", "Meter",
 ]);
 
 function completeConnection(targetId, toLabel = null, toBushing = undefined) {
   if (!connectionSource) return;
-  const { id, bushing, isSecondary, isSecondary2, isDC, isTrip, isClose, from } = connectionSource;
-
-  if (isDC && !toLabel) {
-    const targetNode = (currentData && currentData.nodes) ? (currentData && currentData.nodes) && currentData.nodes.find(n => n.id === targetId) : null;
-    if (targetNode) {
-        let inputs = (targetNode.params && targetNode.params.digital_inputs);
-        if (!inputs) {
-            if (targetNode.type === 'Relay') inputs = ["IN101", "IN102"];
-            else if (['CircuitBreaker', 'Disconnect'].includes(targetNode.type)) inputs = ["TRIP_COIL", "CLOSE_COIL", "TRIP_A", "TRIP_B", "TRIP_C", "CLOSE_A", "CLOSE_B", "CLOSE_C"];
-            else inputs = ["DC_IN"];
-        }
-        if (inputs.length > 1) {
-            showTerminalPicker("SELECT TARGET TERMINAL", inputs, (label) => completeConnection(targetId, label));
-            return;
-        }
-        toLabel = inputs[0];
-    }
-  }
+  const { id, bushing, isSecondary, isSecondary2, from } = connectionSource;
 
   // For primary AC connections to two-bushing devices, ask which end of the target to land on.
-  if (!isSecondary && !isSecondary2 && !isDC && !isTrip && !isClose && toBushing === undefined) {
+  if (!isSecondary && !isSecondary2 && toBushing === undefined) {
     const targetNode = currentData && currentData.nodes && currentData.nodes.find(n => n.id === targetId);
     if (targetNode && !_SINGLE_BUSHING_TYPES.has(targetNode.type)) {
       showTerminalPicker(
@@ -168,7 +83,7 @@ function completeConnection(targetId, toLabel = null, toBushing = undefined) {
     alert("Cannot connect a device to itself.");
     return;
   }
-  const action = isTrip ? "add_trip_connection" : isClose ? "add_close_connection" : isDC ? "add_dc_connection" : isSecondary2 ? "add_secondary2_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
+  const action = isSecondary2 ? "add_secondary2_connection" : isSecondary ? "add_secondary_connection" : "add_connection";
   reconfigureAPI(id, action, { target_id: targetId, bushing: bushing, to_bushing: toBushing, from: from, to: toLabel }).then(
     () => {
       cancelConnectionMode();
@@ -230,7 +145,6 @@ const _DEVICE_DEFAULTS = {
   Relay:               { function: "Differential", category: "Numerical" },
   AuxiliaryTransformer: { phase_shift_deg: 0, ratio: 1.0 },
   Meter:                {},
-  Indicator:            {},
   Wire:                {},
   Line:                { length_km: 1.0, r_per_km: 0.1, x_per_km: 0.3 },
   PowerLine:           { length_km: 1.0, r_per_km: 0.1, x_per_km: 0.3 },
@@ -280,7 +194,6 @@ function showPlantMenu(pageX, pageY, gx, gy, hostId = null, bushing = null) {
     { label: "SERIES DEVICES",   types: ["SeriesCapacitor", "SeriesReactor", "LineTrap"] },
     { label: "PROTECTION",       types: ["CTTB", "FTBlock", "IsoBlock", "AuxiliaryTransformer", "Relay"] },
     { label: "METERING",         types: ["Meter"] },
-    { label: "CONTROL",          types: ["Indicator"] },
   ];
 
   let html = "<div style=\"padding:6px 10px; font-size:10px; color:#ff0; border-bottom:1px solid #333; background:#111;\">" + title + "</div>";
@@ -333,7 +246,7 @@ const _DEV_TYPE_SHORT = {
   CircuitBreaker: "CB", ThreePoleDisconnect: "DS", SinglePoleDisconnect: "DS",
   PowerTransformer: "XFR", VoltageTransformer: "VT", CurrentTransformer: "CT",
   DualWindingVT: "DVT", Relay: "RLY", CTTB: "CTTB", FTBlock: "FTB",
-  IsoBlock: "ISO", Meter: "MTR", Indicator: "IND", AuxiliaryTransformer: "AXT",
+  IsoBlock: "ISO", Meter: "MTR", AuxiliaryTransformer: "AXT",
   PowerLine: "LINE", VoltageRegulator: "REG", ShuntCapacitor: "CAP",
   ShuntReactor: "RCT", SVC: "SVC", LineTrap: "TRAP",
   NeutralGroundingResistor: "NGR", SeriesCapacitor: "SC",
@@ -344,7 +257,7 @@ const _DEV_TYPE_COLOR = {
   CircuitBreaker: "#ff0", ThreePoleDisconnect: "#ff0", SinglePoleDisconnect: "#ff0",
   PowerTransformer: "#a0f", VoltageTransformer: "#4af", CurrentTransformer: "#4af",
   DualWindingVT: "#4af", Relay: "#f44", CTTB: "#f44", FTBlock: "#f84",
-  IsoBlock: "#f84", Meter: "#0f8", Indicator: "#0f8", AuxiliaryTransformer: "#a0f",
+  IsoBlock: "#f84", Meter: "#0f8", AuxiliaryTransformer: "#a0f",
   PowerLine: "#888", VoltageRegulator: "#0af",
 };
 

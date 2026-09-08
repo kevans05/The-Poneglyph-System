@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to ~/.poneglyph_drawing_search.json (or point $PONEGLYPH_DWG_CONFIG at this file) and fill in. Cookies come from a logged-in browser session on the corporate drawing site.",
+  "base_url": "https://drawings.example.com",
+  "search_path": "/search/searchGT.html",
+  "download_url": "https://drawings.example.com",
+  "cookies": {
+    "filenet-es": "PASTE_COOKIE_VALUE",
+    "_WL_AUTHCOOKIE_filenet-es": "PASTE_COOKIE_VALUE"
+  }
+}

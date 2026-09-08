@@ -2,7 +2,7 @@
 
 /**
  * SCADA Pro Console - Visualization Engine
- * Handles D3 rendering and Phasor diagrams.
+ * Handles D3 rendering of the single-line diagram.
  */
 
 const svg = d3.select("#sld-svg");
@@ -22,15 +22,443 @@ function updateWireBendsFromEdges(edges) {
     });
 }
 
+// True when the current zoom scale is at/below the single-line threshold, i.e.
+// each 3-phase run should collapse to one conductor coloured by voltage class.
+let _singleLineMode = false;
+
+function _singleLineThreshold() {
+  const t =
+    typeof window !== "undefined" && window.PoneglyphSettings
+      ? Number(window.PoneglyphSettings.get("singleLineZoom"))
+      : 0.55;
+  return t > 0 ? t : 0.55;
+}
+
+function isSingleLineMode() {
+  return _singleLineMode;
+}
+
 const zoom = d3
   .zoom()
   .scaleExtent([0.1, 10])
   .on("zoom", (e) => {
     zoomGroup.attr("transform", e.transform);
     updateMinimapViewport();
+    const nowSingle = e.transform.k <= _singleLineThreshold();
+    if (nowSingle !== _singleLineMode) {
+      _singleLineMode = nowSingle;
+      // Only the edge/glyph representation changes — a full re-render is fine
+      // here because zoom-threshold crossings are rare relative to zoom ticks.
+      if (currentData) render3LD(currentData);
+    }
   });
 
 svg.call(zoom);
+
+// Re-render when the palette / threshold settings change.
+if (typeof window !== "undefined" && window.PoneglyphSettings) {
+  window.PoneglyphSettings.subscribe(() => {
+    _singleLineMode = _currentZoomK() <= _singleLineThreshold();
+    if (currentData) render3LD(currentData);
+  });
+}
+
+function _currentZoomK() {
+  try {
+    return d3.zoomTransform(svg.node()).k;
+  } catch (e) {
+    return 1;
+  }
+}
+
+// ── Voltage-class helpers ────────────────────────────────────────────────────
+
+// ── Voltage-class zones ─────────────────────────────────────────────────────
+//
+// A device rarely carries its own kV nameplate (a breaker or a bus doesn't),
+// so we flood the network: every galvanically-connected run is one voltage
+// zone, seeded from whatever DOES name a class (a source, a regulator, a
+// manual `voltage_class_kv`, or a transformer terminal), and a transformer is
+// the boundary between two zones — pri_kv on its H side, sec_kv on its X side.
+
+let _zoneKv = {};                 // node id → resolved zone kV
+let _xfmrTerminalKv = {};         // "<xfmrId>|<neighbourId>" → kV at that terminal
+const _PRIMARY_EDGE = (e) => !e.type || e.type === "primary";
+const _rid = (v) => (typeof v === "string" ? v : v && v.id);
+
+// kV a device explicitly declares on its own (NOT pri/sec — those belong to a
+// transformer terminal, handled separately).
+function _explicitNodeKv(node) {
+  const p = (node && node.params) || {};
+  return (
+    Number(p.voltage_class_kv) ||
+    Number(p.nominal_voltage_kv) ||
+    Number(p.nominal_kv) ||
+    Number(p.kv_rating) ||
+    0
+  );
+}
+
+function _computeVoltageZones(data) {
+  _zoneKv = {};
+  _xfmrTerminalKv = {};
+  const nodes = (data && data.nodes) || [];
+  const edges = ((data && data.edges) || []).filter(_PRIMARY_EDGE);
+  const byId = {};
+  nodes.forEach((n) => (byId[n.id] = n));
+  const isXfmr = (n) => !!n && n.type === "PowerTransformer";
+
+  // Flood explicit classes across primary edges, never through a transformer.
+  const flood = () => {
+    let changed = true, guard = 0;
+    while (changed && guard++ < 100) {
+      changed = false;
+      edges.forEach((e) => {
+        const a = _rid(e.source), b = _rid(e.target);
+        if (isXfmr(byId[a]) || isXfmr(byId[b])) return;
+        const ka = _zoneKv[a] || 0, kb = _zoneKv[b] || 0;
+        if (ka > 0 && !(kb > 0)) { _zoneKv[b] = ka; changed = true; }
+        else if (kb > 0 && !(ka > 0)) { _zoneKv[a] = kb; changed = true; }
+      });
+    }
+  };
+
+  // 1. Explicit self-declared classes seed their node, then flood.
+  nodes.forEach((n) => {
+    if (isXfmr(n)) return;
+    const kv = _explicitNodeKv(n);
+    if (kv > 0) _zoneKv[n.id] = kv;
+  });
+  flood();
+
+  // 2. Resolve each transformer terminal. The backend's source/target_bushing
+  //    is unreliable for transformers, so decide per neighbour:
+  //      • if the neighbour already has a zone kV, pick the winding (pri/sec)
+  //        closest to it;
+  //      • else fall back to geometry (which side of the transformer it sits on).
+  nodes.filter(isXfmr).forEach((xn) => {
+    const p = xn.params || {};
+    const override = Number(p.voltage_class_kv) || 0;
+    const pri = Number(p.pri_kv) || 0;
+    const sec = Number(p.sec_kv) || 0;
+    // neighbours of this transformer over primary edges
+    const nbrs = [];
+    edges.forEach((e) => {
+      const a = _rid(e.source), b = _rid(e.target);
+      if (a === xn.id && b !== xn.id) nbrs.push(b);
+      else if (b === xn.id && a !== xn.id) nbrs.push(a);
+    });
+    [...new Set(nbrs)].forEach((nId) => {
+      const nn = byId[nId];
+      let kv = override;
+      if (!kv) {
+        const z = _zoneKv[nId] || 0;
+        if (z > 0 && pri && sec) {
+          kv = Math.abs(z - pri) <= Math.abs(z - sec) ? pri : sec;
+        } else if (xn.gx != null && nn && nn.gx != null) {
+          const b = facingBushing(xn.gx, xn.gy, xn.rotation || 0, nn.gx, nn.gy);
+          kv = b === "H" ? pri || sec : sec || pri;
+        } else {
+          kv = pri || sec;
+        }
+      }
+      if (kv > 0) {
+        _xfmrTerminalKv[xn.id + "|" + nId] = kv;
+        if (nn && !isXfmr(nn) && !(_zoneKv[nId] > 0)) _zoneKv[nId] = kv;
+      }
+    });
+  });
+
+  // 3. Flood again with the transformer neighbours now seeded.
+  flood();
+
+  // 4. Sensors (CT/VT) inherit from the equipment they sit on.
+  nodes.forEach((n) => {
+    if (_zoneKv[n.id] > 0) return;
+    if (!["CurrentTransformer", "VoltageTransformer", "DualWindingVT"].includes(n.type)) return;
+    const hostId = n.summary && n.summary.Location;
+    if (hostId && _zoneKv[hostId] > 0) _zoneKv[n.id] = _zoneKv[hostId];
+  });
+}
+
+// Resolved kV for a node: manual override → flooded zone → own nameplate.
+function _nodeVoltageKv(node) {
+  if (!node) return 0;
+  const p = node.params || {};
+  if (Number(p.voltage_class_kv) > 0) return Number(p.voltage_class_kv);
+  if (_zoneKv[node.id] > 0) return _zoneKv[node.id];
+  for (const c of [p.nominal_voltage_kv, p.nominal_kv, p.kv_rating, p.pri_kv, p.sec_kv]) {
+    if (Number(c) > 0) return Number(c);
+  }
+  return 0;
+}
+// Shared so the settings modal can enumerate the substation's actual classes.
+window.nodeVoltageKv = _nodeVoltageKv;
+
+// kV a node presents toward a specific neighbour — transformer terminals differ
+// per side; everything else is just its zone kV.
+function _nodeVoltageKvToward(node, neighbourId) {
+  if (node && node.type === "PowerTransformer") {
+    const t = _xfmrTerminalKv[node.id + "|" + neighbourId];
+    if (t > 0) return t;
+    const p = node.params || {};
+    return Number(p.voltage_class_kv) || Number(p.pri_kv) || Number(p.sec_kv) || 0;
+  }
+  return _nodeVoltageKv(node);
+}
+
+// kV for an edge = the higher class of its two endpoints, each evaluated toward
+// the other end (so a transformer's two runs get their own classes).
+function _edgeVoltageKv(src, tgt) {
+  return Math.max(
+    _nodeVoltageKvToward(src, tgt && tgt.id),
+    _nodeVoltageKvToward(tgt, src && src.id),
+  );
+}
+
+function _edgeSingleLineColor(src, tgt) {
+  const on =
+    typeof window !== "undefined" && window.PoneglyphSettings
+      ? window.PoneglyphSettings.get("colorByVoltageClass")
+      : true;
+  if (on && typeof window.voltageClassColor === "function") {
+    return window.voltageClassColor(_edgeVoltageKv(src, tgt));
+  }
+  return null; // use the stylesheet default
+}
+
+// Colour for a device's one-line symbol: its voltage class, or a neutral tint.
+function _nodeSingleLineColor(d) {
+  const on =
+    typeof window !== "undefined" && window.PoneglyphSettings
+      ? window.PoneglyphSettings.get("colorByVoltageClass")
+      : true;
+  if (on && typeof window.voltageClassColor === "function") {
+    return window.voltageClassColor(_nodeVoltageKv(d));
+  }
+  return "#cfd8dc";
+}
+
+// Device types that get an IEEE/IEC one-line schematic symbol when zoomed out.
+const _ONE_LINE_TYPES = new Set([
+  "CircuitBreaker",
+  "Disconnect",
+  "CurrentTransformer",
+  "VoltageTransformer",
+  "DualWindingVT",
+  "PowerTransformer",
+  "AuxiliaryTransformer",
+  "VoltageRegulator",
+  "VoltageSource",
+  "Load",
+]);
+
+// Secondary / instrument-circuit devices hidden in one-line mode (they and
+// their secondary wiring only clutter the primary power path).
+const _SECONDARY_TYPES = new Set([
+  "CurrentTransformer",
+  "VoltageTransformer",
+  "DualWindingVT",
+  "CTTB",
+  "FTBlock",
+  "IsoBlock",
+  "Relay",
+  "Meter",
+]);
+
+function _isClosedStatus(d) {
+  return String((d.summary || {}).Status || "").toUpperCase().startsWith("CLOSED");
+}
+
+/**
+ * Draw a standard one-line schematic symbol for `d` into group `el`.
+ * Symbols straddle a horizontal conductor through the local origin (y = 0),
+ * matching the single-line wire runs. Coloured by voltage class.
+ */
+// Solid state colours for switching devices (utility convention: red = closed
+// / energised, green = open / safe).
+const _SW_CLOSED = "#e5352b";
+const _SW_OPEN = "#1fbf4d";
+
+// Small H / X bushing labels at the top corners of a two-terminal glyph.
+function _addHXLabels(el, half, opts) {
+  opts = opts || { h: true, x: true };
+  if (opts.h) {
+    el.append("text").attr("x", -half).attr("y", -half - 3)
+      .attr("text-anchor", "middle").attr("fill", "#9aa")
+      .style("font-size", "7px").style("font-weight", "bold").text("H");
+  }
+  if (opts.x) {
+    el.append("text").attr("x", half).attr("y", -half - 3)
+      .attr("text-anchor", "middle").attr("fill", "#9aa")
+      .style("font-size", "7px").style("font-weight", "bold").text("X");
+  }
+}
+
+function _drawOneLineSymbol(el, d) {
+  const c = _nodeSingleLineColor(d);
+  const line = (x1, x2, col, w) =>
+    el.append("line").attr("x1", x1).attr("y1", 0).attr("x2", x2).attr("y2", 0)
+      .attr("stroke", col || c).attr("stroke-width", w || 2).attr("stroke-linecap", "round");
+
+  if (d.type === "CircuitBreaker") {
+    const closed = _isClosedStatus(d);
+    line(-22, -8, c, 2);
+    line(8, 22, c, 2);
+    el.append("rect")
+      .attr("x", -8).attr("y", -8).attr("width", 16).attr("height", 16)
+      .attr("fill", closed ? _SW_CLOSED : _SW_OPEN)
+      .attr("stroke", c).attr("stroke-width", 2);
+    _addHXLabels(el, 18);
+    return;
+  }
+
+  if (d.type === "Disconnect") {
+    const closed = _isClosedStatus(d);
+    const blade = closed ? _SW_CLOSED : _SW_OPEN;
+    line(-22, -9, c, 2);
+    el.append("circle").attr("cx", -9).attr("cy", 0).attr("r", 2.4).attr("fill", c);
+    el.append("circle").attr("cx", 9).attr("cy", 0).attr("r", 2.4).attr("fill", c);
+    if (closed) {
+      el.append("line").attr("x1", -9).attr("y1", 0).attr("x2", 9).attr("y2", 0)
+        .attr("stroke", blade).attr("stroke-width", 3).attr("stroke-linecap", "round");
+    } else {
+      el.append("line").attr("x1", -9).attr("y1", 0).attr("x2", 7).attr("y2", -16)
+        .attr("stroke", blade).attr("stroke-width", 3).attr("stroke-linecap", "round");
+    }
+    line(9, 22, c, 2);
+    _addHXLabels(el, 18);
+    return;
+  }
+
+  if (d.type === "CurrentTransformer") {
+    line(-22, 22, c, 2);
+    el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 7)
+      .attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.8);
+    _addHXLabels(el, 14);
+    return;
+  }
+
+  if (d.type === "VoltageTransformer" || d.type === "DualWindingVT") {
+    line(-22, 0, c, 2);
+    el.append("circle").attr("cx", 0).attr("cy", -3).attr("r", 6)
+      .attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.6);
+    el.append("circle").attr("cx", 0).attr("cy", 5).attr("r", 6)
+      .attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.6);
+    if (d.type === "DualWindingVT") {
+      el.append("circle").attr("cx", 0).attr("cy", 13).attr("r", 5)
+        .attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.3).attr("opacity", 0.85);
+    }
+    // ground reference
+    const gy = d.type === "DualWindingVT" ? 21 : 15;
+    el.append("line").attr("x1", 0).attr("y1", d.type === "DualWindingVT" ? 18 : 11).attr("x2", 0).attr("y2", gy).attr("stroke", c).attr("stroke-width", 1.4);
+    el.append("line").attr("x1", -6).attr("y1", gy).attr("x2", 6).attr("y2", gy).attr("stroke", c).attr("stroke-width", 1.4);
+    el.append("line").attr("x1", -3.5).attr("y1", gy + 3).attr("x2", 3.5).attr("y2", gy + 3).attr("stroke", c).attr("stroke-width", 1.2);
+    _addHXLabels(el, 12, { h: true, x: false });
+    return;
+  }
+
+  if (d.type === "PowerTransformer" || d.type === "AuxiliaryTransformer") {
+    const r = d.type === "AuxiliaryTransformer" ? 10 : 13;
+    const dx = r * 0.7;
+    // Colour each lead by its own winding class (H = pri, X = sec).
+    const on =
+      !window.PoneglyphSettings || window.PoneglyphSettings.get("colorByVoltageClass");
+    const p = d.params || {};
+    const ovr = Number(p.voltage_class_kv) || 0;
+    const cH = on && d.type === "PowerTransformer" && typeof window.voltageClassColor === "function"
+      ? window.voltageClassColor(ovr || Number(p.pri_kv) || 0) : c;
+    const cX = on && d.type === "PowerTransformer" && typeof window.voltageClassColor === "function"
+      ? window.voltageClassColor(ovr || Number(p.sec_kv) || 0) : c;
+    // Each winding circle takes its own side's class colour.
+    const circH = d.type === "PowerTransformer" ? cH : c;
+    const circX = d.type === "PowerTransformer" ? cX : c;
+    line(-r - dx - 6, -dx, circH, 2);
+    line(dx, r + dx + 6, circX, 2);
+    el.append("circle").attr("cx", -dx).attr("cy", 0).attr("r", r)
+      .attr("fill", "none").attr("stroke", circH).attr("stroke-width", 2);
+    el.append("circle").attr("cx", dx).attr("cy", 0).attr("r", r)
+      .attr("fill", "none").attr("stroke", circX).attr("stroke-width", 2);
+    if (d.type === "PowerTransformer") {
+      const wsym = (cx, w, col) => {
+        const t = String(w || "").toUpperCase();
+        if (t.startsWith("D")) {
+          el.append("path").attr("d", `M ${cx} -5 L ${cx + 5} 4 L ${cx - 5} 4 Z`)
+            .attr("fill", "none").attr("stroke", col).attr("stroke-width", 1.3);
+        } else {
+          el.append("path").attr("d", `M ${cx} 4 L ${cx} -4 M ${cx} 4 L ${cx + 4.5} 8 M ${cx} 4 L ${cx - 4.5} 8`)
+            .attr("fill", "none").attr("stroke", col).attr("stroke-width", 1.3);
+        }
+      };
+      wsym(-dx, d.params.h_winding || "Y", circH);
+      wsym(dx, d.params.x_winding || "D", circX);
+    }
+    _addHXLabels(el, r + dx + 2);
+    return;
+  }
+
+  if (d.type === "VoltageRegulator") {
+    line(-22, -13, c, 2);
+    line(13, 22, c, 2);
+    el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 13)
+      .attr("fill", "none").attr("stroke", c).attr("stroke-width", 2);
+    el.append("line").attr("x1", -9).attr("y1", 9).attr("x2", 9).attr("y2", -9)
+      .attr("stroke", c).attr("stroke-width", 1.6);
+    el.append("path").attr("d", "M 5 -9 L 9 -9 L 9 -5")
+      .attr("fill", "none").attr("stroke", c).attr("stroke-width", 1.6);
+    _addHXLabels(el, 15);
+    return;
+  }
+
+  if (d.type === "VoltageSource") {
+    const col = _nodeVoltageKv(d) > 0 ? c : "#ffaa00";
+    line(13, 22, col, 2);
+    el.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 13)
+      .attr("fill", "#0d0d0d").attr("stroke", col).attr("stroke-width", 2);
+    el.append("path").attr("d", "M -7 0 Q -3.5 -7 0 0 T 7 0")
+      .attr("fill", "none").attr("stroke", col).attr("stroke-width", 1.8);
+    return;
+  }
+
+  if (d.type === "Load") {
+    line(-22, -2, c, 2);
+    el.append("path").attr("d", "M -2 -7 L 12 0 L -2 7 Z")
+      .attr("fill", c).attr("stroke", c).attr("stroke-width", 1);
+    return;
+  }
+}
+
+// Fill the empty stretch of a single-line run: a terminal stud at each device
+// end, plus evenly spaced insulator/bushing marks along straight runs.
+function _drawRunDecor(g, a1, a2, color) {
+  const col = color || "#9aa";
+  const deco = g.append("g").attr("class", "run-decor").style("pointer-events", "none");
+  [a1, a2].forEach((pt) => {
+    deco.append("circle")
+      .attr("cx", pt.x).attr("cy", pt.y).attr("r", 3)
+      .attr("fill", col).attr("stroke", "none");
+  });
+  g = deco;
+
+  const dx = a2.x - a1.x, dy = a2.y - a1.y;
+  const len = Math.hypot(dx, dy);
+  const straight = Math.abs(dx) < 8 || Math.abs(dy) < 8;
+  if (!straight || len < 130) return;
+
+  const ux = dx / len, uy = dy / len;      // along the run
+  const px = -uy, py = ux;                  // perpendicular
+  const GAP = 70, INSET = 48;
+  for (let s = INSET; s <= len - INSET; s += GAP) {
+    const cx = a1.x + ux * s, cy = a1.y + uy * s;
+    for (const o of [-2.5, 2.5]) {          // two parallel ticks = one insulator
+      const bx = cx + ux * o, by = cy + uy * o;
+      g.append("line")
+        .attr("x1", bx + px * 4).attr("y1", by + py * 4)
+        .attr("x2", bx - px * 4).attr("y2", by - py * 4)
+        .attr("stroke", col).attr("stroke-width", 1.6).attr("stroke-linecap", "round");
+    }
+  }
+}
 
 function facingBushing(fromX, fromY, fromAngle, toX, toY) {
   const rad = -(fromAngle * Math.PI) / 180;
@@ -120,6 +548,21 @@ function render3LD(data) { if (!data || !data.nodes) return;
     }
   });
 
+  // Resolve voltage-class zones now that every node has a position (the
+  // transformer-terminal fallback needs geometry).
+  _computeVoltageZones(data);
+
+  // In one-line mode, hide the secondary / instrument-circuit devices (CT, VT,
+  // test blocks, relays, metering) and every secondary wire.
+  const hiddenIds = new Set();
+  if (_singleLineMode) {
+    data.nodes.forEach((n) => {
+      if (_SECONDARY_TYPES.has(n.type)) hiddenIds.add(n.id);
+    });
+  }
+  const _secondaryEdge = (e) =>
+    ["protection", "protection2", "dc", "trip", "close"].includes(e.type);
+
   // 2. Draw Edges
   const linkGroup = zoomGroup.append("g").attr("id", "links");
 
@@ -160,6 +603,11 @@ function render3LD(data) { if (!data || !data.nodes) return;
     const src = data.nodes.find(n => n.id === _resolveId(edge.source));
     const tgt = data.nodes.find(n => n.id === _resolveId(edge.target));
     if (!src || !tgt) return;
+
+    // One-line mode: drop secondary wiring and anything touching a hidden device.
+    if (_singleLineMode && (_secondaryEdge(edge) || hiddenIds.has(src.id) || hiddenIds.has(tgt.id))) {
+      return;
+    }
 
     const frac = _bendFrac[src.id + "→" + tgt.id] ?? 0.5;
 
@@ -223,16 +671,25 @@ function render3LD(data) { if (!data || !data.nodes) return;
         if (src.summary.Connection && src.summary.Connection.includes("Delta")) isDelta = true;
       }
 
-      const offsets = isDelta
+      // Zoomed out: collapse the whole run to one conductor at offset 0.
+      const offsets = _singleLineMode
+        ? [0]
+        : isDelta
           ? [-PHASE_GAP, 0, PHASE_GAP]
-          : [-PHASE_GAP, 0, PHASE_GAP, PHASE_GAP * 2],
-        classes = isDelta
+          : [-PHASE_GAP, 0, PHASE_GAP, PHASE_GAP * 2];
+      const classes = _singleLineMode
+        ? ["single-line"]
+        : isDelta
           ? ["phase-a", "phase-b", "phase-c"]
           : ["phase-a", "phase-b", "phase-c", "neutral"];
 
+      const slColor = _singleLineMode ? _edgeSingleLineColor(src, tgt) : null;
+      // Zoomed out: attach the run closer to each symbol to tighten the gap.
+      const RO = _singleLineMode ? 40 : 55;
+
       // One hit area per logical connection (not per phase)
-      const a1mid = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, 0);
-      const a2mid = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, 0);
+      const a1mid = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, 0, RO);
+      const a2mid = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, 0, RO);
       linkGroup
         .append("path")
         .attr("class", "wire-hit")
@@ -240,9 +697,9 @@ function render3LD(data) { if (!data || !data.nodes) return;
         .on("contextmenu", _wireRightClick(src.id, tgt.id));
 
       offsets.forEach((off, i) => {
-        const a1 = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, off),
-          a2 = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, off);
-        linkGroup
+        const a1 = getAnchorPoint(src.gx, src.gy, src.rotation || 0, srcB, off, RO),
+          a2 = getAnchorPoint(tgt.gx, tgt.gy, tgt.rotation || 0, tgtB, off, RO);
+        const path = linkGroup
           .append("path")
           .attr("class", "link-wire " + classes[i])
           .attr("d", getPathData(a1.x, a1.y, a2.x, a2.y, off, frac))
@@ -255,18 +712,25 @@ function render3LD(data) { if (!data || !data.nodes) return;
           .attr("data-offset", off)
           .attr("data-frac", frac)
           .on("contextmenu", _wireRightClick(src.id, tgt.id));
+        if (slColor) path.style("stroke", slColor);
       });
+      if (_singleLineMode) {
+        _drawRunDecor(linkGroup, a1mid, a2mid, slColor || "#9aa");
+      }
       // Handle appended AFTER phase paths so it sits on top in Z-order
       _addWireBendHandle(linkGroup, a1mid.x, a1mid.y, a2mid.x, a2mid.y, frac, src.id, tgt.id);
     }
   });
 
   // 3. Draw Nodes
+  const visibleNodes = hiddenIds.size
+    ? data.nodes.filter((n) => !hiddenIds.has(n.id))
+    : data.nodes;
   const nodeGroup = zoomGroup
     .append("g")
     .attr("id", "nodes")
     .selectAll(".node")
-    .data(data.nodes)
+    .data(visibleNodes)
     .enter()
     .append("g")
     .attr(
@@ -349,7 +813,10 @@ function render3LD(data) { if (!data || !data.nodes) return;
     }
 
     // Draw symbols...
-    if (d.type === "CurrentTransformer") {
+    if (_singleLineMode && _ONE_LINE_TYPES.has(d.type)) {
+      // Zoomed out: standard one-line schematic symbol, coloured by voltage class.
+      _drawOneLineSymbol(el, d);
+    } else if (d.type === "CurrentTransformer") {
       // 3-Phase Circular CT with winding loop and polarity
       const sw = d.params.secondary_wiring || "Y";
       const phases = (sw === "A") ? [0] : (sw === "B") ? [1] : (sw === "C") ? [2] : (sw === "N") ? [3] : [0, 1, 2];
@@ -454,15 +921,6 @@ function render3LD(data) { if (!data || !data.nodes) return;
       // Bushing Labels
       el.append("text").attr("x", -40).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("H");
       el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "10px").style("font-weight", "bold").text("X");
-    } else if (d.type === "Indicator") {
-      // Indicator Light Symbol
-      const isOn = ( ( (d.summary || {})  || {})  &&  ( (d.summary || {})  || {}) ["Status"]) &&  ( (d.summary || {})  || {}) ["Status"].includes("ON");
-      el.append("circle").attr("r", 20).attr("fill", isOn ? "#f44" : "#300").attr("stroke", "#fff").attr("stroke-width", 2);
-      if (isOn) {
-        el.append("circle").attr("r", 25).attr("fill", "none").attr("stroke", "#f44").attr("stroke-width", 3).attr("opacity", 0.5);
-      }
-      el.append("line").attr("x1", -12).attr("y1", -12).attr("x2", 12).attr("y2", 12).attr("stroke", "#fff").attr("stroke-width", 1.5);
-      el.append("line").attr("x1", 12).attr("y1", -12).attr("x2", -12).attr("y2", 12).attr("stroke", "#fff").attr("stroke-width", 1.5);
     } else if (d.type === "VoltageRegulator") {
       el.append("text").attr("x", -38).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("H");
       el.append("text").attr("x", 32).attr("y", -32).attr("fill", "#aaa").style("font-size", "9px").style("font-weight", "bold").text("X");
@@ -548,24 +1006,41 @@ function render3LD(data) { if (!data || !data.nodes) return;
       });
       el.append("line").attr("x1", 22).attr("y1", -PHASE_GAP).attr("x2", 22).attr("y2", PHASE_GAP).attr("stroke", "#ff4444");
     } else if (["Bus", "Line", "PowerLine", "Wire"].includes(d.type)) {
-      // 3-Phase Bus Bars Look
-      const colors = ["#f44", "#ff4", "#44f"];
-      [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
-          el.append("line")
-            .attr("x1", -40).attr("y1", off)
-            .attr("x2", 40).attr("y2", off)
-            .attr("stroke", colors[i])
-            .attr("stroke-width", 5)
-            .attr("stroke-linecap", "round")
-            .attr("opacity", 0.9);
-      });
-      // Neutral bar (thin, dashed)
-      el.append("line")
-        .attr("x1", -40).attr("y1", PHASE_GAP * 2)
-        .attr("x2", 40).attr("y2", PHASE_GAP * 2)
-        .attr("stroke", "#666")
-        .attr("stroke-width", 2)
-        .attr("stroke-dasharray", "4,2");
+      if (_singleLineMode) {
+        // Single bar, coloured by voltage class.
+        const c =
+          (typeof window.voltageClassColor === "function" &&
+            window.PoneglyphSettings &&
+            window.PoneglyphSettings.get("colorByVoltageClass"))
+            ? window.voltageClassColor(_nodeVoltageKv(d))
+            : "#888";
+        el.append("line")
+          .attr("x1", -40).attr("y1", 0)
+          .attr("x2", 40).attr("y2", 0)
+          .attr("stroke", c)
+          .attr("stroke-width", 5)
+          .attr("stroke-linecap", "round")
+          .attr("opacity", 0.95);
+      } else {
+        // 3-Phase Bus Bars Look
+        const colors = ["#f44", "#ff4", "#44f"];
+        [-PHASE_GAP, 0, PHASE_GAP].forEach((off, i) => {
+            el.append("line")
+              .attr("x1", -40).attr("y1", off)
+              .attr("x2", 40).attr("y2", off)
+              .attr("stroke", colors[i])
+              .attr("stroke-width", 5)
+              .attr("stroke-linecap", "round")
+              .attr("opacity", 0.9);
+        });
+        // Neutral bar (thin, dashed)
+        el.append("line")
+          .attr("x1", -40).attr("y1", PHASE_GAP * 2)
+          .attr("x2", 40).attr("y2", PHASE_GAP * 2)
+          .attr("stroke", "#666")
+          .attr("stroke-width", 2)
+          .attr("stroke-dasharray", "4,2");
+      }
     } else if (d.type === "ShuntCapacitor") {
       const g = el.append("g").attr("transform", "translate(0, -10)");
       g.append("line").attr("x1", 0).attr("y1", -15).attr("x2", 0).attr("y2", 0).attr("stroke", "#4df").attr("stroke-width", 2);
@@ -674,7 +1149,7 @@ function render3LD(data) { if (!data || !data.nodes) return;
       .attr("rx", 2).attr("class", "label-bg");
   });
 
-  positionLabels(nodeGroup, data.nodes);
+  positionLabels(nodeGroup, visibleNodes);
 }
 
 /**
@@ -783,430 +1258,6 @@ function updateLinksDuringDrag(nodeId, newX, newY, angle, data, linkGroup) {
     const frac = parseFloat(el.attr("data-frac")) || 0.5;
     el.attr("d", getPathData(x1, y1, x2, y2, off, frac));
   });
-}
-
-// ── Phasor Scale Controls ─────────────────────────────────────────────────────
-// Per-phasor scale overrides so users can manually zoom in/out the V and I axes.
-// Keys are "<deviceId>_<mode>".  null value means "use auto".
-var _phasorScaleOverrides = {};
-var _phasorAutoScales = {};
-var _phasorRenderCtx = {};  // stores args for re-rendering after scale change
-
-function _phasorScaleStep(scaleKey, axis, dir) {
-  const auto = _phasorAutoScales[scaleKey] || { maxV: 132790, maxI: 300 };
-  const ov = _phasorScaleOverrides[scaleKey] || {};
-  const field = axis === "V" ? "maxV" : "maxI";
-  const cur = ov[field] != null ? ov[field] : auto[field];
-  if (!_phasorScaleOverrides[scaleKey]) _phasorScaleOverrides[scaleKey] = {};
-  // Step up: ×2, Step down: ÷2, but clamp to a sensible minimum
-  const next = dir > 0 ? cur * 2 : cur / 2;
-  const min = axis === "V" ? 10 : 0.1;
-  _phasorScaleOverrides[scaleKey][field] = Math.max(min, next);
-  _phasorRerender(scaleKey);
-}
-
-function _phasorScaleReset(scaleKey, axis) {
-  if (_phasorScaleOverrides[scaleKey]) {
-    const field = axis === "V" ? "maxV" : "maxI";
-    _phasorScaleOverrides[scaleKey][field] = null;
-  }
-  _phasorRerender(scaleKey);
-}
-
-function _phasorRerender(scaleKey) {
-  const ctx = _phasorRenderCtx[scaleKey];
-  if (!ctx) return;
-  renderPhasorBox(ctx.div, ctx.summary, ctx.mode, ctx.deviceId);
-}
-
-function drawVector(g, pMap, summary, r, w, h, center, maxV, maxI) {
-  pMap.forEach((p) => {
-    if (p.vm && summary[p.vm]) {
-      const a = ((summary[p.va] || 0) * Math.PI) / 180,
-        m = (summary[p.vm] / maxV) * r;
-      g.append("line")
-        .attr("x2", m * Math.cos(a))
-        .attr("y2", -m * Math.sin(a))
-        .attr("stroke", p.c)
-        .attr("stroke-width", p.isPri ? 3 : 2);
-      g.append("text")
-        .attr("x", (m + 10) * Math.cos(a))
-        .attr("y", -(m + 10) * Math.sin(a))
-        .attr("text-anchor", "middle")
-        .attr("dominant-baseline", "middle")
-        .attr("fill", p.c)
-        .style("font-size", "10px")
-        .style("font-weight", "bold")
-        .text("V" + p.n);
-    }
-    if (p.im && summary[p.im]) {
-      const a = ((summary[p.ia] || 0) * Math.PI) / 180,
-        m = (summary[p.im] / maxI) * r;
-      g.append("line")
-        .attr("x2", m * Math.cos(a))
-        .attr("y2", -m * Math.sin(a))
-        .attr("stroke", p.c)
-        .attr("stroke-width", p.isSec ? 1.5 : 2)
-        .attr("stroke-dasharray", p.isSec ? "4,2" : "3,2");
-      g.append("text")
-        .attr("x", (m + 22) * Math.cos(a))
-        .attr("y", -(m + 22) * Math.sin(a))
-        .attr("text-anchor", "middle")
-        .attr("dominant-baseline", "middle")
-        .attr("fill", p.c)
-        .style("font-size", "10px")
-        .text("I" + p.n);
-    }
-  });
-}
-
-function drawPhasors(id, summary, type) {
-  const safeId = id.replace(/\s+/g, "-");
-  if (type === "PowerTransformer") {
-    const priDiv = d3.select("#phasor-pri-" + safeId),
-      secDiv = d3.select("#phasor-sec-" + safeId);
-    if (!priDiv.empty()) renderPhasorBox(priDiv, summary, "primary", id);
-    if (!secDiv.empty()) renderPhasorBox(secDiv, summary, "secondary", id);
-  } else if (type === "DualWindingVT") {
-    const secDiv = d3.select("#phasor-sec-" + safeId),
-      sec2Div = d3.select("#phasor-sec2-" + safeId);
-    if (!secDiv.empty()) renderPhasorBox(secDiv, summary, "secondary", id);
-    if (!sec2Div.empty()) renderPhasorBox(sec2Div, summary, "sec2", id);
-  } else if (type === "VoltageTransformer") {
-    const phasorDiv = d3.select("#phasor-" + safeId);
-    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "secondary", id);
-  } else if (type === "CurrentTransformer") {
-    const phasorDiv = d3.select("#phasor-" + safeId);
-    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "ct_secondary", id);
-  } else {
-    const phasorDiv = d3.select("#phasor-" + safeId);
-    if (!phasorDiv.empty()) renderPhasorBox(phasorDiv, summary, "all", id);
-  }
-}
-
-function renderPhasorBox(div, summary, mode, deviceId) {
-  div.selectAll("*").remove();
-  const scaleKey = (deviceId || "?") + "_" + mode;
-  _phasorRenderCtx[scaleKey] = { div, summary, mode, deviceId };
-
-  const w = 376,
-    h = 210,
-    r = 92,
-    center = { x: w / 2, y: h / 2 };
-  const g = div
-    .append("svg")
-    .attr("viewBox", `0 0 ${w} ${h}`)
-    .attr("width", "100%")
-    .attr("height", h)
-    .style("display", "block")
-    .append("g")
-    .attr("transform", "translate(" + center.x + "," + center.y + ")");
-  g.append("circle").attr("r", r).attr("fill", "none").attr("stroke", "#222");
-  [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].forEach((d) =>
-    g
-      .append("line")
-      .attr("x2", r * Math.cos((d * Math.PI) / 180))
-      .attr("y2", -r * Math.sin((d * Math.PI) / 180))
-      .attr("stroke", "#111")
-      .attr("stroke-dasharray", d % 90 === 0 ? "none" : "2,2"),
-  );
-
-  const isDelta =
-    summary && summary.Connection && summary.Connection && summary.Connection.includes("Delta");
-
-  let pMap = [];
-  if (mode === "primary") {
-    if (isDelta) {
-      pMap = [
-        {
-          n: "ABp",
-          vm: "Pri Phase A Voltage (LL)",
-          va: "Pri Phase A V-Angle",
-          im: "Pri Phase A Current",
-          ia: "Pri Phase A I-Angle",
-          c: "#f00",
-          isPri: true,
-        },
-        {
-          n: "BCp",
-          vm: "Pri Phase B Voltage (LL)",
-          va: "Pri Phase B V-Angle",
-          im: "Pri Phase B Current",
-          ia: "Pri Phase B I-Angle",
-          c: "#ff0",
-          isPri: true,
-        },
-        {
-          n: "CAp",
-          vm: "Pri Phase C Voltage (LL)",
-          va: "Pri Phase C V-Angle",
-          im: "Pri Phase C Current",
-          ia: "Pri Phase C I-Angle",
-          c: "#00f",
-          isPri: true,
-        },
-      ];
-    } else {
-      pMap = [
-        {
-          n: "Ap",
-          vm: "Pri Phase A Voltage (LN)",
-          va: "Pri Phase A V-Angle",
-          im: "Pri Phase A Current",
-          ia: "Pri Phase A I-Angle",
-          c: "#f00",
-          isPri: true,
-        },
-        {
-          n: "Bp",
-          vm: "Pri Phase B Voltage (LN)",
-          va: "Pri Phase B V-Angle",
-          im: "Pri Phase B Current",
-          ia: "Pri Phase B I-Angle",
-          c: "#ff0",
-          isPri: true,
-        },
-        {
-          n: "Cp",
-          vm: "Pri Phase C Voltage (LN)",
-          va: "Pri Phase C V-Angle",
-          im: "Pri Phase C Current",
-          ia: "Pri Phase C I-Angle",
-          c: "#00f",
-          isPri: true,
-        },
-      ];
-    }
-  } else if (mode === "secondary") {
-    if (isDelta) {
-      pMap = [
-        {
-          n: "AB",
-          vm: "Sec Voltage Phase AB",
-          va: "Phase AB V-Angle",
-          im: "Sec Current Phase A",
-          ia: "Phase A I-Angle",
-          c: "#f00",
-        },
-        {
-          n: "BC",
-          vm: "Sec Voltage Phase BC",
-          va: "Phase BC V-Angle",
-          im: "Sec Current Phase B",
-          ia: "Phase B I-Angle",
-          c: "#ff0",
-        },
-        {
-          n: "CA",
-          vm: "Sec Voltage Phase CA",
-          va: "Phase CA V-Angle",
-          im: "Sec Current Phase C",
-          ia: "Phase C I-Angle",
-          c: "#00f",
-        },
-      ];
-    } else {
-      pMap = [
-        { n: "A", vm: "Sec Voltage Phase A", va: "Phase A V-Angle", im: "Sec Current Phase A", ia: "Phase A I-Angle", c: "#f00" },
-        { n: "B", vm: "Sec Voltage Phase B", va: "Phase B V-Angle", im: "Sec Current Phase B", ia: "Phase B I-Angle", c: "#ff0" },
-        { n: "C", vm: "Sec Voltage Phase C", va: "Phase C V-Angle", im: "Sec Current Phase C", ia: "Phase C I-Angle", c: "#00f" },
-      ];
-    }
-  } else if (mode === "sec2") {
-    if (isDelta) {
-      pMap = [
-        {
-          n: "AB2",
-          vm: "Sec2 Voltage Phase AB",
-          va: "Phase AB W2 V-Angle",
-          c: "#f88",
-        },
-        {
-          n: "BC2",
-          vm: "Sec2 Voltage Phase BC",
-          va: "Phase BC W2 V-Angle",
-          c: "#ff8",
-        },
-        {
-          n: "CA2",
-          vm: "Sec2 Voltage Phase CA",
-          va: "Phase CA W2 V-Angle",
-          c: "#88f",
-        },
-      ];
-    } else {
-      pMap = [
-        {
-          n: "A2",
-          vm: "Sec2 Voltage Phase A",
-          va: "Phase A W2 V-Angle",
-          c: "#f88",
-        },
-        {
-          n: "B2",
-          vm: "Sec2 Voltage Phase B",
-          va: "Phase B W2 V-Angle",
-          c: "#ff8",
-        },
-        {
-          n: "C2",
-          vm: "Sec2 Voltage Phase C",
-          va: "Phase C W2 V-Angle",
-          c: "#88f",
-        },
-      ];
-    }
-  } else if (mode === "ct_secondary")
-    pMap = [
-      {
-        n: "A",
-        im: "Sec Current Phase A",
-        ia: "Phase A I-Angle",
-        c: "#f00",
-        isSec: true,
-      },
-      {
-        n: "B",
-        im: "Sec Current Phase B",
-        ia: "Phase B I-Angle",
-        c: "#ff0",
-        isSec: true,
-      },
-      {
-        n: "C",
-        im: "Sec Current Phase C",
-        ia: "Phase C I-Angle",
-        c: "#00f",
-        isSec: true,
-      },
-    ];
-  else {
-    if (isDelta) {
-      pMap = [
-        {
-          n: "AB",
-          vm: "Phase A-B Voltage",
-          va: "Phase A-B V-Angle",
-          im: "Phase A Current",
-          ia: "Phase A I-Angle",
-          c: "#f00",
-        },
-        {
-          n: "BC",
-          vm: "Phase B-C Voltage",
-          va: "Phase B-C V-Angle",
-          im: "Phase B Current",
-          ia: "Phase B I-Angle",
-          c: "#ff0",
-        },
-        {
-          n: "CA",
-          vm: "Phase C-A Voltage",
-          va: "Phase C-A V-Angle",
-          im: "Phase C Current",
-          ia: "Phase C I-Angle",
-          c: "#00f",
-        },
-      ];
-    } else {
-      pMap = [
-        {
-          n: "A",
-          vm: "Phase A Voltage (LN)",
-          va: "Phase A V-Angle",
-          im: "Phase A Current",
-          ia: "Phase A I-Angle",
-          c: "#f00",
-        },
-        {
-          n: "B",
-          vm: "Phase B Voltage (LN)",
-          va: "Phase B V-Angle",
-          im: "Phase B Current",
-          ia: "Phase B I-Angle",
-          c: "#ff0",
-        },
-        {
-          n: "C",
-          vm: "Phase C Voltage (LN)",
-          va: "Phase C V-Angle",
-          im: "Phase C Current",
-          ia: "Phase C I-Angle",
-          c: "#00f",
-        },
-      ];
-    }
-    // Always add secondary currents if present
-    pMap.push(
-      {
-        n: "As",
-        im: "Sec Current Phase A",
-        ia: "Phase A I-Angle",
-        c: "#ff8888",
-        isSec: true,
-      },
-      {
-        n: "Bs",
-        im: "Sec Current Phase B",
-        ia: "Phase B I-Angle",
-        c: "#ffff88",
-        isSec: true,
-      },
-      {
-        n: "Cs",
-        im: "Sec Current Phase C",
-        ia: "Phase C I-Angle",
-        c: "#8888ff",
-        isSec: true,
-      },
-    );
-  }
-
-  let autoMaxV = 0, autoMaxI = 0;
-  pMap.forEach((p) => {
-    if (p.vm && summary[p.vm]) autoMaxV = Math.max(autoMaxV, summary[p.vm]);
-    if (p.im && summary[p.im]) autoMaxI = Math.max(autoMaxI, summary[p.im]);
-  });
-  if (autoMaxV === 0) autoMaxV = 132790;
-  if (autoMaxI === 0) autoMaxI = 300;
-  _phasorAutoScales[scaleKey] = { maxV: autoMaxV, maxI: autoMaxI };
-
-  const ov = _phasorScaleOverrides[scaleKey] || {};
-  const maxV = ov.maxV != null ? ov.maxV : autoMaxV;
-  const maxI = ov.maxI != null ? ov.maxI : autoMaxI;
-
-  const isVAuto = ov.maxV == null;
-  const isIAuto = ov.maxI == null;
-
-  drawVector(g, pMap, summary, r, w, h, center, maxV, maxI);
-
-  // Scale control bar rendered as HTML below the SVG
-  const sk = JSON.stringify(scaleKey);
-  div.append("div")
-    .attr("class", "phasor-scale-ctrl")
-    .html(
-      `<span class="psc-label">V</span>` +
-      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'V',-1)" title="Halve V scale">−</button>` +
-      `<span class="psc-val${isVAuto ? " psc-auto-active" : ""}">${_fmtPhasorScale(maxV, "V")}</span>` +
-      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'V',1)" title="Double V scale">+</button>` +
-      `<button class="psc-btn psc-auto${isVAuto ? " psc-auto-active" : ""}" onclick="_phasorScaleReset(${sk},'V')" title="Reset to auto">AUTO</button>` +
-      `<span class="psc-sep"></span>` +
-      `<span class="psc-label">I</span>` +
-      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'I',-1)" title="Halve I scale">−</button>` +
-      `<span class="psc-val${isIAuto ? " psc-auto-active" : ""}">${_fmtPhasorScale(maxI, "I")}</span>` +
-      `<button class="psc-btn" onclick="_phasorScaleStep(${sk},'I',1)" title="Double I scale">+</button>` +
-      `<button class="psc-btn psc-auto${isIAuto ? " psc-auto-active" : ""}" onclick="_phasorScaleReset(${sk},'I')" title="Reset to auto">AUTO</button>`
-    );
-}
-
-function _fmtPhasorScale(val, axis) {
-  if (axis === "V") {
-    if (val >= 1e6) return (val / 1e6).toPrecision(3) + "MV";
-    if (val >= 1e3) return (val / 1e3).toPrecision(3) + "kV";
-    return val.toPrecision(3) + "V";
-  }
-  if (val >= 1e3) return (val / 1e3).toPrecision(3) + "kA";
-  return val.toPrecision(3) + "A";
 }
 
 /**

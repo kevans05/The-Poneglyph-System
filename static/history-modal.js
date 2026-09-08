@@ -111,15 +111,13 @@ function _renderSnapshotsTab(container) {
           .style("padding", "7px 14px").style("border-bottom", "1px solid #0d0d0d")
           .style("gap", "8px");
 
+        const by = s.author
+          ? ` <span style="color:#3a7; font-size:9px;">◆ ${s.author}</span>`
+          : "";
         row.append("div")
           .style("font-size", "10px").style("color", "#aaa").style("flex", "1")
           .style("min-width", "0")
-          .html(`<span style="color:#eee;">${s.label || "Unnamed"}</span> <span style="color:#444; font-size:9px;">${_fmtEpochShort(s.epoch)}</span>`);
-
-        row.append("button").attr("class", "eng-btn")
-          .style("white-space", "nowrap").style("padding", "3px 10px").style("font-size", "9px")
-          .text("COMPARE")
-          .on("click", () => enterCompareMode(s.id, s.label));
+          .html(`<span style="color:#eee;">${s.label || "Unnamed"}</span> <span style="color:#444; font-size:9px;">${_fmtEpochShort(s.epoch)}</span>${by}`);
 
         row.append("button").attr("class", "wiz-secondary")
           .style("white-space", "nowrap").style("padding", "3px 8px").style("font-size", "9px").style("color", "#555")
@@ -220,19 +218,6 @@ function _renderSessionsTab(container) {
       });
     });
   });
-}
-
-function enterCompareMode(id, label) {
-  loadSnapshotData(id).then((data) => {
-    compareData = { filename: label || String(id), nodes: data.nodes };
-    d3.select("#history-modal").style("display", "none");
-    refreshData();
-  });
-}
-
-function exitCompareMode() {
-  compareData = null;
-  refreshData();
 }
 
 // Keep renderHistoryBody as an alias for backwards compat

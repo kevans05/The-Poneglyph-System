@@ -166,6 +166,33 @@ function toggleInputPolarity(deviceId, inputId, currentPol) {
   reconfigureAPI(deviceId, "update_device", { properties: { input_polarities: polarities } }).then(() => refreshData());
 }
 
+// SUM ⇄ DIFFERENTIAL for a CTTB summation block.
+function setSummationMode(deviceId, mode) {
+  reconfigureAPI(deviceId, "update_device", { properties: { mode } }).then(() => refreshData());
+}
+
+// Wire another CT/VT into a summation block as an input (device → this node).
+function addSummationInput(deviceId) {
+  const existing = new Set(
+    ((currentData && currentData.nodes) || []).find((n) => n.id === deviceId)?.inputs || [],
+  );
+  const cands = ((currentData && currentData.nodes) || [])
+    .filter(
+      (n) =>
+        n.id !== deviceId &&
+        !existing.has(n.id) &&
+        ["CurrentTransformer", "VoltageTransformer", "DualWindingVT", "CTTB"].includes(n.type),
+    )
+    .map((n) => n.id);
+  if (cands.length === 0) {
+    alert("No unconnected CT / VT / CTTB devices available to add as an input.");
+    return;
+  }
+  showTerminalPicker("ADD INPUT — pick the source device", cands, (srcId) => {
+    reconfigureAPI(srcId, "add_secondary_connection", { target_id: deviceId }).then(() => refreshData());
+  });
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => { _initConfigModalDrag(); _initMinimapDrag(); });

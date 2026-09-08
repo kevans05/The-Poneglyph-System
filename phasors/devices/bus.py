@@ -95,38 +95,6 @@ class Bus:
         stats = {"Type": self.__class__.__name__, "Connections": len(self.connections)}
         return append_3phase_details(stats, self.voltage, self.current)
 
-    def inject_fault(self, data):
-        self.fault_state = data
-        self._fault_start_time = None
-        if hasattr(self, "_cache"): self._cache.clear()
-
-    def clear_fault(self):
-        self.fault_state = None
-        self._fault_start_time = None
-        if hasattr(self, "_cache"): self._cache.clear()
-
-    def _sim_step_fault(self, sim_time_ms):
-        if not getattr(self, "fault_state", None): return []
-        fs = self.fault_state
-        if self._fault_start_time is None: self._fault_start_time = sim_time_ms
-        elapsed = sim_time_ms - self._fault_start_time
-        if fs.get("persistence") == "transient":
-            duration = float(fs.get("duration", 100.0))
-            if elapsed >= duration:
-                self.clear_fault()
-                return [{"type": "CLEAR_FAULT", "delay": 0, "data": {"device_id": self.name}}]
-        if fs.get("arcing"):
-            import random
-            base_z = float(fs.get("impedance", 0.01))
-            fs["current_impedance"] = base_z * (1.0 + random.random() * 4.0)
-            if hasattr(self, "_cache"): self._cache.clear()
-        else:
-            fs["current_impedance"] = fs.get("impedance", 0.01)
-        return []
-
-    def sim_step(self, sim_time_ms):
-        return self._sim_step_fault(sim_time_ms)
-
     def find_downstream_impacts(self):
         visited = set()
         loads = []

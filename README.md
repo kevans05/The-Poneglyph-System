@@ -17,12 +17,11 @@ A browser-based SCADA simulator and field measurement platform for electrical su
 8. [Hardware Power Meters](#hardware-power-meters)
 9. [Field Report](#field-report)
 10. [History & Snapshots](#history--snapshots)
-11. [Simulation Engine](#simulation-engine)
-12. [Database Architecture](#database-architecture)
-13. [API Reference](#api-reference)
-14. [File Structure](#file-structure)
-15. [Power Flow Model](#power-flow-model)
-16. [Phasor Mathematics](#phasor-mathematics)
+11. [Database Architecture](#database-architecture)
+12. [API Reference](#api-reference)
+13. [File Structure](#file-structure)
+14. [Power Flow Model](#power-flow-model)
+15. [Phasor Mathematics](#phasor-mathematics)
 
 ---
 
@@ -32,7 +31,7 @@ This tool was built to solve a real problem: running protection relay load tests
 
 The system does three things:
 
-1. **Simulates** the substation topology — a mathematical model of transformers, circuit breakers, disconnects, current transformers, voltage transformers, relays, and loads. Power flows through the network in real time; you can open and close breakers and watch voltage and current re-propagate. A real-time physics simulation engine can also run fault scenarios with configurable speed.
+1. **Models** the substation topology — a mathematical model of transformers, circuit breakers, disconnects, current transformers, voltage transformers, relays, and loads. Power flows through the network via a steady-state power-flow solve; you can open and close breakers and watch voltage and current re-propagate.
 
 2. **Records** field measurements against that model — taking readings from handheld power meters (or entering them manually), attaching them to named tests with drawing references, and attributing every session to the technician who took it.
 
@@ -153,6 +152,39 @@ Each row represents one engineering document used to design the test. Columns:
 
 Click **+ ADD** to log a new drawing. Both **Title** and **Revision** are required. The URL field accepts any string — HTTP links open in a new tab; file paths can be copied manually.
 
+##### 🔍 Search Corporate Drawings
+
+Both the test-level and per-device drawing forms have a **🔍 SEARCH CORPORATE DRAWINGS**
+button. It queries the corporate drawing system through the `drawing_search`
+package and lets you pick a result to auto-fill title / revision / URL / notes.
+
+Smart defaults, all editable:
+
+- **Facility** is pre-filled from the loaded **site** (`number_code`, falling back
+  to the station code).
+- **Drawing Type** / **Subject** are pre-selected from the device type
+  (a relay → Electrical · Protection & Control, a meter → Electrical · Metering, …).
+
+Configure it in **⚙ SETTINGS → DRAWING SEARCH**: set the **Drawing Search URL**,
+**Drawing Download URL**, and **Cache Refresh (hrs)**, then either
+
+- **🔑 Grab via Windows Auth** — on Windows, pulls session cookies for the
+  current domain account via PowerShell `Invoke-WebRequest -UseDefaultCredentials`
+  (no password prompt), or
+- paste cookies into `~/.poneglyph_drawing_search.json` yourself:
+  ```json
+  { "base_url": "https://drawings.example.com",
+    "download_url": "https://drawings.example.com",
+    "cache_refresh_hours": 4,
+    "cookies": { "filenet-es": "…", "_WL_AUTHCOOKIE_filenet-es": "…" } }
+  ```
+
+**🔄 Fetch Drawing Options** pulls the facility / type / subject dropdown values
+from the live form. Environment variables `PONEGLYPH_DWG_BASE_URL`,
+`PONEGLYPH_DWG_DOWNLOAD_URL`, `PONEGLYPH_DWG_COOKIES`, `PONEGLYPH_DWG_CACHE_HOURS`
+also work and fill any gap left by the file. Results are cached in SQLite and
+re-fetched after *Cache Refresh* hours.
+
 #### Sessions List
 
 All measurement sessions attached to this test are listed with the date/time, technician name, instrument type, and reading count.
@@ -163,7 +195,31 @@ The dropdown in the detail header lets you change the test status inline. Changi
 
 ### XLSX Report
 
-Each test can export a structured load-test report via **EXPORT XLSX**. The report is generated from `excel_report.py` using a template at `templates/load_test_template.xlsx`. Measurements can also be imported back from a hand-entered XLSX file via the ingest endpoint.
+Each test can export a structured load-test report via **↓ DOWNLOAD EXCEL**. The report is generated from `excel_report.py` using a template at `templates/load_test_template.xlsx`, with one block per device: label, Measured Secondary (fill this in by hand), Predicted Secondary, and Measured Primary.
+
+**↑ UPLOAD EXCEL** reads the Measured Secondary values back in. It validates the whole file before writing anything — a renamed sheet, a corrupt workbook, or a file with no usable values all fail cleanly with no session created, instead of leaving a partial or empty one behind. Device names are checked against the currently loaded substation; a block whose name doesn't match anything (a typo, a renamed device) is skipped and reported, while every other device in the same file still imports. The result — what was imported, what was skipped and why, any unmatched device names — is shown in full rather than a single pass/fail alert, and re-selecting the same file after a failed attempt just works (no page reload needed).
+
+### 🔍 Audit
+
+Click **🔍 AUDIT** in a test's detail view to review its recorded results rather
+than just list them. All the math (`test_audit.py`, `GET /api/tests/<id>/audit`)
+runs server-side and is presentation-only on the client:
+
+- **RESULTS** — every recorded value, grouped by device and session, with a
+  **◈ PHASOR DIAGRAM** button per row.
+- **NEUTRALS** — the phasor (vector) sum of each device's three measured phases,
+  which should be near zero on a healthy, balanced circuit. Where a Neutral
+  value was also measured directly, it's checked against the computed one.
+  Graded ok (<5%) / caution (5–10%) / review (≥10%) against the average phase
+  magnitude.
+- **CHAIN** — for every device fed by others through the secondary wiring (CT →
+  CTTB → Relay, etc.), the expected value is the polarity-weighted vector sum
+  of what its inputs recorded in the same session — the same summation /
+  differential math the relay itself performs — checked against what the
+  downstream device actually recorded.
+- **COMPARE** — pick any two recorded sets (the same device across two
+  sessions, or two devices that should agree) for a side-by-side delta table
+  and an overlaid phasor diagram.
 
 ---
 
@@ -191,86 +247,78 @@ Each device type has a distinct visual symbol:
 
 - **Pan** — click and drag on empty canvas.
 - **Zoom** — mouse wheel or trackpad pinch.
-- **Click a device** — opens an information window showing all calculated phasor values for that device.
+- **Click a device** — opens an information window showing its state and configuration.
 - **Right-click** — context menu for connection mode and device options.
 
 ### Device Information Windows
 
 Clicking a device opens a floating draggable window showing:
-- Calculated voltages (kV, per phase, angle in degrees)
-- Calculated currents (A, per phase, angle in degrees)
-- Power (MVA, MW, MVAR)
+- Device state (status, connection, tap position, winding config, …)
+- Protection input sources and polarity (for relays / CTTBs)
 - Manual measurements (if recorded)
 - Device parameters (ratio, CT class, etc.)
 - Per-device drawing references and analog history
 
 Multiple windows can be open simultaneously. Windows update automatically when **RESCAN BUS** is clicked or a measurement is recorded.
 
-### Reference Angle
-
-The status bar at the top shows the current reference phasor. When a reference device and phase are set (via **PROJECT SETUP**), all angles on the diagram are displayed relative to that reference — making phase comparisons straightforward.
+> The computed per-phase phasor telemetry and polar phasor diagrams were removed
+> along with the simulation engine. The power-flow model still runs server-side
+> for source-sync-conflict detection and report predictions.
 
 ---
 
 ## Measurement Workflow
 
-### Step 1 — Identify Technician
+The field model this is built around: one probe stays on a fixed voltage
+reference for the whole session; the other probe — current or voltage — is
+the one that actually moves, point to point (CTTB, VT terminal blocks, iso
+blocks, analog relay terminals). Digital relays aren't probed at all; you
+read a number off the front-panel display and key it in. All of that is done
+in Class 0 gloves, so the interface is built around large targets and as
+little typing as the meter allows — not around a touchscreen.
 
-When you click **FIELD METERS** (or **[ Initialize P.L.U.G. Telemetry ]**), the first screen asks for your **full name**. This name is attached to the session and all measurements recorded during it.
+### Starting a session
 
-The name is remembered for the rest of the browser session — subsequent opens pre-fill it. You can change it by editing the field.
+Open **TESTS**, pick a test, and click **▶ START MEASUREMENTS**. You're asked
+for your name once (remembered on this device, and — if a hub is connected —
+suggested from everyone signed in on it too); the test's capture points are
+pre-loaded, so there's usually nothing left to pick before choosing an
+instrument.
 
-### Step 2 — Attach to a Test
+### One reading screen for every instrument
 
-After entering your name, the **ATTACH TO TEST** picker opens. This lists all active (non-archived) tests for the current site. Options:
+PMM-1 (Web Serial), PMM-2 (network), and manual entry are the same operation
+with a different source for the number — so they're one screen, not three:
 
-- **Select an existing test** — click a row to highlight it, then **ATTACH TO TEST →**.
-- **+ CREATE NEW TEST** — enter a name and description inline; creates the test and immediately attaches the session to it.
-- **SKIP** — session is not linked to any test (measurements are still recorded).
+- **Live meter connected** (PMM-1 or PMM-2): **▶ QUERY METER** fills in
+  MAG / ANG with zero typing; **✓ ACCEPT & LOG POINT** saves it and moves on.
+- **✎ ENTER THIS ONE BY HAND** — available at any point in a live session,
+  for anything a meter can't read (a digital relay's own display). It hands
+  just that one reading to manual entry without disconnecting the meter or
+  losing your place; the next point goes back to the meter automatically.
+- Manual entry (by session choice, or the per-point override above) uses a
+  large on-screen number pad — built for a gloved hand clicking with a
+  mouse, not for precise physical-keyboard presses.
+- Logging a point auto-advances: next phase, then the next device, in order.
+  A failed save shows an error in place rather than failing silently.
 
-### Step 3 — Select Devices (Field Meters)
-
-The wizard shows a filterable list of all devices in the current topology. Devices are grouped by type:
-- ALL / RELAYS / CT / VT / CTTB / BREAKERS / SOURCES
-
-Check one or more devices, then click **NEXT →**.
-
-### Step 4 — Enter Measurements
-
-For each selected device, a measurement table shows:
-
-| Column | Description |
-|---|---|
-| **Label** | Measurement name (Phase A Voltage, Phase A I-Angle, etc.) |
-| **PRED** | Predicted value from the power-flow model (blue) |
-| **MEAS (A/B/C)** | Input fields for measured values from your meter |
-
-The **360° LAG** toggle switches the prediction between leading and lagging conventions — useful when CT polarity is reversed or the wiring follows a lagging reference.
-
-Click **SAVE ALL** to record all entered values. They are:
-1. Written into `substation.json` under the device's `manual_measurements` field (so they appear on the diagram).
-2. Written to the site database in the `measurements` table, linked to the current session.
-
-### P.L.U.G. Telemetry (Hardware Meters)
-
-The **[ Initialize P.L.U.G. Telemetry ]** button starts a hardware-connected measurement session. After the technician name and test picker:
-
-1. **Select Instrument** — choose from PMM1 (serial), PMM2 (Ethernet), or Simulator.
-2. **Configure Channels** — assign input channels to voltage and current phases.
-3. **Live Readings** — the console streams live readings from the meter.
-4. **Single-Injection Mode (SI)** — for single-phase injection testing, select the injected phase; the system applies the correct geometric correction to predict what the other phases should read.
+The **360° LAG** toggle switches the reference-panel prediction between
+leading and lagging conventions — useful when CT polarity is reversed or the
+wiring follows a lagging reference. **SHORT & ISOLATE (S&I)** walks through
+single-phase-injection testing, reconfiguring the meter's channel for the
+injected phase and predicting what the other two phases should read.
 
 ---
 
 ## Hardware Power Meters
 
-### Megger PMM-1 (Serial)
+### Megger PMM-1 (Web Serial)
 
-- **Connection:** RS-232 serial, 19200 baud, 8-N-1, 9-pin connector.
+- **Connection:** RS-232, 19200 baud, 8-N-1, 9-pin connector — opened directly in the browser via the [Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API) (`static/pmm-webserial.js`). No backend serial access is used.
+- **Requirements:** a Chromium-based browser (Chrome/Edge) served over HTTPS or `http://localhost`.
 - **Protocol:** Semicolon-terminated ASCII commands.
 - **Channels:** 0–8 (Van, Vbn, Vcn, Vab, Vbc, Vca, Ia, Ib, Ic).
-- **Platform:** Windows (`COM1`, `COM2`, …), Linux/Raspberry Pi (`/dev/ttyUSB0`, `/dev/ttyAMA0`, `/dev/ttyACM0`).
-- **Configure:** Select port from the detected list; set channel 1 (voltage) and channel 2 (current).
+- **Configure:** Press **SELECT PORT** and pick the USB-serial adapter in the browser prompt; set channel 1 (voltage) and channel 2 (current).
 
 ### Megger PMM-2 (Ethernet)
 
@@ -280,15 +328,6 @@ The **[ Initialize P.L.U.G. Telemetry ]** button starts a hardware-connected mea
 - **Current channels 1–3:** 1 A, 5 A, 10 A, 20 A, 50 A, 100 A, CT (7 ranges).
 - **Current channel 4:** 0.002 A, 0.005 A, 0.05 A, 0.2 A, 1 A, 5 A, 30 A (7 ranges).
 - **Configure:** Enter IP address; select channel assignments.
-
-### Simulation Driver
-
-A built-in mock driver that generates realistic 60 Hz three-phase power measurements with random jitter. Used for:
-- Development and testing without hardware.
-- Demonstrating the system to engineers before field deployment.
-- Training new technicians on the workflow.
-
-Simulated channels return: voltage (kV), current (A), real power (W), reactive power (var), apparent power (VA), phase angle (degrees), and frequency (Hz).
 
 ---
 
@@ -351,33 +390,90 @@ Click **COMPARE** next to any snapshot. The diagram loads the historical topolog
 
 Click **DELETE** next to a snapshot. This removes only the topology record; measurement sessions and their data are not affected.
 
+### Drawing revisions
+
+Drawings attached from the corporate search carry their **drawing number**. On a
+device drawing, **REVISIONS** lists every revision that number has on record
+(`GET /api/drawings/revisions?number=…`, cached per site); clicking a sibling
+swaps the attachment and logs the old revision. Test drawings show the same list
+read-only — a test keeps the revision that was actually referenced in the field.
+
+### Change signing
+
+Every snapshot and per-device history row records the operator who made it
+(`author` / `author_id`, the latter being the `PoneglyphIdentity` signature).
+The browser registers the current operator with `POST /api/operator`; the
+HISTORY list shows `◆ <name>` next to each snapshot.
+
 ---
 
-## Simulation Engine
+## Poneglyph Hub (shared server)
 
-The simulation engine (`sim_engine.py`) runs a real-time physics model in a background thread, independent of the HTTP server.
+The optional **hub** is a central server a whole team connects to. The desktop
+app keeps working fully offline and syncs when a connection is available. Full
+design: [`docs/poneglyph-hub.md`](docs/poneglyph-hub.md).
 
-### Starting the Simulation
+**Run the hub** (`hub/`):
 
-Use the **SIM** controls in the header to start, pause, or stop the simulation. The simulation can also be controlled via the API.
+```sh
+cd hub
+docker compose up -d --build
+```
 
-### Key Features
+Open `http://<hub-host>:8900/` — first visit bootstraps an admin account (no
+accounts exist yet). From its **USERS** tab, add one account per technician.
+Then in the app: **⚙ SETTINGS → PONEGLYPH HUB** — set the hub URL and sign in
+with those credentials. The bearer token is stored per-device and refreshed on
+every sync.
 
-- **Real-time propagation** — voltage and current re-propagate through the network on every tick (~100 ms by default).
-- **Fault injection** — schedule a fault on any bus at a specified simulation time. The engine emits `FAULT` events visible in the animation frame stream.
-- **Speed control** — wall-clock time is scaled by a configurable multiplier (0.01× to 100×), enabling slow-motion or fast-forward scenarios.
-- **Animation frames** — the frontend polls `/api/sim/frames` to receive incremental state updates (only nodes whose values changed since the last frame), avoiding full topology reloads.
+### Roster-aware technician picker
 
-### Event Types
+Once connected, the "who are you" / "who's taking this reading" pickers show
+everyone on the hub (`GET /api/hub/users` — display names only, no admin gate),
+tagged with a small ☁, alongside this device's own local name history. Picking
+a colleague's name works even if they've never touched this device before —
+their signature stays whichever device is actually recording; only the
+`technician` display name on that session changes. You can still type a
+brand-new name that isn't a hub account at all.
 
-| Event | Description |
-|---|---|
-| `FAULT` | A fault has been applied to the network |
-| `CLEAR_FAULT` | An active fault has been cleared |
-| `RELAY_PICKUP` | A relay element has picked up |
-| `RELAY_DROPOUT` | A relay element has dropped out |
-| `TRIP` | A breaker trip has been commanded |
-| `CLOSE` | A breaker close has been commanded |
+### Hub admin GUI
+
+`http://<hub-host>:8900/` is a small dashboard for running the hub itself:
+**USERS** (add / disable / promote / reset password / delete — guarded so the
+last admin can't be removed), **SUBSTATIONS** (every uploaded station, with an
+expandable version history, and delete), **TESTS** (every published test, and
+delete). Deleting or disabling a user never touches what they authored — it
+just stops them signing in.
+
+### Shared load tests
+
+Publish a completed test from its detail view (**⇪ PUBLISH TO HUB**); pull other
+technicians' tests from **☁ SHARED TESTS** in the Tests modal. Publishing is
+idempotent by test id; pulled tests are read-only and badged **☁ SHARED**.
+Endpoints: `GET /api/tests/<id>/bundle`, `POST /api/tests/import-bundle`.
+
+### Shared substation model (branch & merge)
+
+All of this lives in **Site Selection** (click the site indicator, or the
+header) — there's no separate sync screen. Each local site's row shows its hub
+state inline: **☁ synced**, **☁ n unpushed changes** (amber), or *not synced to
+hub* with a **☁ LINK TO HUB** button. Clicking a linked site's **MANAGE** button
+loads it and opens the full link / pull / push / conflict-resolution panel for
+just that site.
+
+Below your local sites, a **☁ ON THE HUB — NOT ON THIS MACHINE** section lists
+substations that exist on the hub but have no local copy yet — check any number
+of them and **⇩ PULL SELECTED →** creates and attaches each one in turn.
+**☁ SYNC ALL LINKED SITES** in the footer pulls (and, where that's clean,
+pushes) every locally-linked site one after another; anything that comes back
+with conflicts is left for you to open and resolve individually.
+
+Once linked, every topology change is recorded as a signed version. **PULL**
+fast-forwards or runs a structural 3-way merge (`topo_merge.py`) — conflicts are
+resolved device-by-field in the panel and written as a two-parent merge commit.
+**PUSH** fast-forwards the hub head. The hub itself never merges; it only stores
+and orders versions.
+Endpoints: `GET /api/hub-sync/status`, `POST /api/hub-sync/{link,pull,resolve,push,unlink}`.
 
 ---
 
@@ -502,8 +598,9 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `POST` | `/api/tests/drawings/delete` | Remove a drawing. Body: `id` |
 | `GET` | `/api/tests/<id>/devices` | Distinct device IDs that have measurements for a test |
 | `GET` | `/api/tests/<id>/report-data` | Full measurement data for report rendering |
+| `GET` | `/api/tests/<id>/audit` | Phasor sets, neutral/residual checks, and chain comparisons for the AUDIT view |
 | `GET` | `/api/tests/<id>/report.xlsx` | Download the XLSX load-test report |
-| `POST` | `/api/tests/ingest-report` | Import hand-entered measurements from an XLSX file |
+| `POST` | `/api/tests/ingest-report` | Import hand-entered measurements from an XLSX file. Validates before writing; returns `{imported, skipped, unknown_devices, measurement_count}` or a 400 with a clear error |
 
 ### Topology
 
@@ -530,7 +627,6 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 | `record_measurement` | Save field measurements to device and database |
 | `create_snapshot` | Capture the current topology as a snapshot |
 | `update_project_info` | Set station name and device under test |
-| `set_reference` | Set the phasor reference device and phase |
 
 ### Database
 
@@ -550,24 +646,24 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/pmm/ports` | List available serial ports |
-| `GET` | `/api/pmm/status` | Connection state and model |
-| `GET` | `/api/pmm/query` | Read current measurements from connected meter |
-| `POST` | `/api/pmm/connect` | Connect to a meter. Body: `port`, `model` (`pmm1`/`pmm2`/`sim`) |
+| `GET` | `/api/pmm/status` | Connection state and model (PMM2) |
+| `GET` | `/api/pmm/query` | Read current measurements from the connected PMM2 |
+| `POST` | `/api/pmm/connect` | Connect to a PMM2. Body: `port` (IP, optionally `ip:port`), `model` (`pmm2`) |
 | `POST` | `/api/pmm/configure` | Set channel assignments. Body: `chan1`, `chan2` |
 | `POST` | `/api/pmm/disconnect` | Disconnect from meter |
 
-### Simulation Engine
+> PMM1 is a serial instrument and is driven entirely in the browser over the Web Serial API — it does not use these endpoints.
+
+### Corporate Drawing Search
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/sim/start` | Start the physics simulation engine |
-| `POST` | `/api/sim/stop` | Stop the simulation engine |
-| `POST` | `/api/sim/pause` | Pause or resume the simulation |
-| `POST` | `/api/sim/speed` | Set the simulation time multiplier. Body: `multiplier` |
-| `POST` | `/api/sim/fault` | Schedule a fault event. Body: `device_id`, `trigger_time_ms` |
-| `POST` | `/api/sim/clear_fault` | Clear an active fault |
-| `GET` | `/api/sim/frames` | Poll incremental animation frames since last poll |
+| `GET` | `/api/drawing-search/config` | `{ configured, base_url, download_url, cache_refresh_hours, cookie_names, facility_default, type_hints }` |
+| `POST` | `/api/drawing-search/config` | Save config. Body: `base_url`, `download_url`, `cache_refresh_hours` |
+| `POST` | `/api/drawing-search/grab-cookies` | Grab session cookies via Windows Integrated Auth (Windows only) |
+| `GET` | `/api/drawing-search/options` | Facility / drawing-type / drawing-subject code→label maps |
+| `POST` | `/api/drawing-search/options/refresh` | Re-fetch the dropdown options from the live search form |
+| `POST` | `/api/drawing-search` | Run a search. Body: `facility`, `drawing_type`, `drawing_subject`, `title`, `drawing_num`, `sheet_number`, `state`, `page` |
 
 ---
 
@@ -576,12 +672,14 @@ All endpoints are served by `api.py` on port 8000. All POST endpoints accept and
 ```
 The-Poneglyph-System/
 ├── api.py                   # HTTP server — all endpoints, request routing
-├── sim_engine.py            # Real-time physics simulation engine (background thread)
 ├── model_loader.py          # Shared logic for building the device graph from topology JSON
 ├── topology_utils.py        # Pure topology mutation helpers (add/delete/rename devices, etc.)
 ├── site_db.py               # Per-site SQLite persistence (UUID-keyed, auto-migrating)
 ├── excel_report.py          # XLSX load-test report builder and ingest
-├── config.py                # Central configuration (host, port, simulation parameters)
+├── config.py                # Central configuration (host, port, paths)
+├── redline_importer.py      # .wirePlan (Red-Line Routing) import + correlation
+├── drawing_search_config.py # Glue: config + smart defaults for corporate drawing search
+├── drawing_search/          # Corporate drawing-search client (search, cache, lookup tables)
 ├── substation.json          # Active working topology (loaded from site DB)
 │
 ├── phasors/                 # Power-flow model and phasor mathematics
@@ -610,9 +708,8 @@ The-Poneglyph-System/
 │
 ├── power_meters/            # Hardware instrument drivers
 │   ├── __init__.py          # Module API (api_connect, api_query, etc.)
-│   ├── pmm1_interface.py    # Megger PMM-1 RS-232 serial driver
-│   ├── pmm2_interface.py    # Megger PMM-2 Ethernet/TCP driver
-│   └── sim_driver.py        # Simulation driver (60 Hz, random jitter)
+│   └── pmm2_interface.py    # Megger PMM-2 Ethernet/TCP driver
+│                            # (PMM-1 lives in static/pmm-webserial.js — Web Serial)
 │
 ├── sites/                   # Per-site SQLite databases (created at runtime)
 │   └── <STATION>.db
@@ -632,12 +729,13 @@ The-Poneglyph-System/
     ├── protection-view.js   # Protection element status and single-injection view
     ├── relay-controls.js    # Relay trip/close DC output controls
     ├── tcc-plot.js          # Time-current characteristic coordination plot
-    ├── sim.js               # Simulation mode controller
+    ├── pmm-webserial.js     # Megger PMM-1 driver over the Web Serial API
+    ├── settings-modal.js    # Application settings (preferences + voltage-class palette)
     ├── config-modal.js      # Per-device configuration modal
     ├── context-menu.js      # Right-click context menu
     ├── selector.js          # Device selector / filter panel
     ├── dialogs.js           # Generic dialog helpers
-    ├── serial-dialog.js     # Serial port connection dialog
+    ├── serial-dialog.js     # Device asset serial-number dialog
     ├── sites.js             # Site selector modal
     ├── tests.js             # Test manager modal and session test picker
     ├── splash.js            # Splash screen and startup flow

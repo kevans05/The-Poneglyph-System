@@ -5,11 +5,12 @@ endpoint lives in do_GET / do_POST on SCADAServer.  No framework required.
 
 Concurrency model: single-threaded.  All state is in module-level globals
 (_current_topology, _active_site, _active_session_id).  This is safe because
-CPython's GIL means only one request runs at a time, and the sim_engine
-mutates topology in a dedicated thread via sim_engine.mutate().
+CPython's GIL means only one request runs at a time.
 
 Endpoint summary
 ----------------
+GET  /api/whoami                      — OS login name, for pre-filling the operator identity
+POST /api/operator                    — register the current operator (name + signature id) for change attribution
 GET  /api/topology                    — computed power-flow topology
 GET  /api/topology/export             — raw substation JSON download
 POST /api/topology/import             — replace topology from JSON upload
@@ -25,11 +26,20 @@ POST /api/tests/create                — create a new test
 POST /api/tests/delete                — delete a test and all its sessions
 POST /api/tests/status                — update test status (IN PROGRESS / COMPLETE / ARCHIVED)
 POST /api/tests/capture-points        — save capture-point device list for a test
+GET  /api/tests/<id>/bundle           — self-contained test bundle for hub publish
+POST /api/tests/import-bundle         — insert a test bundle pulled from the hub
+GET  /api/hub-sync/status             — substation link state (linked / ahead / pending conflicts)
+POST /api/hub-sync/link              — create-on-hub or attach-to-hub the active substation
+POST /api/hub-sync/pull             — pull hub versions; fast-forward or structural 3-way merge
+POST /api/hub-sync/resolve          — apply conflict resolutions from a pull that needed them
+POST /api/hub-sync/push            — fast-forward the hub head with local commits
+POST /api/hub-sync/unlink         — drop the hub link (keeps local version history)
 POST /api/tests/vref                  — store the reference VT for a test
 POST /api/tests/drawings/add          — attach a drawing to a test
 POST /api/tests/drawings/delete       — remove a drawing
 GET  /api/tests/<id>/devices          — distinct device IDs with measurements for a test
 GET  /api/tests/<id>/report-data      — full measurement data for report rendering
+GET  /api/tests/<id>/audit            — phasor sets, neutral/residual checks, chain comparisons
 GET  /api/tests/<id>/report.xlsx      — download XLSX load-test report
 POST /api/tests/ingest-report         — import hand-entered measurements from XLSX
 GET  /api/db/snapshots                — list topology snapshots
@@ -41,19 +51,12 @@ POST /api/db/sessions/delete          — delete a session and its measurements
 GET  /api/db/sessions/<id>/measurements — all measurements for a session
 GET  /api/db/history/<device>/<key>   — time-series measurements for one analog key
 GET  /api/db/device-config-history/<id> — per-device config/snapshot audit trail
-POST /api/pmm/connect                 — connect to power meter (pmm1 / pmm2 / sim)
+GET  /api/drawings/revisions?number=<n>&refresh=<0|1> — sibling revisions of a drawing number (cached per site)
+POST /api/pmm/connect                 — connect to power meter (pmm2 TCP/IP only; PMM1 is Web Serial in-browser)
 POST /api/pmm/configure               — set channel assignments on connected meter
 POST /api/pmm/disconnect              — disconnect from meter
-GET  /api/pmm/ports                   — list available serial ports
 GET  /api/pmm/status                  — meter connection status
 GET  /api/pmm/query                   — read one set of phasor measurements
-POST /api/sim/start                   — start physics simulation engine
-POST /api/sim/stop                    — stop simulation engine
-POST /api/sim/pause                   — pause / resume simulation
-POST /api/sim/speed                   — set simulation time multiplier
-POST /api/sim/fault                   — schedule a fault event
-POST /api/sim/clear_fault             — clear an active fault
-GET  /api/sim/frames                  — poll simulation animation frames
 POST /api/redline/import              — import a .wirePlan JSON into the active site DB
 POST /api/redline/rollback            — remove tracking rows for one import (soft rollback)
 POST /api/redline/rollback-full       — remove tracking rows AND all content rows (full rollback)
@@ -64,20 +67,27 @@ GET  /api/redline/device-links/<id>   — all wirePlan links pointing at a topol
 """
 
 import topology_utils
-import sim_engine as _sim
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote as _urlquote
+import urllib.request
+import urllib.error
 import json
 import mimetypes
 import os
+import re
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import getpass
 import config as _cfg
 import excel_report as _xrep
 import power_meters as _pmm
 import site_db as _sdb
+import topo_merge as _merge
+import test_audit as _audit
 import model_loader
 import redline_importer as _rl
+import drawing_search_config as _dwg
 
 # In-memory substation topology.  Loaded from the active site DB on /api/sites/load
 # and kept in sync by every /api/reconfigure call.  Persisted to the DB via _autosave().
@@ -91,6 +101,59 @@ _active_site: str | None = None
 # via record_measurement are tagged with this session so they appear together in
 # the history view.
 _active_session_id: str | None = None
+
+# The operator currently at the controls, pushed by the browser after the
+# identity prompt (POST /api/operator).  Used to sign topology snapshots and
+# per-device history rows so layout changes are attributable.
+_current_operator: dict = {"name": "", "id": ""}
+
+# Set while a hub pull produced conflicts the operator still has to resolve.
+# {"merged": dict, "conflicts": list, "base_id": str, "ours_head": str, "theirs_head": str}
+_pending_merge: dict | None = None
+
+
+def _hub_request(base: str, token: str, method: str, path: str, body=None):
+    """Outbound call to the Poneglyph Hub. Returns (status_int, dict)."""
+    url = base.rstrip("/") + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except Exception:
+            return e.code, {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return 0, {"error": str(e)}
+
+
+def _record_hub_version(data: dict, label: str):
+    """When the active site is hub-linked, append the current topology to the
+    local version graph and advance the local head. No-op otherwise or when the
+    content is unchanged."""
+    if not _active_site:
+        return
+    try:
+        sync = _sdb.get_hub_sync(_active_site)
+        if not sync or not sync.get("substation_id"):
+            return
+        parent = sync.get("head_id") or sync.get("base_id") or ""
+        vid = _sdb.record_version(
+            _active_site, data,
+            author=_current_operator.get("name", ""),
+            author_id=_current_operator.get("id", ""),
+            message=label, branch=sync.get("branch", "main"),
+            parent_id=parent,
+        )
+        if vid and vid != parent:
+            _sdb.set_hub_sync(_active_site, head_id=vid)
+    except Exception:
+        traceback.print_exc()
 
 
 def load_substation(data=None):
@@ -106,6 +169,7 @@ def load_substation(data=None):
 # prevents leaking internal computed state.
 _PARAM_KEYS = [
     "nominal_voltage_kv",
+    "voltage_class_kv",   # manual voltage-class override for SLD colouring
     "nominal_power_mva",
     "pf",
     "continuous_amps",
@@ -129,11 +193,6 @@ _PARAM_KEYS = [
     "dc_output_state_manual",
     "manual_closed_phases",
     "category",
-    "target_dropped",
-    "logic",
-    "settings",
-    "digital_inputs",
-    "digital_outputs",
     "phase_va",
     "phase_pf",
     "mode",
@@ -237,6 +296,31 @@ def _detect_sync_errors(sources, devices):
     return errors
 
 
+# Computed power-flow telemetry (per-phase voltages, currents, angles, power).
+# These were driven by the simulation engine; with it gone they are just a
+# static steady-state solve, so they are no longer sent to the frontend.
+_TELEMETRY_KEY_RE = re.compile(
+    r"(voltage|current|v-angle|i-angle|\bangle\b|power|watt|\bvar\b|vars|"
+    r"frequency|\bfreq\b|\bpf\b|power factor|kva|mva|impedance|phasor|magnitude)",
+    re.I,
+)
+
+
+def _strip_telemetry(summary: dict) -> dict:
+    """Drop computed power-flow telemetry, keeping structural/state fields
+    (Status, Connection, Ratio, Type, winding config, tap position, …)."""
+    out = {}
+    for k, v in summary.items():
+        if v == "HEADER":
+            continue
+        if k.startswith("---") and k.rstrip().endswith("---"):
+            continue
+        if _TELEMETRY_KEY_RE.search(k):
+            continue
+        out[k] = v
+    return out
+
+
 def _build_topology_response(sources, devices, raw_devices, reference, wire_bends=None):
     raw_map = {d["id"]: d for d in raw_devices}
 
@@ -248,20 +332,6 @@ def _build_topology_response(sources, devices, raw_devices, reference, wire_bend
             if isinstance(c, dict) and c.get("to_bushing"):
                 _to_bushing_map.setdefault(src_id, {})[c["id"]] = c["to_bushing"]
 
-    ref_angle = 0
-    ref_dev_id = reference.get("device_id")
-    ref_phase = reference.get("phase", "A")
-    if ref_dev_id in devices:
-        ref_summary = devices[ref_dev_id].get_summary_dict()
-        target_key = f"Phase {ref_phase} V-Angle"
-        if target_key in ref_summary:
-            ref_angle = ref_summary[target_key]
-        else:
-            for k, v in ref_summary.items():
-                if ref_phase in k and "Angle" in k and isinstance(v, (int, float)):
-                    ref_angle = v
-                    break
-
     sync_errors = _detect_sync_errors(sources, devices)
     source_error_map = {}
     for err in sync_errors:
@@ -272,12 +342,7 @@ def _build_topology_response(sources, devices, raw_devices, reference, wire_bend
     edges = []
 
     for did, dev in devices.items():
-        summary = dev.get_summary_dict()
-
-        if ref_angle != 0:
-            for k, v in list(summary.items()):
-                if "Angle" in k and isinstance(v, (int, float)):
-                    summary[k] = (v - ref_angle + 180) % 360 - 180
+        summary = _strip_telemetry(dev.get_summary_dict())
 
         raw = raw_map.get(did, {})
         status = str(summary.get("Status", "UNKNOWN")).split(" ")[0]
@@ -394,7 +459,6 @@ def _build_topology_response(sources, devices, raw_devices, reference, wire_bend
     return {
         "nodes": nodes,
         "edges": edges,
-        "reference": reference,
         "sync_errors": sync_errors,
     }
 
@@ -433,6 +497,9 @@ def _autosave(data: dict, label: str = "auto"):
     Auto-saves run on every structural change, so we skip writing per-device
     history rows for them — `device_history` would otherwise grow by N rows
     per click. Explicit named snapshots still record the full per-device audit.
+
+    Snapshots are signed with the current operator (_current_operator) so the
+    layout audit trail records who made each change.
     """
     if _active_site:
         try:
@@ -442,9 +509,219 @@ def _autosave(data: dict, label: str = "auto"):
                 label=label,
                 topology=data,
                 record_device_history=not is_auto,
+                author=_current_operator.get("name", ""),
+                author_id=_current_operator.get("id", ""),
             )
+            _record_hub_version(data, label)
         except Exception:
             traceback.print_exc()
+
+
+def _apply_pulled_topology(topo: dict, label: str):
+    """Make a hub topology the live one and snapshot it."""
+    global _current_topology
+    topo.setdefault("reference", {"device_id": None, "phase": None})
+    topo.setdefault("project_info", {"station": "", "device": ""})
+    _current_topology = topo
+    if _active_site:
+        _sdb.save_snapshot(
+            _active_site, label=label, topology=topo, record_device_history=True,
+            author=_current_operator.get("name", ""),
+            author_id=_current_operator.get("id", ""),
+        )
+
+
+def _hub_sync_status_payload():
+    sync = _sdb.get_hub_sync(_active_site) or {}
+    linked = bool(sync.get("substation_id"))
+    ahead = 0
+    if linked and sync.get("head_id") and sync.get("base_id"):
+        ahead = len(_sdb.local_versions_between(
+            _active_site, sync["base_id"], sync["head_id"]))
+    return {
+        "linked": linked,
+        "hub_url": sync.get("hub_url", ""),
+        "substation_id": sync.get("substation_id", ""),
+        "base_id": sync.get("base_id", ""),
+        "head_id": sync.get("head_id", ""),
+        "branch": sync.get("branch", "main"),
+        "ahead": ahead,
+        "pending_conflicts": (
+            len(_pending_merge["conflicts"])
+            if _pending_merge and _pending_merge.get("site") == _active_site
+            else 0
+        ),
+    }
+
+
+def _ser_version(v: dict) -> dict:
+    return {
+        "id": v["id"], "parent_id": v.get("parent_id", ""),
+        "merge_parent": v.get("merge_parent", ""), "branch": v.get("branch", "main"),
+        "epoch": v.get("epoch"), "author": v.get("author", ""),
+        "author_id": v.get("author_id", ""), "message": v.get("message", ""),
+        "topology": v["topology"],
+    }
+
+
+def _handle_hub_sync(handler, action, req):
+    """POST /api/hub-sync/<action>. Orchestrates create / attach / pull / merge
+    / resolve / push against the hub, doing the structural merge in-process."""
+    global _pending_merge
+
+    hub_url = (req.get("hub_url") or "").strip()
+    token = (req.get("token") or "").strip()
+    sync = _sdb.get_hub_sync(_active_site) or {}
+    if not hub_url:
+        hub_url = sync.get("hub_url", "")
+
+    if action == "unlink":
+        _sdb.clear_hub_sync(_active_site)
+        _pending_merge = None
+        return _json_response(handler, {"ok": True})
+
+    if action == "link":
+        mode = req.get("mode", "create")
+        sub_id = (req.get("substation_id") or "").strip()
+        if not hub_url or not token or not sub_id:
+            return _json_response(handler, {"error": "hub_url, token and substation_id required"}, 400)
+
+        if mode == "attach":
+            st, data = _hub_request(hub_url, token, "GET",
+                                    f"/api/hub/substations/{_urlquote(sub_id, safe='')}?full=1")
+            if st != 200:
+                return _json_response(handler, {"error": data.get("error", f"hub {st}")}, 502)
+            versions = data.get("versions") or []
+            for v in versions:
+                _sdb.add_local_version(_active_site, v)
+            head_id = data.get("substation", {}).get("head_id") or (versions[-1]["id"] if versions else "")
+            head_v = _sdb.get_local_version(_active_site, head_id)
+            if not head_v:
+                return _json_response(handler, {"error": "hub returned no head version"}, 502)
+            _apply_pulled_topology(head_v["topology"], f"hub attach: {sub_id}")
+            _sdb.set_hub_sync(_active_site, hub_url=hub_url, substation_id=sub_id,
+                              base_id=head_id, head_id=head_id,
+                              linked_epoch=int(time.time()))
+            return _json_response(handler, {"ok": True, "mode": "attach",
+                                            **_hub_sync_status_payload()})
+
+        # mode == "create": push the current topology as the root version
+        vid = _sdb.record_version(
+            _active_site, _current_topology,
+            author=_current_operator.get("name", ""),
+            author_id=_current_operator.get("id", ""),
+            message="root", parent_id="",
+        )
+        root = _sdb.get_local_version(_active_site, vid)
+        st, data = _hub_request(hub_url, token, "POST", "/api/hub/substations", {
+            "substation_id": sub_id, "name": req.get("name", sub_id),
+            "root_version": _ser_version(root),
+        })
+        if st not in (200, 201):
+            return _json_response(handler, {"error": data.get("error", f"hub {st}")},
+                                  409 if st == 409 else 502)
+        _sdb.set_hub_sync(_active_site, hub_url=hub_url, substation_id=sub_id,
+                          base_id=vid, head_id=vid,
+                          linked_epoch=int(time.time()))
+        return _json_response(handler, {"ok": True, "mode": "create",
+                                        **_hub_sync_status_payload()})
+
+    # everything below needs an established link
+    if not sync.get("substation_id"):
+        return _json_response(handler, {"error": "not linked to a hub substation"}, 409)
+    sub_id = sync["substation_id"]
+
+    if action == "pull":
+        st, data = _hub_request(hub_url, token, "GET",
+                                f"/api/hub/substations/{_urlquote(sub_id, safe='')}?since={_urlquote(sync['base_id'], safe='')}")
+        if st != 200:
+            return _json_response(handler, {"error": data.get("error", f"hub {st}")}, 502)
+        for v in data.get("versions") or []:
+            _sdb.add_local_version(_active_site, v)
+        hub_head = data.get("substation", {}).get("head_id", "")
+        if not hub_head or hub_head == sync["base_id"]:
+            return _json_response(handler, {"ok": True, "up_to_date": True,
+                                            **_hub_sync_status_payload()})
+
+        hub_head_v = _sdb.get_local_version(_active_site, hub_head)
+        local_head = sync.get("head_id") or sync["base_id"]
+
+        if local_head == sync["base_id"]:
+            # no local commits — fast-forward
+            _apply_pulled_topology(hub_head_v["topology"], f"hub pull (ff): {sub_id}")
+            _sdb.set_hub_sync(_active_site, base_id=hub_head, head_id=hub_head)
+            return _json_response(handler, {"ok": True, "fast_forward": True,
+                                            **_hub_sync_status_payload()})
+
+        base_v = _sdb.get_local_version(_active_site, sync["base_id"])
+        merged, conflicts = _merge.merge(
+            base_v["topology"], _current_topology, hub_head_v["topology"])
+        if not conflicts:
+            mvid = _sdb.record_version(
+                _active_site, merged,
+                author=_current_operator.get("name", ""),
+                author_id=_current_operator.get("id", ""),
+                message=f"merge hub {hub_head[:8]}",
+                parent_id=local_head, merge_parent=hub_head,
+            )
+            _apply_pulled_topology(merged, f"hub merge: {sub_id}")
+            _sdb.set_hub_sync(_active_site, base_id=hub_head, head_id=mvid)
+            _pending_merge = None
+            return _json_response(handler, {"ok": True, "merged": True, "conflicts": 0,
+                                            **_hub_sync_status_payload()})
+
+        _pending_merge = {
+            "site": _active_site,
+            "merged": merged, "conflicts": conflicts,
+            "base_id": sync["base_id"], "ours_head": local_head, "theirs_head": hub_head,
+        }
+        return _json_response(handler, {"ok": True, "merged": False,
+                                        "conflicts": conflicts,
+                                        **_hub_sync_status_payload()})
+
+    if action == "resolve":
+        if not _pending_merge or _pending_merge.get("site") != _active_site:
+            return _json_response(handler, {"error": "no pending merge for this site"}, 409)
+        resolutions = req.get("resolutions") or _pending_merge["conflicts"]
+        final = _merge.resolve(_pending_merge["merged"], resolutions)
+        mvid = _sdb.record_version(
+            _active_site, final,
+            author=_current_operator.get("name", ""),
+            author_id=_current_operator.get("id", ""),
+            message=f"merge hub {_pending_merge['theirs_head'][:8]} (resolved)",
+            parent_id=_pending_merge["ours_head"],
+            merge_parent=_pending_merge["theirs_head"],
+        )
+        _apply_pulled_topology(final, f"hub merge resolved: {sub_id}")
+        _sdb.set_hub_sync(_active_site, base_id=_pending_merge["theirs_head"], head_id=mvid)
+        _pending_merge = None
+        return _json_response(handler, {"ok": True, "merged": True,
+                                        **_hub_sync_status_payload()})
+
+    if action == "push":
+        base_id = sync["base_id"]
+        local_head = sync.get("head_id") or base_id
+        versions = _sdb.local_versions_between(_active_site, base_id, local_head)
+        if not versions:
+            return _json_response(handler, {"ok": True, "up_to_date": True,
+                                            **_hub_sync_status_payload()})
+        st, data = _hub_request(hub_url, token, "POST",
+                                f"/api/hub/substations/{_urlquote(sub_id, safe='')}/push",
+                                {"base_id": base_id,
+                                 "versions": [_ser_version(v) for v in versions]})
+        if st == 409 or data.get("conflict"):
+            return _json_response(handler, {"ok": False, "conflict": True,
+                                            "hub_head": data.get("head_id", ""),
+                                            "hint": "pull first, then push",
+                                            **_hub_sync_status_payload()})
+        if st != 200:
+            return _json_response(handler, {"error": data.get("error", f"hub {st}")}, 502)
+        new_head = data.get("head_id", local_head)
+        _sdb.set_hub_sync(_active_site, base_id=new_head, head_id=new_head)
+        return _json_response(handler, {"ok": True, "pushed": data.get("applied", len(versions)),
+                                        **_hub_sync_status_payload()})
+
+    return _json_response(handler, {"error": f"unknown hub-sync action '{action}'"}, 404)
 
 
 def _require_site(handler) -> bool:
@@ -476,42 +753,20 @@ class SCADAServer(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        global _active_site, _active_session_id, _current_topology
+        global _active_site, _active_session_id, _current_topology, _current_operator, _pending_merge
         try:
             content_length = int(self.headers["Content-Length"])
             post_data = self.rfile.read(content_length) if content_length > 0 else b'{}'
             req = json.loads(post_data) if post_data else {}
-            # ── Simulation endpoints ──────────────────────────────────────────────
-            if self.path == "/api/sim/start":
-                _sim.sim_engine.start(_current_topology)
-                return _json_response(self, {"ok": True})
-            if self.path == "/api/sim/stop":
-                _sim.sim_engine.stop()
-                return _json_response(self, {"ok": True})
-            if self.path == "/api/sim/reset":
-                _sim.sim_engine.reset()
-                return _json_response(self, {"ok": True})
-            if self.path == "/api/sim/pause":
-                _sim.sim_engine.pause(req.get("paused", True))
-                return _json_response(self, {"ok": True})
-            if self.path == "/api/sim/speed":
-                _sim.sim_engine.set_speed(req.get("multiplier", 1.0))
-                return _json_response(self, {"ok": True})
-            if self.path == "/api/sim/fault":
-                delay_ms = float(req.get("delay_ms", 0))
-                _sim.sim_engine.schedule_event(delay_ms, "FAULT", req)
-                return _json_response(self, {"ok": True})
-            if self.path == "/api/sim/clear_fault":
-                _sim.sim_engine.schedule_event(0, "CLEAR_FAULT", req)
-                return _json_response(self, {"ok": True})
 
-            if self.path == "/api/sim/relay_settings":
-                ok = _sim.sim_engine.update_relay_settings(
-                    req.get("device_id", ""),
-                    req.get("settings", {})
-                )
-                return _json_response(self, {"ok": ok})
-
+            # Browser registers who is at the controls, so topology snapshots and
+            # device-history rows can be signed with the operator.
+            if self.path == "/api/operator":
+                _current_operator = {
+                    "name": str(req.get("name", "")).strip(),
+                    "id": str(req.get("id", "")).strip(),
+                }
+                return _json_response(self, {"ok": True, "operator": _current_operator})
 
             # ── PMM endpoints ──────────────────────────────────────────────────
             if self.path == "/api/pmm/connect":
@@ -519,7 +774,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                     self,
                     _pmm.api_connect(
                         port=req.get("port", ""),
-                        model=req.get("model", "pmm1"),
+                        model=req.get("model", "pmm2"),
                     ),
                 )
 
@@ -573,6 +828,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                 _sdb.init_db(db_path)
                 _active_site = db_path
                 _active_session_id = None
+                _pending_merge = None  # any staged hub-merge conflict belonged to the prior site
                 topology = _sdb.get_latest_topology(db_path)
                 if topology:
                     topology.setdefault("project_info", {})
@@ -623,6 +879,20 @@ class SCADAServer(BaseHTTPRequestHandler):
                 )
                 return _json_response(self, {"ok": True})
 
+            if self.path == "/api/tests/import-bundle":
+                if not _require_site(self):
+                    return
+                bundle = req.get("bundle") if isinstance(req, dict) and "bundle" in req else req
+                if not isinstance(bundle, dict) or not (bundle.get("test") or {}).get("id"):
+                    return _json_response(self, {"error": "bundle.test.id is required"}, 400)
+                try:
+                    res = _sdb.import_test_bundle(
+                        _active_site, bundle, origin=str(req.get("origin", "hub"))
+                    )
+                except ValueError as e:
+                    return _json_response(self, {"error": str(e)}, 400)
+                return _json_response(self, {"ok": True, **res})
+
             if self.path == "/api/tests/vref":
                 if not _require_site(self):
                     return
@@ -653,6 +923,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                     url=req.get("url", "").strip(),
                     revision=req.get("revision", "").strip(),
                     notes=req.get("notes", "").strip(),
+                    drawing_number=req.get("drawing_number", "").strip(),
                 )
                 return _json_response(self, {"ok": True, "drawing_id": drawing_id})
 
@@ -661,6 +932,12 @@ class SCADAServer(BaseHTTPRequestHandler):
                     return
                 _sdb.delete_drawing(_active_site, req.get("id", ""))
                 return _json_response(self, {"ok": True})
+
+            # ── Hub substation sync (Phase 2/3) ──────────────────────────────
+            if self.path.startswith("/api/hub-sync/"):
+                if not _require_site(self):
+                    return
+                return _handle_hub_sync(self, self.path[len("/api/hub-sync/"):], req)
 
             if self.path == "/api/db/sessions":
                 if not _require_site(self):
@@ -671,6 +948,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                     device=req.get("device", ""),
                     instrument=req.get("instrument", "manual"),
                     technician=req.get("technician", ""),
+                    technician_id=req.get("technician_id", ""),
                     test_id=req.get("test_id"),
                     snapshot_id=req.get("snapshot_id"),
                 )
@@ -690,22 +968,17 @@ class SCADAServer(BaseHTTPRequestHandler):
 
             if self.path == "/api/reconfigure":
                 action = req.get("action")
-                if _sim.sim_engine.running and action != "update_wire_bend":
-                    _sim.sim_engine.mutate(req)
-                    return _json_response(self, {"ok": True})
-
                 if _current_topology is None:
                     return _json_response(self, {"error": "No site loaded"}, 409)
+                # A measurement that silently doesn't persist is worse than an
+                # error — topology_utils.record_measurement no-ops without an
+                # active site DB, so refuse up front rather than report {ok:true}.
+                if action == "record_measurement" and not _active_site:
+                    return _json_response(self, {"error": "No site loaded — reading was not saved"}, 409)
 
                 _current_topology = topology_utils.apply_reconfiguration(
                     _current_topology, req, _active_site, _active_session_id
                 )
-                # Also keep the running sim's topology_data in sync for wire bends
-                if action == "update_wire_bend" and _sim.sim_engine.running:
-                    with _sim.sim_engine.lock:
-                        _sim.sim_engine.topology_data = topology_utils.apply_reconfiguration(
-                            _sim.sim_engine.topology_data, req
-                        )
                 if action not in ["update_position", "update_rotation", "record_measurement"]:
                     _autosave(_current_topology, "reconfigure:" + action)
                 return _json_response(self, {"ok": True})
@@ -734,6 +1007,8 @@ class SCADAServer(BaseHTTPRequestHandler):
                             label="Imported topology",
                             topology=_current_topology,
                             record_device_history=True,
+                            author=_current_operator.get("name", ""),
+                            author_id=_current_operator.get("id", ""),
                         )
                     except Exception:
                         traceback.print_exc()
@@ -751,8 +1026,19 @@ class SCADAServer(BaseHTTPRequestHandler):
                 import base64
                 try:
                     xlsx_bytes = base64.b64decode(b64_data)
-                    sess_id = _xrep.ingest_load_test_report(_active_site, test_id, xlsx_bytes)
-                    return _json_response(self, {"ok": True, "session_id": sess_id})
+                except Exception:
+                    return _json_response(self, {"error": "Uploaded data is not valid base64."}, 400)
+                known_ids = {
+                    d.get("id") for d in (_current_topology or {}).get("devices", []) if d.get("id")
+                } or None
+                try:
+                    result = _xrep.ingest_load_test_report(
+                        _active_site, test_id, xlsx_bytes, known_device_ids=known_ids
+                    )
+                    return _json_response(self, result)
+                except ValueError as e:
+                    # A validation failure the technician can act on — not a bug.
+                    return _json_response(self, {"error": str(e)}, 400)
                 except Exception as e:
                     traceback.print_exc()
                     return _json_response(self, {"error": str(e)}, 500)
@@ -831,6 +1117,26 @@ class SCADAServer(BaseHTTPRequestHandler):
                 )
                 return _json_response(self, {"ok": True, "id": row_id})
 
+            # ── Corporate drawing search ──────────────────────────────────────
+            # Body: SearchParams-style dict (facility, drawing_type, drawing_subject,
+            #       title, drawing_num, sheet_number, page, …). Returns
+            #       {configured, results:[...], page, total_count, has_next}.
+            if self.path == "/api/drawing-search":
+                return _json_response(self, _dwg.search(req if isinstance(req, dict) else {}))
+
+            # Persist drawing-search config written from the settings modal.
+            # Body: {base_url, download_url, search_path, cache_refresh_hours}
+            if self.path == "/api/drawing-search/config":
+                return _json_response(self, _dwg.save_config(req if isinstance(req, dict) else {}))
+
+            # Grab session cookies via Windows Integrated Auth (Windows-only).
+            if self.path == "/api/drawing-search/grab-cookies":
+                return _json_response(self, _dwg.grab_windows_cookies())
+
+            # Force a live re-fetch of the facility / type / subject dropdowns.
+            if self.path == "/api/drawing-search/options/refresh":
+                return _json_response(self, _dwg.get_options(refresh=True))
+
             # Attach a drawing reference to a device.
             # Body: {device_id, title, url, revision, notes}
             if self.path == "/api/db/device-drawings/add":
@@ -847,6 +1153,7 @@ class SCADAServer(BaseHTTPRequestHandler):
                     url=req.get("url", ""),
                     revision=req.get("revision", ""),
                     notes=req.get("notes", ""),
+                    drawing_number=req.get("drawing_number", ""),
                 )
                 return _json_response(self, {"ok": True, "id": row_id})
 
@@ -957,24 +1264,71 @@ class SCADAServer(BaseHTTPRequestHandler):
                 pass
 
     def do_GET(self):
-        parsed_path = urlparse(self.path)
-        path = parsed_path.path
-        params = parse_qs(parsed_path.query)
-        if path == "/api/sim/frames":
-            since = int(params.get("since", [-1])[0])
-            frames = _sim.sim_engine.get_frames(since)
-            return _json_response(self, {
-                "frames": frames, 
-                "sim_time": _sim.sim_engine.sim_time_ms, 
-                "running": _sim.sim_engine.running, 
-                "paused": _sim.sim_engine.paused
-            })
-
         try:
-            # ── PMM GET endpoints ──────────────────────────────────────────────────
-            if self.path == "/api/pmm/ports":
-                return _json_response(self, {"ports": _pmm.api_list_ports()})
+            # OS login name — used to pre-fill the operator identity prompt.
+            if self.path == "/api/whoami":
+                try:
+                    user = getpass.getuser()
+                except Exception:
+                    user = ""
+                return _json_response(self, {"user": user})
 
+            # ── Corporate drawing search ──────────────────────────────────────────
+            if self.path == "/api/drawing-search/config":
+                info = _sdb.get_site_info(_active_site) if _active_site else None
+                facility = ""
+                if info:
+                    facility = (info.get("number_code") or info.get("station") or "").strip()
+                out = dict(_dwg.get_public_config())
+                out["facility_default"] = facility
+                out["type_hints"] = _dwg.DEVICE_TYPE_HINTS
+                return _json_response(self, out)
+
+            if self.path == "/api/drawing-search/options":
+                return _json_response(self, _dwg.get_options())
+
+            # Sibling-revision set for one drawing number.  Served from the
+            # per-site cache; ?refresh=1 (or a stale cache) re-queries the
+            # corporate drawing system by drawing number.
+            if self.path.startswith("/api/drawings/revisions"):
+                if not _require_site(self):
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                number = (q.get("number", [""])[0] or "").strip()
+                if not number:
+                    return _json_response(self, {"error": "number required"}, 400)
+                force = q.get("refresh", ["0"])[0] in ("1", "true", "yes")
+                cached = _sdb.get_drawing_revision_set(_active_site, number)
+                try:
+                    ttl_h = float(_dwg._resolve_config().get("cache_refresh_hours", 4.0))
+                except Exception:
+                    ttl_h = 4.0
+                stale = (
+                    cached is None
+                    or force
+                    or (time.time() - (cached.get("fetched_epoch") or 0)) > ttl_h * 3600
+                )
+                if stale:
+                    res = _dwg.list_revisions(number)
+                    if res.get("configured") and not res.get("error"):
+                        _sdb.save_drawing_revision_set(
+                            _active_site, number, res.get("revisions", []))
+                        cached = _sdb.get_drawing_revision_set(_active_site, number)
+                    elif cached is None:
+                        return _json_response(self, {
+                            "drawing_number": number, "revisions": [],
+                            "configured": res.get("configured", False),
+                            "error": res.get("error", ""),
+                            "cached": False,
+                        })
+                return _json_response(self, {
+                    "drawing_number": number,
+                    "revisions": (cached or {}).get("revisions", []),
+                    "fetched_epoch": (cached or {}).get("fetched_epoch", 0),
+                    "cached": True,
+                })
+
+            # ── PMM GET endpoints ──────────────────────────────────────────────────
             if self.path == "/api/pmm/status":
                 return _json_response(self, _pmm.api_status())
 
@@ -991,6 +1345,11 @@ class SCADAServer(BaseHTTPRequestHandler):
                     return _json_response(self, {"active": True, "info": info})
                 return _json_response(self, {"active": False})
 
+            if self.path == "/api/hub-sync/status":
+                if not _require_site(self):
+                    return
+                return _json_response(self, _hub_sync_status_payload())
+
             # ── Test GET endpoints ─────────────────────────────────────────────────
             if self.path == "/api/tests":
                 if not _require_site(self):
@@ -1004,6 +1363,17 @@ class SCADAServer(BaseHTTPRequestHandler):
                 device_ids = _sdb.get_test_device_ids(_active_site, test_id)
                 return _json_response(self, {"device_ids": device_ids})
 
+            if self.path.startswith("/api/tests/") and self.path.endswith("/bundle"):
+                if not _require_site(self):
+                    return
+                test_id = self.path.split("/")[3]
+                info = _sdb.get_site_info(_active_site) or {}
+                sub_id = (info.get("number_code") or info.get("station") or "").strip()
+                bundle = _sdb.export_test_bundle(_active_site, test_id, substation_id=sub_id)
+                if bundle is None:
+                    return _json_response(self, {"error": "test not found"}, 404)
+                return _json_response(self, bundle)
+
             if self.path.startswith("/api/tests/") and self.path.endswith("/report-data"):
                 if not _require_site(self):
                     return
@@ -1014,6 +1384,24 @@ class SCADAServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     return
                 return _json_response(self, report)
+
+            if self.path.startswith("/api/tests/") and self.path.endswith("/audit"):
+                if not _require_site(self):
+                    return
+                test_id = self.path.split("/")[3]
+                report = _sdb.get_test_report_data(_active_site, test_id)
+                if not report:
+                    return _json_response(self, {"error": "test not found"}, 404)
+                devices = (_current_topology or {}).get("devices", [])
+                result = _audit.build_audit(report, devices)
+                return _json_response(self, {
+                    "test": report["test"],
+                    "sessions": [
+                        {k: s[k] for k in ("id", "epoch", "technician", "instrument", "label")}
+                        for s in report["sessions"]
+                    ],
+                    **result,
+                })
 
             if self.path.startswith("/api/tests/") and "/report.xlsx" in self.path:
                 if not _require_site(self):
@@ -1272,11 +1660,14 @@ class SCADAServer(BaseHTTPRequestHandler):
                     self.send_response(404)
                     self.end_headers()
             elif self.path == "/mobile":
-                with open("mobile.html", "rb") as f:
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/html")
-                    self.end_headers()
-                    self.wfile.write(f.read())
+                # Retired — its own key-naming scheme ("A_mag"/"A_ang") never
+                # matched the canonical measurement keys, so readings logged
+                # from it were silently invisible to reports/audit/export.
+                # The main measurement screen is the one flow now; send
+                # anyone with the old URL bookmarked back to it.
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
             elif self.path == "/" or self.path == "/index.html":
                 with open("index.html", "rb") as f:
                     self.send_response(200)

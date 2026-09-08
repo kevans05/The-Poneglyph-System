@@ -1,8 +1,12 @@
 "use strict";
 
-function showConfigModal(id) {
-  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
-  if (!node) return;
+// Build the device-parameter form into `mountSel` (already emptied by the
+// caller). Returns { doSave } — doSave() collects the inputs and PATCHes the
+// device, returning the reconfigure promise. Used by both the modal and the
+// inline (in-window) config panel.
+function _buildDeviceConfigForm(node, mountSel, opts) {
+  opts = opts || {};
+  const id = node.id;
   const fieldDefs = {
     VoltageSource: [
       { label: "Nominal Voltage (kV)", key: "nominal_voltage_kv" },
@@ -38,17 +42,7 @@ function showConfigModal(id) {
       { label: "Pri (kV)", key: "pri_kv" },
       { label: "Sec (kV)", key: "sec_kv" },
     ],
-    CTTB: [
-      {
-        label: "CTTB Mode",
-        key: "mode",
-        type: "select",
-        options: [
-          { value: "SUM", label: "SUM (Totalization)" },
-          { value: "DIFFERENTIAL", label: "DIFFERENTIAL (I1 - I2 - ...)" },
-        ],
-      },
-    ],
+    // CTTB SUM / DIFFERENTIAL mode lives in the CONNECTIONS panel, not here.
     Meter: [],
     AuxiliaryTransformer: [
       { label: "Phase Shift (°)", key: "phase_shift_deg" },
@@ -211,38 +205,46 @@ function showConfigModal(id) {
       { label: "Carrier Frequency (Hz)", key: "carrier_frequency_hz" },
     ],
   };
-  // Always append serial_number as a universal editable field
+  // Universal fields appended to every device type.
   const typeFields = fieldDefs[node.type] || [];
+  const voltageClassField = {
+    label: "Voltage Class (kV)",
+    key: "voltage_class_kv",
+    title: "Overrides the colour of this device's run on the one-line",
+  };
+  // The window has a dedicated ASSET SERIAL section; only the modal needs this.
   const serialField = { label: "Serial Number", key: "serial_number", type: "text" };
-  const fields = [...typeFields, serialField];
+  const fields = [
+    ...typeFields,
+    voltageClassField,
+    ...(opts.includeSerial === false ? [] : [serialField]),
+  ];
   const params = {...(node.params || {})};
   if (node.type === "CurrentTransformer" && params.phase_ratios) {
     params.ratio_a = params.phase_ratios.a;
     params.ratio_b = params.phase_ratios.b;
     params.ratio_c = params.phase_ratios.c;
   }
-  _resetConfigModalPos();
-  d3.select("#config-modal").style("display", "flex");
-  d3.select("#modal-title").text("CONFIGURE [" + id + "]");
-  const body = d3.select("#modal-body").html("");
+  const body = mountSel;
+  const scope = body.node();
   fields.forEach((f) => {
-    body
-      .append("label")
-      .text(f.label)
-      .style("font-size", "9px")
-      .style("color", "#888")
-      .style("margin-top", "6px");
+    if (f.type === "checkbox") {
+      const row = body.append("label").attr("class", "cfg-check-row");
+      row
+        .append("input")
+        .attr("data-cfg", f.key)
+        .attr("type", "checkbox")
+        .property("checked", params[f.key] !== false); // default true when unset
+      row.append("span").text(f.label);
+      return;
+    }
+
+    const row = body.append("div").attr("class", "cfg-row");
+    const lbl = row.append("label").text(f.label);
+    if (f.title) lbl.attr("title", f.title);
 
     if (f.type === "select") {
-      const sel = body
-        .append("select")
-        .attr("id", "conf-" + f.key)
-        .style("width", "100%")
-        .style("background", "#222")
-        .style("color", "#eee")
-        .style("border", "1px solid #444")
-        .style("padding", "4px")
-        .style("margin-bottom", "4px");
+      const sel = row.append("select").attr("class", "cfg-input").attr("data-cfg", f.key);
       (f.options || []).forEach((opt) => {
         sel
           .append("option")
@@ -250,18 +252,13 @@ function showConfigModal(id) {
           .text(opt.label)
           .property("selected", (params[f.key] ?? "") === opt.value);
       });
-    } else if (f.type === "checkbox") {
-      body
-        .append("input")
-        .attr("id", "conf-" + f.key)
-        .attr("type", "checkbox")
-        .property("checked", params[f.key] !== false); // default to true if undefined
-      body.append("span").text(" (Active)").style("font-size", "9px").style("color", "#555");
     } else {
-      body
+      row
         .append("input")
-        .attr("id", "conf-" + f.key)
+        .attr("class", "cfg-input")
+        .attr("data-cfg", f.key)
         .attr("type", f.type || "number")
+        .attr("step", f.type ? null : "any")
         .property("value", params[f.key] ?? "");
     }
   });
@@ -277,14 +274,18 @@ function showConfigModal(id) {
     _appendWindingSelects(body, params);
   }
 
-  d3.select("#modal-save").on("click", () => {
+  const q = (sel) => scope.querySelector(sel);
+  const qa = (sel) => scope.querySelectorAll(sel);
+
+  const doSave = () => {
     const props = {};
     fields.forEach((f) => {
-      const el = d3.select("#conf-" + f.key);
+      const el = q('[data-cfg="' + f.key + '"]');
+      if (!el) return;
       if (f.type === "checkbox") {
-        props[f.key] = el.property("checked");
+        props[f.key] = el.checked;
       } else {
-        const v = el.property("value");
+        const v = el.value;
         if (v !== "") {
           if (f.type === "text" || f.type === "select") {
             props[f.key] = v;
@@ -295,10 +296,10 @@ function showConfigModal(id) {
       }
     });
     if (["CurrentTransformer", "VoltageTransformer", "DualWindingVT", "VoltageRegulator"].includes(node.type)) {
-      const selTap = document.getElementById("conf-selected_tap");
+      const selTap = q('[data-cfg="selected_tap"]');
       if (selTap) props.selected_tap = selTap.value;
       // collect tap_ratios from the editable list; parse "N:M" strings into floats
-      const tapRows = document.querySelectorAll(".tap-ratio-row");
+      const tapRows = qa(".tap-ratio-row");
       if (tapRows.length > 0) {
         const tapRatios = {};
         tapRows.forEach(row => {
@@ -321,19 +322,56 @@ function showConfigModal(id) {
       if (Object.keys(pr).length > 0) props.phase_ratios = pr;
     }
     if (node.type === "PowerTransformer") {
-      props.h_winding = document.getElementById("conf-h_winding").value;
-      props.x_winding = document.getElementById("conf-x_winding").value;
-      props.polarity_reversed = document.getElementById(
-        "conf-polarity_reversed",
-      ).checked;
-      const selIdx = document.getElementById("conf-selected_tap_index");
+      const hw = q('[data-cfg="h_winding"]'), xw = q('[data-cfg="x_winding"]');
+      const pr = q('[data-cfg="polarity_reversed"]');
+      if (hw) props.h_winding = hw.value;
+      if (xw) props.x_winding = xw.value;
+      if (pr) props.polarity_reversed = pr.checked;
+      const selIdx = q('[data-cfg="selected_tap_index"]');
       if (selIdx) props.selected_tap_index = parseInt(selIdx.value, 10);
     }
-    reconfigureAPI(id, "update_device", { properties: props }).then(() => {
+    return reconfigureAPI(id, "update_device", { properties: props });
+  };
+
+  return { doSave };
+}
+
+// The floating CONFIGURE modal (used from the right-click menu).
+function showConfigModal(id) {
+  const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === id);
+  if (!node) return;
+  _resetConfigModalPos();
+  d3.select("#config-modal").style("display", "flex");
+  d3.select("#modal-title").text("CONFIGURE [" + id + "]");
+  const { doSave } = _buildDeviceConfigForm(node, d3.select("#modal-body").html(""));
+  d3.select("#modal-save").on("click", () => {
+    doSave().then(() => {
       d3.select("#config-modal").style("display", "none");
       refreshData();
     });
   });
+}
+
+// The same form rendered inline inside a device window. Only one is mounted at
+// a time (openWindow-level state), so the global `conf-*` ids stay unambiguous.
+function renderInlineConfig(mountSel, node, onSaved) {
+  const wrap = mountSel.html("");
+  const { doSave } = _buildDeviceConfigForm(node, wrap, { includeSerial: false });
+  wrap
+    .append("button")
+    .attr("class", "cfg-apply")
+    .text("APPLY PARAMETERS")
+    .on("click", function () {
+      const b = d3.select(this);
+      b.text("SAVING…").property("disabled", true);
+      Promise.resolve(doSave())
+        .then(() => {
+          if (typeof onSaved === "function") onSaved();
+        })
+        .catch(() => {
+          b.text("APPLY PARAMETERS").property("disabled", false);
+        });
+    });
 }
 
 function _appendTapSelector(body, params, deviceType) {
@@ -341,18 +379,14 @@ function _appendTapSelector(body, params, deviceType) {
   const tapKeys = Object.keys(tapRatios);
   const selectedTap = params.selected_tap || tapKeys[0] || "";
 
-  body.append("div")
-    .style("font-size", "9px").style("color", "#0af")
-    .style("margin-top", "12px").style("border-top", "1px solid #1a1a1a")
-    .style("padding-top", "8px").style("letter-spacing", "1px")
-    .text("TAP RATIOS");
+  body.append("div").attr("class", "cfg-subhead").text("TAP RATIOS");
 
   // Active tap selector
   body.append("label").text("ACTIVE TAP")
     .style("font-size", "9px").style("color", "#888").style("margin-top", "6px");
-  const sel = body.append("select").attr("id", "conf-selected_tap")
-    .style("width", "100%").style("background", "#222").style("color", "#eee")
-    .style("border", "1px solid #444").style("padding", "4px").style("margin-bottom", "6px");
+  const scope = body.node();
+  const sel = body.append("select").attr("class", "cfg-input").attr("data-cfg", "selected_tap")
+    .style("width", "100%").style("margin-bottom", "6px");
   tapKeys.forEach(k => {
     sel.append("option").attr("value", k).text(k)
       .property("selected", k === selectedTap);
@@ -381,7 +415,7 @@ function _appendTapSelector(body, params, deviceType) {
         .style("color", "#eee").style("padding", "3px 6px").style("font-size", "10px")
         .on("input", function() {
           // update the active-tap selector live
-          const selEl = document.getElementById("conf-selected_tap");
+          const selEl = scope.querySelector('[data-cfg="selected_tap"]');
           if (selEl && selEl.options[i]) selEl.options[i].value = this.value;
           if (selEl && selEl.options[i]) selEl.options[i].textContent = this.value;
         });
@@ -390,7 +424,7 @@ function _appendTapSelector(body, params, deviceType) {
         .style("color", "#f44").style("cursor", "pointer").style("font-size", "10px")
         .style("padding", "2px 6px")
         .on("click", () => {
-          const remaining = Array.from(document.querySelectorAll(".tap-ratio-row .tap-lbl"))
+          const remaining = Array.from(scope.querySelectorAll(".tap-ratio-row .tap-lbl"))
             .map(el => el.value).filter((_, j) => j !== i);
           renderTapList(remaining);
         });
@@ -403,7 +437,7 @@ function _appendTapSelector(body, params, deviceType) {
     .style("font-size", "9px").style("padding", "4px 10px").style("cursor", "pointer")
     .style("margin-bottom", "6px")
     .on("click", () => {
-      const existing = Array.from(document.querySelectorAll(".tap-ratio-row .tap-lbl"))
+      const existing = Array.from(scope.querySelectorAll(".tap-ratio-row .tap-lbl"))
         .map(el => el.value);
       renderTapList([...existing, deviceType === "CurrentTransformer" ? "2000:5" : "2000:1"]);
     });
@@ -413,17 +447,12 @@ function _appendPTTapSelector(body, params) {
   const tapConfigs = params.tap_configs || [{ label: "Nominal", pri_kv: params.pri_kv || 230, sec_kv: params.sec_kv || 115 }];
   const selectedIdx = params.selected_tap_index ?? 0;
 
-  body.append("div")
-    .style("font-size", "9px").style("color", "#0af")
-    .style("margin-top", "12px").style("border-top", "1px solid #1a1a1a")
-    .style("padding-top", "8px").style("letter-spacing", "1px")
-    .text("TAP POSITIONS");
+  body.append("div").attr("class", "cfg-subhead").text("TAP POSITIONS");
 
   body.append("label").text("ACTIVE TAP POSITION")
     .style("font-size", "9px").style("color", "#888").style("margin-top", "6px");
-  const sel = body.append("select").attr("id", "conf-selected_tap_index")
-    .style("width", "100%").style("background", "#222").style("color", "#eee")
-    .style("border", "1px solid #444").style("padding", "4px").style("margin-bottom", "6px");
+  const sel = body.append("select").attr("class", "cfg-input").attr("data-cfg", "selected_tap_index")
+    .style("width", "100%").style("margin-bottom", "6px");
   tapConfigs.forEach((tap, i) => {
     const label = tap.label || `Tap ${i + 1}`;
     const detail = ` (${tap.pri_kv}kV / ${tap.sec_kv}kV)`;
@@ -441,17 +470,15 @@ const _WINDING_OPTIONS = [
 ];
 
 function _appendWindingSelects(body, params) {
+  const scope = body.node();
+  body.append("div").attr("class", "cfg-subhead").text("WINDINGS");
   [
     { label: "HV Winding (H)", key: "h_winding" },
     { label: "LV Winding (X)", key: "x_winding" },
   ].forEach(({ label, key }) => {
-    body
-      .append("label")
-      .text(label)
-      .style("font-size", "9px")
-      .style("color", "#888")
-      .style("margin-top", "8px");
-    const sel = body.append("select").attr("id", "conf-" + key);
+    const row = body.append("div").attr("class", "cfg-row");
+    row.append("label").text(label);
+    const sel = row.append("select").attr("class", "cfg-input").attr("data-cfg", key);
     _WINDING_OPTIONS.forEach((o) => {
       sel
         .append("option")
@@ -462,33 +489,24 @@ function _appendWindingSelects(body, params) {
         )
         .text(o.label);
     });
-    sel.on("change", () => _updateAutoShiftHint());
+    sel.on("change", () => _updateAutoShiftHint(scope));
   });
 
   // Polarity row (only meaningful for cross-family combos, but always shown)
   const polarityRow = body
-    .append("div")
-    .style("display", "flex")
-    .style("align-items", "center")
-    .style("gap", "8px")
-    .style("margin-top", "10px");
+    .append("label")
+    .attr("class", "cfg-check-row");
   polarityRow
     .append("input")
-    .attr("id", "conf-polarity_reversed")
+    .attr("data-cfg", "polarity_reversed")
     .attr("type", "checkbox")
     .property("checked", params.polarity_reversed === true)
-    .on("change", () => _updateAutoShiftHint());
-  polarityRow
-    .append("label")
-    .attr("for", "conf-polarity_reversed")
-    .text("Reversed polarity (+30° instead of −30°)")
-    .style("font-size", "9px")
-    .style("color", "#ccc")
-    .style("cursor", "pointer");
+    .on("change", () => _updateAutoShiftHint(scope));
+  polarityRow.append("span").text("Reversed polarity (+30° instead of −30°)");
 
   body
     .append("div")
-    .attr("id", "winding-shift-hint")
+    .attr("class", "winding-shift-hint")
     .style("font-size", "9px")
     .style("color", "#3af")
     .style("margin-top", "4px")
@@ -524,12 +542,13 @@ function _shiftHintText(h, x, reversed) {
   return `${names[h] || h} / ${names[x] || x} → ${shift > 0 ? "+" : ""}${shift}°${polNote}`;
 }
 
-function _updateAutoShiftHint() {
-  const h = document.getElementById("conf-h_winding")?.value || "Y";
-  const x = document.getElementById("conf-x_winding")?.value || "D";
+function _updateAutoShiftHint(scope) {
+  scope = scope || document;
+  const h = scope.querySelector('[data-cfg="h_winding"]')?.value || "Y";
+  const x = scope.querySelector('[data-cfg="x_winding"]')?.value || "D";
   const reversed =
-    document.getElementById("conf-polarity_reversed")?.checked || false;
-  const hint = document.getElementById("winding-shift-hint");
+    scope.querySelector('[data-cfg="polarity_reversed"]')?.checked || false;
+  const hint = scope.querySelector(".winding-shift-hint");
   if (hint) hint.textContent = _shiftHintText(h, x, reversed);
 }
 

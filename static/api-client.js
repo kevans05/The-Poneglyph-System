@@ -10,13 +10,11 @@
  */
 let currentData = null; // Stores the latest topology JSON
 let openWindows = {}; // Tracks which device windows are currently open
-let compareSource = null; // Stores the ID of the first device selected for comparison
 
 /**
  * Fetches the latest system state from the backend and triggers a redraw.
  */
 function refreshData() {
-  if (typeof simActive !== 'undefined' && simActive) return Promise.resolve();
   return fetch("/api/topology")
     .then((r) => r.json())
     .then((data) => {
@@ -27,7 +25,7 @@ function refreshData() {
       render3LD(data);
       updateMinimap();
       if (typeof onTopologyRefreshed === "function") onTopologyRefreshed();
-      updateStatusBar(data.reference, data.sync_errors || []);
+      updateStatusBar(data.sync_errors || []);
       Object.keys(openWindows).forEach((id) => {
         const node = data.nodes.find((n) => n.id === id);
         if (node) updateWindow(id, node);
@@ -85,11 +83,17 @@ function loadSnapshotData(id) {
 /**
  * Session API
  */
-function startSession(label, instrument, technician, testId) {
+function startSession(label, instrument, technician, testId, technicianId) {
+    if (technicianId === undefined && window.PoneglyphIdentity)
+        technicianId = PoneglyphIdentity.getId();
     return fetch("/api/db/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label, instrument, technician, test_id: testId }),
+        body: JSON.stringify({
+            label, instrument, technician,
+            test_id: testId,
+            technician_id: technicianId || "",
+        }),
     }).then(r => r.json());
 }
 
@@ -136,12 +140,23 @@ function updateTestCapturePoints(id, devices) {
     }).then(r => r.json());
 }
 
-function addDrawing(testId, title, url, revision, notes) {
+function addDrawing(testId, title, url, revision, notes, drawingNumber) {
     return fetch("/api/tests/drawings/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ test_id: testId, title, url, revision, notes }),
+        body: JSON.stringify({
+            test_id: testId, title, url, revision, notes,
+            drawing_number: drawingNumber || "",
+        }),
     }).then(r => r.json());
+}
+
+// Sibling-revision set for a drawing number (cached per site; refresh=1 re-queries).
+function fetchDrawingRevisions(drawingNumber, refresh) {
+    return fetch(
+        "/api/drawings/revisions?number=" + encodeURIComponent(drawingNumber) +
+        (refresh ? "&refresh=1" : "")
+    ).then(r => r.json());
 }
 
 function deleteDrawing(id) {
@@ -287,7 +302,7 @@ function fetchDeviceDrawings(deviceId) {
     return fetch("/api/db/device-drawings/" + encodeURIComponent(deviceId)).then(r => r.json());
 }
 
-function addDeviceDrawing(deviceId, title, url, revision, notes) {
+function addDeviceDrawing(deviceId, title, url, revision, notes, drawingNumber) {
     return fetch("/api/db/device-drawings/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -297,6 +312,7 @@ function addDeviceDrawing(deviceId, title, url, revision, notes) {
             url: url || "",
             revision: revision || "",
             notes: notes || "",
+            drawing_number: drawingNumber || "",
         }),
     }).then(r => r.json());
 }

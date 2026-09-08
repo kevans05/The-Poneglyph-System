@@ -146,14 +146,12 @@
                     onclick="showSiteSelector()"
                     style="font-size:10px; border:1px solid #f00; color:#f00; padding:3px 8px;
                            letter-spacing:1px; cursor:pointer; user-select:none;"
-                    title="Click to switch dock">NO DOCK</span>
-                <button
-                    onclick="initBrainPointSequence()"
-                    class="rescan-btn"
-                    style="border-color: #ff0000; color: #ff0000"
-                >
-                    [ Initialize Brain Point ]
-                </button>
+                    title="Click to switch site">NO SITE</span>
+                <span id="user-identity-chip"
+                    onclick="PoneglyphIdentity.promptChange()"
+                    style="font-size:10px; border:1px solid #0a0; color:#0a0; padding:3px 8px;
+                           letter-spacing:1px; cursor:pointer; user-select:none;"
+                    title="Your signature — click to change name">◆ …</span>
                 <button
                     onclick="showTestsModal()"
                     class="rescan-btn"
@@ -168,12 +166,13 @@
                 >
                     HISTORY
                 </button>
-                                <button
-                    id="sim-toggle-btn" onclick="toggleSimMode()"
+                <button
+                    onclick="showSettingsModal()"
                     class="rescan-btn"
-                    style="border-color: #f55; color: #f55"
+                    style="border-color: #888; color: #888"
+                    title="Application settings"
                 >
-                    SIMULATION
+                    ⚙ SETTINGS
                 </button>
                 <button onclick="refreshData()" class="rescan-btn">
                     RESCAN BUS
@@ -182,35 +181,6 @@
         </div>
 
         <div id="status-bar"></div>
-        <div id="sim-bar" style="display:none; background: #200; border-bottom: 1px solid #500; padding: 5px 15px; align-items: center; gap: 20px; color: #f55; font-family: monospace; font-size: 12px; flex-wrap: wrap;">
-            <div style="font-weight: bold; letter-spacing: 2px;">SIMULATION MODE</div>
-            <div id="sim-clock" style="width: 140px; font-size: 14px; color: #fff;">00:00:00.000</div>
-            <div style="display: flex; gap: 10px;">
-                <button onclick="toggleSimPause()" id="sim-pause-btn" style="background:none; border: 1px solid #f55; color: #f55; cursor: pointer; padding: 2px 10px; font-size: 10px;">PAUSE</button>
-                <button onclick="resetSim()" style="background:none; border: 1px solid #f55; color: #f55; cursor: pointer; padding: 2px 10px; font-size: 10px;">RESET</button>
-                <button onclick="stopSim()" style="background:none; border: 1px solid #f55; color: #f55; cursor: pointer; padding: 2px 10px; font-size: 10px;">STOP</button>
-                <button id="sim-rewind-btn" onclick="_rewindMode ? exitRewindMode() : enterRewindMode()" style="background:none; border: 1px solid #f55; color: #f55; cursor: pointer; padding: 2px 10px; font-size: 10px;" title="Browse simulation history">⏪ REWIND</button>
-            </div>
-            <!-- Rewind scrubber — visible only in rewind mode -->
-            <div id="sim-rewind-controls" style="display:none; align-items:center; gap:8px; background:#1a1800; border:1px solid #880; padding:3px 10px; border-radius:3px;">
-                <button onclick="rewindStep(-10)" style="background:none;border:1px solid #880;color:#ff0;cursor:pointer;padding:1px 7px;font-size:10px;">◀◀</button>
-                <button onclick="rewindStep(-1)"  style="background:none;border:1px solid #880;color:#ff0;cursor:pointer;padding:1px 7px;font-size:10px;">◀</button>
-                <input type="range" id="rewind-scrubber" min="0" max="1" value="0"
-                    oninput="rewindScrub(this.value)"
-                    style="width:140px; accent-color:#ffff00;">
-                <button onclick="rewindStep(1)"   style="background:none;border:1px solid #880;color:#ff0;cursor:pointer;padding:1px 7px;font-size:10px;">▶</button>
-                <button onclick="rewindStep(10)"  style="background:none;border:1px solid #880;color:#ff0;cursor:pointer;padding:1px 7px;font-size:10px;">▶▶</button>
-                <span id="rewind-count" style="font-size:9px;color:#880;min-width:50px;"></span>
-                <button onclick="exitRewindMode()" style="background:#1a1400;border:1px solid #ff0;color:#ff0;cursor:pointer;padding:1px 8px;font-size:10px;font-weight:bold;">LIVE ▶</button>
-            </div>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <span>SPEED:</span>
-                <input type="range" id="sim-speed-slider" min="-1" max="2" step="0.1" value="0" oninput="updateSimSpeed(this.value)" style="width: 100px;">
-                <span id="sim-speed-label">1.0x</span>
-            </div>
-            <button id="sim-log-btn" onclick="toggleSimLog()" style="margin-left:auto; background:none; border:1px solid #500; color:#f55; cursor:pointer; padding:2px 10px; font-size:10px; font-family:monospace;">LOG</button>
-            <div id="sim-status">LIVE</div>
-        </div>
 
         <!-- Main Visualization Area -->
 
@@ -222,18 +192,6 @@
 
             <!-- Hidden by default, shown on right-click -->
             <div id="context-menu"></div>
-
-            <!-- Simulation Event Log Panel (shown during simulation mode) -->
-            <div id="sim-log-panel">
-                <div id="sim-log-header">
-                    <span>EVENT LOG</span>
-                    <span style="display:flex;gap:4px;">
-                        <button onclick="detachSimLog()" title="Open in popup window">⤢</button>
-                        <button onclick="clearSimLog()">CLR</button>
-                    </span>
-                </div>
-                <div id="sim-log-entries"></div>
-            </div>
 
             <!-- Selection tool panel (slide-in from left) -->
             <div id="selection-panel">
@@ -326,7 +284,7 @@
             style="display: none; width: 600px; height: 500px"
         >
             <div class="wizard-header">
-                <span>BRAIN POINT — TELEMETRY INTERFACE</span>
+                <span>MEASUREMENT — TELEMETRY INTERFACE</span>
                 <span style="display:flex;gap:8px;align-items:center;">
                     <button class="wizard-close-btn" onclick="detachBrainPoint()"
                         title="Open in new window" style="font-size:13px;background:none;border:none;color:#888;cursor:pointer;padding:0 4px;">⤢</button>
@@ -456,7 +414,7 @@
         <div id="tests-modal"
             style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85);
                    z-index:8000; align-items:center; justify-content:center;">
-            <div style="background:#0c0c0c; border:1px solid #0f0; width:680px; max-height:85vh;
+            <div style="background:#0c0c0c; border:1px solid #0f0; width:760px; max-height:85vh;
                         display:flex; flex-direction:column; font-family:'Consolas','Courier New',monospace;">
                 <div style="background:#050505; border-bottom:1px solid #1a1a1a; padding:10px 14px;
                             display:flex; justify-content:space-between; align-items:center;">
@@ -467,7 +425,7 @@
                 </div>
                 <div id="tests-modal-body" style="overflow-y:auto; flex:1; min-height:180px; position:relative;"></div>
                 <div id="tests-modal-footer"
-                    style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; background:#050505;"></div>
+                    style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; flex-wrap:wrap; background:#050505;"></div>
             </div>
         </div>
 
@@ -494,12 +452,12 @@
         <div id="site-selector-modal"
             style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85);
                    z-index:9000; align-items:center; justify-content:center;">
-            <div style="background:#0c0c0c; border:1px solid #0f0; width:520px; max-height:80vh;
+            <div style="background:#0c0c0c; border:1px solid #0f0; width:680px; max-height:82vh;
                         display:flex; flex-direction:column; font-family:'Consolas','Courier New',monospace;">
                 <!-- Header -->
                 <div style="background:#050505; border-bottom:1px solid #1a1a1a; padding:10px 14px;
                             display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:11px; color:#0f0; letter-spacing:2px;">DOCK SELECTION</span>
+                    <span style="font-size:11px; color:#0f0; letter-spacing:2px;">SITE SELECTION</span>
                     <button onclick="hideSiteSelector()"
                         style="background:none; border:none; color:#555; font-size:14px;
                                cursor:pointer; font-family:inherit; padding:0 4px;">&times;</button>
@@ -508,13 +466,20 @@
                 <div id="site-selector-body"
                     style="overflow-y:auto; flex:1; min-height:120px;"></div>
                 <!-- Footer -->
-                <div style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; background:#050505;">
+                <div style="border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; flex-wrap:wrap; background:#050505;">
                     <button id="site-new-btn"
                         onclick="_showCreateForm()"
                         style="background:#0a0a0a; border:1px solid #333; color:#888;
                                font-family:inherit; font-size:10px; padding:6px 12px;
                                cursor:pointer; letter-spacing:1px;">
-                        + NEW DOCK
+                        + NEW SITE
+                    </button>
+                    <button id="site-bulk-sync-btn"
+                        onclick="_siteBulkSyncAll()"
+                        style="background:#04121c; border:1px solid #3fdc8f; color:#3fdc8f;
+                               font-family:inherit; font-size:10px; padding:6px 12px;
+                               cursor:pointer; letter-spacing:1px; display:none;">
+                        ☁ SYNC ALL LINKED SITES
                     </button>
                     <div style="flex:1;"></div>
                     <button id="site-load-btn" disabled
@@ -523,7 +488,7 @@
                                cursor:pointer; letter-spacing:1px; opacity:0.5;"
                         onmouseover="if(!this.disabled)this.style.opacity='1'"
                         onmouseout="if(!this.disabled)this.style.opacity='0.9'">
-                        LOAD DOCK
+                        LOAD SITE
                     </button>
                 </div>
             </div>
@@ -531,8 +496,14 @@
 
         <!-- Modular Scripts (Loaded in order of dependency) -->
         <script src="/static/utils.js"></script>
+        <script src="/static/identity.js"></script>
+        <script src="/static/settings-modal.js"></script>
         <script src="/static/api-client.js"></script>
-        <script src="/static/sim.js"></script>
+        <script src="/static/hub-client.js"></script>
+        <script src="/static/hub-sync.js"></script>
+        <script src="/static/drawing-revisions.js"></script>
+        <script src="/static/test-audit.js"></script>
+        <script src="/static/pmm-webserial.js"></script>
         <script src="/static/selector.js"></script>
         <script src="/static/sites.js"></script>
         <script src="/static/tests.js"></script>
@@ -547,11 +518,11 @@
         <script src="/static/context-menu.js"></script>
         <script src="/static/dialogs.js"></script>
         <script src="/static/config-modal.js"></script>
+        <script src="/static/drawing-search.js"></script>
         <script src="/static/measurement-wizard.js"></script>
         <script src="/static/history-modal.js"></script>
         <script src="/static/panels.js"></script>
         <script src="/static/relay-controls.js"></script>
-        <script src="/static/tcc-plot.js"></script>
 
         <script src="/static/splash.js"></script>
 

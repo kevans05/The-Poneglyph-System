@@ -356,33 +356,130 @@ def _latest_measurements_for_device(data: dict, device_id: str) -> dict:
 
 # ── Ingestion ─────────────────────────────────────────────────────────────────
 
-def ingest_load_test_report(db_path: str, test_id: str, xlsx_bytes: bytes) -> str | None:
-    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
-    ws = wb["Load Test"]
-    tech = ws["AM5"].value or "Excel Import"
-    sess_id = site_db.start_session(db_path, label="Excel Manual Entry", instrument="manual", technician=tech, test_id=test_id)
+_SHEET_NAME = "Load Test"
+
+
+def ingest_load_test_report(
+    db_path: str, test_id: str, xlsx_bytes: bytes,
+    known_device_ids: set[str] | None = None,
+) -> dict:
+    """Import measured-secondary values from a filled-out load-test XLSX.
+
+    Validates the whole file *before* writing anything — a bad sheet name, a
+    corrupt workbook, or a file with no usable blocks all fail with no
+    session created, instead of leaving an empty or partial session behind.
+    Malformed individual blocks are skipped and reported rather than silently
+    dropped; if `known_device_ids` is given, a device name that doesn't match
+    the current substation model is skipped and reported too, rather than
+    quietly creating measurement rows for a device that doesn't exist.
+
+    Returns a structured result: {ok, session_id, technician, imported,
+    skipped, unknown_devices, measurement_count}. Raises ValueError (with a
+    message meant to be shown to the technician) on a hard failure.
+    """
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+    except Exception as e:
+        raise ValueError(f"Could not open this file as an Excel workbook ({e}).")
+
+    ws = None
+    for name in wb.sheetnames:
+        if name.strip().lower() == _SHEET_NAME.lower():
+            ws = wb[name]
+            break
+    if ws is None:
+        raise ValueError(
+            f"No '{_SHEET_NAME}' sheet found — this file has: {', '.join(wb.sheetnames) or '(no sheets)'}. "
+            "Start from the file downloaded via DOWNLOAD EXCEL for this test."
+        )
+
+    tech_raw = ws["AM5"].value
+    tech = str(tech_raw).strip() if tech_raw else "Excel Import"
+
+    imported: list[dict] = []
+    skipped: list[dict] = []
+    unknown_devices: list[str] = []
+    to_record: list[tuple[str, dict]] = []
+    total_measurements = 0
+
     r = _FIRST_BLOCK_ROW
     while r < ws.max_row:
         dev_name = ws[f"G{r}"].value
-        if not dev_name: 
-            r += _BLOCK_STRIDE
-            continue
         dtype_short = ws[f"A{r}"].value
-        if not dtype_short:
+
+        if not dev_name and not dtype_short:
+            r += _BLOCK_STRIDE  # untouched template block — nothing to report
+            continue
+        if not dev_name:
+            skipped.append({"row": r, "reason": "device name (column G) is blank"})
             r += _BLOCK_STRIDE
             continue
+        dev_name = str(dev_name).strip()
+        if not dtype_short:
+            skipped.append({"row": r, "device_id": dev_name, "reason": "device type code (column A) is blank"})
+            r += _BLOCK_STRIDE
+            continue
+
+        if known_device_ids is not None and dev_name not in known_device_ids:
+            unknown_devices.append(dev_name)
+            skipped.append({"row": r, "device_id": dev_name, "reason": "not a device in the current substation model"})
+            r += _BLOCK_STRIDE
+            continue
+
         kind = "voltage" if "VT" in str(dtype_short) else "current"
         keys = _VOLTAGE_KEYS if kind == "voltage" else _CURRENT_KEYS
         measurements = {}
+        phases_seen = []
         for phase, (_, mag_col, ang_col) in _PHASE_COLS.items():
             mag = ws[f"{mag_col}{r+1}"].value
             ang = ws[f"{ang_col}{r+1}"].value
-            if isinstance(mag, (int, float)): measurements[keys[phase][0]] = mag
-            if isinstance(ang, (int, float)): measurements[keys[phase][1]] = ang
-        if measurements:
-            site_db.record_measurements(db_path, sess_id, dev_name, measurements)
+            got = False
+            if isinstance(mag, (int, float)):
+                measurements[keys[phase][0]] = float(mag)
+                got = True
+            if isinstance(ang, (int, float)):
+                measurements[keys[phase][1]] = float(ang)
+                got = True
+            if got:
+                phases_seen.append(phase)
+
+        if not measurements:
+            skipped.append({"row": r, "device_id": dev_name, "reason": "no numeric Measured Secondary values in this block"})
+            r += _BLOCK_STRIDE
+            continue
+
+        to_record.append((dev_name, measurements))
+        imported.append({
+            "device_id": dev_name, "type": str(dtype_short),
+            "phases": phases_seen, "count": len(measurements),
+        })
+        total_measurements += len(measurements)
         r += _BLOCK_STRIDE
-    return sess_id
+
+    if not to_record:
+        raise ValueError(
+            "No usable measurements found in this file. Check that it's the "
+            f"'{_SHEET_NAME}' report for this test, with Measured Secondary "
+            "values filled in, and that device names weren't changed."
+        )
+
+    # Only now — once the file has actually proven itself — create the session.
+    sess_id = site_db.start_session(
+        db_path, label="Excel Manual Entry", instrument="manual",
+        technician=tech, test_id=test_id,
+    )
+    for dev_name, measurements in to_record:
+        site_db.record_measurements(db_path, sess_id, dev_name, measurements)
+
+    return {
+        "ok": True,
+        "session_id": sess_id,
+        "technician": tech,
+        "imported": imported,
+        "skipped": skipped,
+        "unknown_devices": sorted(set(unknown_devices)),
+        "measurement_count": total_measurements,
+    }
 
 
 # ── Dynamic Block Count ───────────────────────────────────────────────────────

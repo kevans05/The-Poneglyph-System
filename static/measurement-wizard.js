@@ -108,7 +108,7 @@ function detachBrainPoint() {
 
   _bpPopup.document.write(`<!doctype html><html><head>
     <meta charset="UTF-8">
-    <title>BRAIN POINT — Telemetry Interface</title>
+    <title>MEASUREMENT — Telemetry Interface</title>
     ${styleLinks}
     <style>
       body { overflow: auto; margin: 0; background: #080808; }
@@ -230,6 +230,10 @@ let _bpVoltChan2 = 0;   // saved voltage measurement channel
 let _bpCurrChan1 = 0;   // saved current reference channel
 let _bpCurrChan2 = 6;   // saved current measurement channel (default Ia)
 let _bpDeviceMeasStep = null; // "voltage"|"current" for multi-analog V→I split
+// True once the system reference VT has been captured for this session — a
+// manual session should only ever be asked for it once, not on every
+// voltage/current device transition.
+let _bpVrefCapturedThisSession = false;
 let _bpVoltDevices   = []; // ordered selected voltage-only device IDs
 let _bpCurrDevices   = []; // ordered selected current-only device IDs
 let _bpRelayDevices  = []; // ordered selected relay device IDs
@@ -237,7 +241,7 @@ let _bpMultiDevices  = []; // ordered selected multi-analog (primary) device IDs
 
 // Instrument type for this session
 let _bpInstrumentType = "manual"; // "pmm1" | "pmm2" | "manual"
-let _pmmPort = null; // selected serial port path
+let _pmmPort = null; // Web Serial port handle / label for the connected PMM-1
 let _pmmIP = "192.168.1.10"; // target PMM2 IP address
 let _pmmConnected = false; // true once /api/pmm/connect returns ok
 
@@ -283,9 +287,35 @@ function _bpSaveTechHistory(name) {
 
 function _bpPickTechnician(onPicked) {
   const hist = _bpGetTechHistory();
-  const names = _technicianName
+  const localNames = _technicianName
     ? [_technicianName, ...hist.filter((n) => n !== _technicianName)]
     : hist;
+
+  // Know about everyone on the hub too, not just names used on this device —
+  // a shared field instrument gets passed between technicians who may never
+  // have touched this particular laptop before.
+  const rosterP =
+    window.PoneglyphHub && typeof PoneglyphHub.listUsers === "function"
+      ? PoneglyphHub.listUsers().catch(() => [])
+      : Promise.resolve([]);
+
+  rosterP.then((roster) => {
+    const seen = new Set(localNames);
+    const hubNames = [];
+    (roster || []).forEach((u) => {
+      const n = (u.display_name || u.username || "").trim();
+      if (n && !seen.has(n)) {
+        seen.add(n);
+        hubNames.push(n);
+      }
+    });
+    _bpShowTechnicianPicker(localNames, hubNames, onPicked);
+  });
+}
+
+function _bpShowTechnicianPicker(localNames, hubNames, onPicked) {
+  const names = [...localNames, ...hubNames];
+  const isHub = new Set(hubNames);
 
   if (names.length === 0) {
     showInputDialog("TECHNICIAN NAME", "Cutty Flamm", (name) => {
@@ -312,9 +342,19 @@ function _bpPickTechnician(onPicked) {
 
   names.forEach((name) => {
     const row = document.createElement("div");
-    row.textContent = name;
     row.style.cssText =
-      "padding:9px 12px;border:1px solid #1a1a1a;color:#0f0;cursor:pointer;font-size:11px;border-radius:2px;";
+      "padding:9px 12px;border:1px solid #1a1a1a;color:#0f0;cursor:pointer;font-size:11px;border-radius:2px;" +
+      "display:flex;justify-content:space-between;align-items:center;gap:8px;";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = name;
+    row.appendChild(nameSpan);
+    if (isHub.has(name)) {
+      const tag = document.createElement("span");
+      tag.textContent = "☁";
+      tag.title = "signed in on the hub";
+      tag.style.cssText = "color:#3fdc8f;font-size:10px;";
+      row.appendChild(tag);
+    }
     row.addEventListener("mouseenter", () => (row.style.background = "#0d1a0d"));
     row.addEventListener("mouseleave", () => (row.style.background = "transparent"));
     row.addEventListener("click", () => {
@@ -352,6 +392,7 @@ function _bpPickTechnician(onPicked) {
 function initBrainPointSequence() {
   _bpSessionMeasurements = {};
   _pmmLastReading = null;
+  _bpVrefCapturedThisSession = false;
 
   const doStart = (techName) => {
     _technicianName = techName || _technicianName;
@@ -376,6 +417,71 @@ function initBrainPointSequence() {
   _bpPickTechnician(doStart);
 }
 
+// Sort a flat list of device IDs into the four capture-point buckets the
+// wizard tracks, using the same rules as _bpRenderStep4's category filters.
+function _bpDistributeCapturePoints(ids) {
+  const byId = new Map((currentData?.nodes || []).map((n) => [n.id, n]));
+  _bpVoltDevices = [];
+  _bpCurrDevices = [];
+  _bpRelayDevices = [];
+  _bpMultiDevices = [];
+  (ids || []).forEach((id) => {
+    const n = byId.get(id);
+    if (!n || !WIZARD_MEASURABLE.has(n.type)) return;
+    if (n.type === "Relay") _bpRelayDevices.push(id);
+    else if (!_deviceShowsCurrent(n.type)) _bpVoltDevices.push(id);
+    else if (!_deviceShowsVoltage(n.type)) _bpCurrDevices.push(id);
+    else _bpMultiDevices.push(id);
+  });
+  _bpSelectedDevices = [
+    ..._bpVoltDevices,
+    ..._bpCurrDevices,
+    ..._bpRelayDevices,
+    ..._bpMultiDevices,
+  ];
+  return _bpSelectedDevices.length;
+}
+
+// Launch the measurement interface for an already-known test (from the Tests
+// detail view). Skips the test picker — only asks who is taking the readings —
+// and, when the test already defines capture points, skips straight past the
+// capture-point picker to instrument selection.
+function startTestMeasurement(testId, testName) {
+  _bpSessionMeasurements = {};
+  _pmmLastReading = null;
+  _bpVrefCapturedThisSession = false;
+
+  _bpPickTechnician((techName) => {
+    _technicianName = techName || _technicianName;
+    _activeTestId = testId || null;
+    _activeTestName = testName || null;
+    startSession(
+      new Date().toISOString().slice(0, 16),
+      "manual",
+      _technicianName,
+      _activeTestId,
+    ).catch(() => {});
+    d3.select("#brain-point-module")
+      .style("display", "flex")
+      .style("transform", "translate(-50%, -50%)")
+      .style("top", "50%")
+      .style("left", "50%");
+
+    fetchTestDetail(testId)
+      .then(({ test }) => {
+        let pts = [];
+        try {
+          pts = JSON.parse((test && test.capture_points) || "[]");
+        } catch (e) {
+          pts = [];
+        }
+        if (_bpDistributeCapturePoints(pts) > 0) _bpRenderStep0();
+        else _bpRenderStep4();
+      })
+      .catch(() => _bpRenderStep4());
+  });
+}
+
 // Step 0 — Instrument type selection (replaces old Steps 1 & 2)
 function _bpRenderStep0() {
   d3.select("#brain-point-module").style("width", "700px").style("height", "auto");
@@ -388,7 +494,7 @@ function _bpRenderStep0() {
 
   body
     .append("div")
-    .text("BRAIN POINT — THE PONEGLYPH SYSTEM")
+    .text("MEASUREMENT — THE PONEGLYPH SYSTEM")
     .style("font-size", "11px")
     .style("color", "#0f0")
     .style("letter-spacing", "1px")
@@ -428,14 +534,6 @@ function _bpRenderStep0() {
       badgeColor: "#3af",
       available: true,
     },
-    {
-      id: "sim",
-      title: "DEBUG / SIMULATION",
-      sub: "Generate mock power measurements (no hardware needed)",
-      badge: "DEBUG",
-      badgeColor: "#f0f",
-      available: true,
-    },
   ];
 
   cards.forEach((card) => {
@@ -459,7 +557,7 @@ function _bpRenderStep0() {
     if (card.available) {
       c.on("click", () => {
         _bpInstrumentType = card.id;
-        _bpRenderStep4();
+        _bpRenderStep0();
       });
     }
     c.append("div")
@@ -497,32 +595,73 @@ function _bpRenderStep0() {
   });
 
   const footer = d3.select("#brain-point-footer").html("");
+  footer
+    .append("button")
+    .attr("class", "wiz-secondary")
+    .text("← CAPTURE POINTS (" + _bpSelectedDevices.length + ")")
+    .on("click", _bpRenderStep4);
   footer.append("div").style("flex", 1);
+  // Already connected? Skip straight past the connect screen — re-running it
+  // was a dead end (its own "NEXT" led right back to capture points, with no
+  // path forward into the reading screen at all).
+  const alreadyLive = _bpLiveInstrumentActive();
   footer
     .append("button")
     .attr("class", "wiz-save")
     .text(
-      _bpInstrumentType === "pmm1"
-        ? "NEXT: CONNECT PMM-1 →"
-        : _bpInstrumentType === "pmm2"
-          ? "NEXT: CONNECT PMM-2 →"
-          : _bpInstrumentType === "sim"
-            ? "START SIMULATION →"
+      alreadyLive
+        ? "NEXT: START READINGS →"
+        : _bpInstrumentType === "pmm1"
+          ? "NEXT: CONNECT PMM-1 →"
+          : _bpInstrumentType === "pmm2"
+            ? "NEXT: CONNECT PMM-2 →"
             : "NEXT: CONFIGURE →",
     )
     .on("click", () => {
-      if (_bpInstrumentType === "pmm1") _bpConnectPMM1();
+      if (alreadyLive) _bpBeginReadings();
+      else if (_bpInstrumentType === "pmm1") _bpConnectPMM1();
       else if (_bpInstrumentType === "pmm2") _bpConnectPMM2();
-      else if (_bpInstrumentType === "sim") _bpStartSimulation();
-      else {
-          _bpTargetDeviceId = _bpSelectedDevices[0];
-          _bpTargetPhase = "A";
-          _bpRenderStep5();
-      }
+      else _bpBeginReadings();
     });
 }
 
-// PMM-1 port selection + real serial connection
+// Pending (chosen but not yet connected) Web Serial port for the PMM-1.
+let _pmmPendingPort = null;
+
+// Route channel-config / query through the browser's Web Serial PMM-1 when that
+// is the active instrument; otherwise fall back to the server (PMM-2 over TCP).
+function _pmmConfigure(chan1, chan2) {
+  if (_bpInstrumentType === "pmm1" && window.PMM1 && window.PMM1.active) {
+    return window.PMM1.active.configureChannels(chan1, chan2);
+  }
+  return fetch("/api/pmm/configure", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chan1, chan2 }),
+  }).then((r) => r.json());
+}
+
+function _pmmQuery() {
+  if (_bpInstrumentType === "pmm1" && window.PMM1 && window.PMM1.active) {
+    return window.PMM1.active.query();
+  }
+  return fetch("/api/pmm/query").then((r) => r.json());
+}
+
+function _pmmDisconnect() {
+  if (window.PMM1 && window.PMM1.active) {
+    const p = window.PMM1.active;
+    window.PMM1.active = null;
+    return p.disconnect().catch(() => {});
+  }
+  return fetch("/api/pmm/disconnect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  }).catch(() => {});
+}
+
+// PMM-1 port selection + connection, over the Web Serial API (browser-side).
 function _bpConnectPMM1() {
   d3.select("#brain-point-module").style("width", "700px").style("height", "auto");
   const body = d3
@@ -535,45 +674,13 @@ function _bpConnectPMM1() {
 
   body
     .append("div")
-    .text("PMM-1 CONNECTION  ·  19200 BAUD  ·  8N1")
+    .text("PMM-1 CONNECTION  ·  WEB SERIAL  ·  19200 BAUD  ·  8N1")
     .style("font-size", "10px")
     .style("color", "#0a0")
     .style("letter-spacing", "1px")
     .style("margin-bottom", "18px");
 
-  // Port selector
-  const portRow = body
-    .append("div")
-    .style("display", "flex")
-    .style("gap", "8px")
-    .style("align-items", "center")
-    .style("margin-bottom", "14px");
-  portRow
-    .append("label")
-    .text("SERIAL PORT")
-    .style("font-size", "9px")
-    .style("color", "#888")
-    .style("white-space", "nowrap");
-  const portSel = portRow
-    .append("select")
-    .style("flex", "1")
-    .style("background", "#111")
-    .style("color", "#0f0")
-    .style("border", "1px solid #040")
-    .style("padding", "4px 8px");
-  portSel.append("option").attr("value", "").text("-- select port --");
-  portSel.on("change", function () {
-    _pmmPort = this.value;
-  });
-
-  // Refresh port list
-  const refreshBtn = portRow
-    .append("button")
-    .attr("class", "wiz-secondary")
-    .style("font-size", "9px")
-    .text("↺ REFRESH")
-    .on("click", () => _bpPopulatePorts(portSel));
-  _bpPopulatePorts(portSel);
+  const supported = window.PMM1 && window.PMM1.Port.isSupported();
 
   // Connection status terminal
   const term = body
@@ -587,10 +694,20 @@ function _bpConnectPMM1() {
     .style("color", "#0f0")
     .style("margin-bottom", "14px");
 
-  if (_pmmConnected) {
+  if (!supported) {
     term
       .append("div")
-      .text("✓ CONNECTED TO PMM-1 @ " + _pmmPort)
+      .text("✗ WEB SERIAL NOT AVAILABLE IN THIS BROWSER")
+      .style("color", "#f44")
+      .style("font-weight", "bold");
+    term
+      .append("div")
+      .text("Use Chrome or Edge, served over HTTPS or http://localhost.")
+      .style("color", "#555");
+  } else if (_pmmConnected) {
+    term
+      .append("div")
+      .text("✓ CONNECTED TO PMM-1 @ " + (_pmmPort || "serial port"))
       .style("color", "#0f0")
       .style("font-weight", "bold");
     term
@@ -601,7 +718,11 @@ function _bpConnectPMM1() {
     term.append("div").text("STATUS: DISCONNECTED").style("color", "#555");
     term
       .append("div")
-      .text("Select a port and press CONNECT.")
+      .text(
+        _pmmPendingPort
+          ? "Port selected — press CONNECT."
+          : "Press SELECT PORT to choose the PMM-1 serial adapter.",
+      )
       .style("color", "#333");
   }
 
@@ -621,50 +742,59 @@ function _bpConnectPMM1() {
       .style("color", "#f44")
       .text("DISCONNECT")
       .on("click", () => {
-        fetch("/api/pmm/disconnect", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        }).then(() => {
+        _pmmDisconnect().then(() => {
           _pmmConnected = false;
+          _pmmPendingPort = null;
+          _pmmPort = null;
           _bpConnectPMM1();
         });
       });
     footer
       .append("button")
       .attr("class", "wiz-save")
-      .text("NEXT: DEVICES →")
-      .on("click", _bpRenderStep4);
-  } else {
+      .text("NEXT: START READINGS →")
+      .on("click", _bpBeginReadings);
+  } else if (supported) {
+    footer
+      .append("button")
+      .attr("class", "wiz-secondary")
+      .text(_pmmPendingPort ? "↺ CHANGE PORT" : "SELECT PORT")
+      .on("click", () => {
+        window.PMM1.Port.request()
+          .then((port) => {
+            _pmmPendingPort = port;
+            _bpConnectPMM1();
+          })
+          .catch((e) => {
+            // User dismissed the picker, or no port granted.
+            term
+              .append("div")
+              .text("✗ " + ((e && e.message) || e))
+              .style("color", "#f44");
+          });
+      });
     footer
       .append("button")
       .attr("class", "wiz-save")
       .text("CONNECT →")
       .on("click", () => {
-        const port = portSel.node().value;
-        if (!port) {
-          term.node().innerHTML = "";
-          term
-            .append("div")
-            .text("⚠ SELECT A PORT FIRST")
-            .style("color", "#f80");
+        if (!_pmmPendingPort) {
+          term.append("div").text("⚠ SELECT A PORT FIRST").style("color", "#f80");
           return;
         }
-        _pmmPort = port;
         term.node().innerHTML = "";
         term
           .append("div")
-          .text("> Connecting to " + port + " @ 19200 8N1...")
+          .text("> Opening serial port @ 19200 8N1...")
           .style("color", "#888");
-        fetch("/api/pmm/connect", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ port, model: "pmm1" }),
-        })
-          .then((r) => r.json())
+        _pmmPendingPort
+          .connect()
           .then((res) => {
             if (res.ok) {
+              window.PMM1.active = _pmmPendingPort;
               _pmmConnected = true;
+              _pmmPort = _pmmPendingPort.label();
+              _pmmPendingPort = null;
               term
                 .append("div")
                 .text("AOK! — PMM-1 connected, m1 mode active")
@@ -681,49 +811,11 @@ function _bpConnectPMM1() {
           .catch((e) =>
             term
               .append("div")
-              .text("✗ " + e)
+              .text("✗ " + ((e && e.message) || e))
               .style("color", "#f44"),
           );
       });
   }
-}
-
-function _bpStartSimulation() {
-  _pmmConnected = true;
-  fetch("/api/pmm/connect", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ port: "SIMULATOR", model: "sim" }),
-  }).then(() => {
-    _bpRenderStep4();
-  });
-}
-
-function _bpPopulatePorts(selectEl) {
-  fetch("/api/pmm/ports")
-    .then((r) => r.json())
-    .then((data) => {
-      selectEl.selectAll("option").remove();
-      selectEl.append("option").attr("value", "").text("-- select port --");
-      (data.ports || []).forEach((p) => {
-        selectEl
-          .append("option")
-          .attr("value", p.device)
-          .text(
-            p.device +
-              (p.description !== p.device ? "  ·  " + p.description : ""),
-          )
-          .property("selected", _pmmPort === p.device);
-      });
-      if (_pmmPort) selectEl.property("value", _pmmPort);
-    })
-    .catch(() => {
-      selectEl.selectAll("option").remove();
-      selectEl
-        .append("option")
-        .attr("value", "")
-        .text("-- could not enumerate ports --");
-    });
 }
 
 // PMM-2 IP connection
@@ -826,8 +918,8 @@ function _bpConnectPMM2() {
     footer
       .append("button")
       .attr("class", "wiz-save")
-      .text("NEXT: DEVICES →")
-      .on("click", _bpRenderStep4);
+      .text("NEXT: START READINGS →")
+      .on("click", _bpBeginReadings);
   } else {
     footer
       .append("button")
@@ -900,6 +992,25 @@ function _bpApplyChanConfig(measType) {
 }
 
 function _bpShowChannelConfig(measType, prevType, onDone) {
+  // The disconnect-warning and physical-channel screens are about a meter's
+  // leads and inputs — meaningless without one, and hit on every single
+  // voltage/current transition, which is exactly what makes a manual session
+  // feel like it's circling: pure typing-in-numbers has no leads to move and
+  // no channel to reassign, so skip straight through. The one thing worth
+  // keeping is the system reference VT, captured once per session rather
+  // than re-asked at every transition.
+  if (!_bpLiveInstrumentActive()) {
+    _bpApplyChanConfig(measType);
+    if (measType === "voltage" && _activeTestId && !_bpVrefCapturedThisSession) {
+      // Offered once per session — whether it's filled in or skipped, later
+      // voltage transitions won't ask again.
+      _bpVrefCapturedThisSession = true;
+      _bpCaptureVRef(_bpChan1, _bpRefVTId, false, onDone);
+    } else {
+      onDone();
+    }
+    return;
+  }
   if (prevType !== null && prevType !== measType) {
     _bpShowDisconnectWarning(prevType, measType, () => _bpRenderChannelConfigOverlay(measType, onDone));
   } else {
@@ -1053,17 +1164,16 @@ function _bpRenderChannelConfigOverlay(measType, onDone) {
       _bpChan1 = c1Val;
       _bpChan2 = c2Val;
       const isMeter = (
-        (_bpInstrumentType === "pmm1" || _bpInstrumentType === "pmm2" || _bpInstrumentType === "sim") &&
+        (_bpInstrumentType === "pmm1" || _bpInstrumentType === "pmm2") &&
         _pmmConnected
       );
       if (isMeter) {
-        fetch("/api/pmm/configure", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chan1: c1Val, chan2: c2Val }),
-        }).catch(() => {});
+        Promise.resolve(_pmmConfigure(c1Val, c2Val)).catch(() => {});
       }
-      if (isVolt && _activeTestId) {
+      if (isVolt && _activeTestId && !_bpVrefCapturedThisSession) {
+        // Offered once per session, same as the manual path — otherwise a
+        // meter session gets asked to re-capture it on every voltage pass.
+        _bpVrefCapturedThisSession = true;
         _bpCaptureVRef(c1Val, _bpRefVTId, isMeter, onDone);
       } else {
         onDone();
@@ -1072,7 +1182,7 @@ function _bpRenderChannelConfigOverlay(measType, onDone) {
 }
 
 // Capture the system reference VT magnitude after the voltage channel has been
-// configured. Meter / sim sessions read chan1 from /api/pmm/query; manual
+// configured. Meter sessions read chan1 from the live meter feed; manual
 // sessions prompt the user. Result is POSTed to /api/tests/vref.
 function _bpCaptureVRef(chan1Val, refVTId, isMeter, onDone) {
   d3.select("#brain-point-module").style("width", "750px").style("height", "auto");
@@ -1129,8 +1239,7 @@ function _bpCaptureVRef(chan1Val, refVTId, isMeter, onDone) {
       .style("padding", "6px 14px").style("cursor", "pointer").style("letter-spacing", "1px")
       .on("click", function () {
         status.text("querying meter…").style("color", "#888");
-        fetch("/api/pmm/query")
-          .then(r => r.json())
+        Promise.resolve(_pmmQuery())
           .then(res => {
             if (res && res.ok && typeof res.chan1 === "number") {
               magInput.property("value", res.chan1.toFixed(4));
@@ -1145,12 +1254,19 @@ function _bpCaptureVRef(chan1Val, refVTId, isMeter, onDone) {
     magInput.node().focus();
   }
 
+  // A meter session came from the channel-config screen and can go back to
+  // it; a manual session skipped straight here, so "back" is really "skip
+  // capturing a reference for now" — same destination, onDone(), either way.
+  const isMeterFlow = _bpLiveInstrumentActive();
   footer.append("button")
-    .text("← BACK")
+    .text(isMeterFlow ? "← BACK" : "SKIP FOR NOW →")
     .style("background", "#0a0a0a").style("border", "1px solid #333").style("color", "#666")
     .style("font-family", "inherit").style("font-size", "10px")
     .style("padding", "6px 12px").style("cursor", "pointer")
-    .on("click", () => _bpRenderChannelConfigOverlay("voltage", onDone));
+    .on("click", () => {
+      if (isMeterFlow) _bpRenderChannelConfigOverlay("voltage", onDone);
+      else onDone();
+    });
   footer.append("div").style("flex", 1);
   footer.append("button")
     .attr("class", "wiz-save")
@@ -1440,7 +1556,14 @@ function _openDrawingsManager(deviceId) {
   addSec.style.cssText =
     "flex-shrink:0;padding:12px 16px;border-top:1px solid #1a1a2a;background:#080810;";
   addSec.innerHTML = `
-    <div style="font-size:9px;color:#666;letter-spacing:1px;margin-bottom:8px;">ADD / ATTACH A DRAWING</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span style="font-size:9px;color:#666;letter-spacing:1px;">ADD / ATTACH A DRAWING</span>
+      <button id="_ddm-search-btn"
+        style="background:#04121c;border:1px solid #3af;color:#7fd0ff;font-family:inherit;
+               font-size:9px;letter-spacing:1px;padding:4px 10px;cursor:pointer;">
+        🔍 SEARCH CORPORATE DRAWINGS
+      </button>
+    </div>
     <input id="_ddm-title" type="text" placeholder="Drawing title *"
       style="width:100%;box-sizing:border-box;background:#111;border:1px solid #333;color:#eee;
              padding:6px 8px;font-family:inherit;font-size:11px;margin-bottom:6px;" />
@@ -1455,6 +1578,7 @@ function _openDrawingsManager(deviceId) {
     <input id="_ddm-notes" type="text" placeholder="Notes — sheet numbers, scope, etc."
       style="width:100%;box-sizing:border-box;background:#111;border:1px solid #333;color:#888;
              padding:6px 8px;font-family:inherit;font-size:10px;margin-bottom:8px;" />
+    <input id="_ddm-dwgnum" type="hidden" />
     <button id="_ddm-add-btn"
       style="background:#001a20;border:1px solid #aaf;color:#aaf;font-family:inherit;
              font-size:10px;padding:6px 20px;cursor:pointer;letter-spacing:1px;">
@@ -1470,6 +1594,29 @@ function _openDrawingsManager(deviceId) {
   // Close handlers
   document.getElementById("_ddm-close").onclick = () => overlay.remove();
   overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+
+  // Corporate drawing search → prefill the add form from a chosen result.
+  const searchBtn = document.getElementById("_ddm-search-btn");
+  if (searchBtn && typeof _openDrawingSearch === "function") {
+    const node = currentData && currentData.nodes && currentData.nodes.find(n => n.id === deviceId);
+    searchBtn.onclick = () => {
+      _openDrawingSearch({ deviceId, deviceType: node && node.type }, (d) => {
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
+        set("_ddm-title", d.title || d.drawing_number);
+        set("_ddm-rev", d.revision);
+        set("_ddm-url", d.document_url);
+        set("_ddm-dwgnum", d.drawing_number);
+        const bits = ["DWG " + d.drawing_number];
+        if (d.drawing_subject) bits.push("subj " + d.drawing_subject);
+        if (d.legacy_doc_number) bits.push("legacy " + d.legacy_doc_number);
+        set("_ddm-notes", bits.join(" · "));
+        const t = document.getElementById("_ddm-title");
+        if (t) { t.style.borderColor = "#3af"; setTimeout(() => (t.style.borderColor = "#333"), 900); t.focus(); }
+      });
+    };
+  } else if (searchBtn) {
+    searchBtn.style.display = "none";
+  }
 
   const renderList = () => {
     const listEl = document.getElementById("_ddm-list");
@@ -1525,6 +1672,10 @@ function _openDrawingsManager(deviceId) {
         const histBtn = document.createElement("button");
         histBtn.style.cssText = btnCss;
         histBtn.textContent = "HISTORY";
+        const revBtn = document.createElement("button");
+        revBtn.style.cssText = btnCss;
+        revBtn.textContent = "REVISIONS";
+        if (!d.drawing_number) { revBtn.disabled = true; revBtn.title = "no drawing number on this attachment"; }
         const delBtn = document.createElement("button");
         delBtn.style.cssText = btnCss + "color:#622;border-color:#2a1010;";
         delBtn.textContent = "✕";
@@ -1536,6 +1687,7 @@ function _openDrawingsManager(deviceId) {
 
         actions.appendChild(updBtn);
         actions.appendChild(histBtn);
+        actions.appendChild(revBtn);
         actions.appendChild(delBtn);
         main.appendChild(info);
         main.appendChild(actions);
@@ -1606,8 +1758,28 @@ function _openDrawingsManager(deviceId) {
           });
         };
 
+        // Sibling-revision set (from the corporate system, cached per site)
+        const revArea = document.createElement("div");
+        revArea.style.display = "none";
+        revArea.style.marginTop = "8px";
+        revBtn.onclick = () => {
+          if (revArea.style.display !== "none") { revArea.style.display = "none"; return; }
+          updForm.style.display = "none";
+          histArea.style.display = "none";
+          revArea.style.display = "block";
+          if (typeof renderDrawingRevisions === "function") {
+            renderDrawingRevisions(revArea, {
+              drawingNumber: d.drawing_number,
+              currentRevision: d.revision,
+              drawingId: d.id,
+              onSwapped: renderList,
+            });
+          }
+        };
+
         row.appendChild(updForm);
         row.appendChild(histArea);
+        row.appendChild(revArea);
         listEl.appendChild(row);
       });
     }).catch(() => {
@@ -1628,9 +1800,10 @@ function _openDrawingsManager(deviceId) {
       deviceId, title,
       (document.getElementById("_ddm-url").value || "").trim(),
       (document.getElementById("_ddm-rev").value || "").trim(),
-      (document.getElementById("_ddm-notes").value || "").trim()
+      (document.getElementById("_ddm-notes").value || "").trim(),
+      (document.getElementById("_ddm-dwgnum").value || "").trim()
     ).then(() => {
-      ["_ddm-title","_ddm-rev","_ddm-url","_ddm-notes"].forEach(id => {
+      ["_ddm-title","_ddm-rev","_ddm-url","_ddm-notes","_ddm-dwgnum"].forEach(id => {
         const el = document.getElementById(id); if (el) el.value = "";
       });
       btn.textContent = "+ ATTACH DRAWING"; btn.disabled = false;
@@ -1954,11 +2127,130 @@ function _pmmChan2ForPhase(baseChan2, phase) {
   return baseChan2; // LL or special — no auto-adjust
 }
 
-function _bpRenderPMMStep5() {
+// ── Live instrument helpers ────────────────────────────────────────────────────
+
+// True when the session's chosen instrument has an actual live connection right
+// now (Web Serial port open for PMM-1, server-side socket up for PMM-2).
+// "manual" is never live.
+function _bpLiveInstrumentActive() {
+  if (_bpInstrumentType === "pmm1") return !!(window.PMM1 && window.PMM1.active);
+  if (_bpInstrumentType === "pmm2") return !!_pmmConnected;
+  return false;
+}
+
+/** Common entry into the reading screen from any of the three places that
+ *  lead there: manual chosen directly, or a meter just finished connecting. */
+function _bpBeginReadings() {
+  _bpTargetDeviceId = _bpSelectedDevices[0];
+  _bpTargetPhase = "A";
+  _bpManualOverride = false;
+  _bpRenderReadingScreen();
+}
+
+function _bpInstrumentLabel() {
+  if (_bpInstrumentType === "pmm1") return "PMM-1 · serial";
+  if (_bpInstrumentType === "pmm2") return "PMM-2 · " + (_pmmIP || "network");
+  return "manual entry";
+}
+
+// Per-reading override: even in a live-meter session, a digital relay's value
+// comes off its own front-panel display, not a probe — this logs one point by
+// hand without leaving the flow or disconnecting the meter. Resets when the
+// target device changes; stays set across that device's phases, since a
+// digital relay stays a digital relay for all of them.
+let _bpManualOverride = false;
+
+// Which of the MAG / ANG boxes the on-screen keypad is currently typing into.
+let _bpKeypadTarget = "bp-mag-in";
+
+function _bpKeypadPress(key) {
+  const el = document.getElementById(_bpKeypadTarget);
+  if (!el) return;
+  if (key === "back") el.value = el.value.slice(0, -1);
+  else if (key === "clear") el.value = "";
+  else if (key === "sign")
+    el.value = el.value.startsWith("-") ? el.value.slice(1) : "-" + el.value;
+  else if (key === ".") {
+    if (!el.value.includes(".")) el.value += ".";
+  } else el.value += key;
+}
+
+function _bpFocusKeypad(inputId) {
+  _bpKeypadTarget = inputId;
+  ["bp-mag-in", "bp-ang-in"].forEach((id) => {
+    const box = document.getElementById(id + "-wrap");
+    if (box) box.style.borderColor = id === inputId ? "#0f0" : "#1a3a1a";
+  });
+}
+
+/** A large, mouse/click-friendly numeric keypad — built for gloved hands where
+ *  precise physical-keyboard presses are the actual bottleneck, not a
+ *  touchscreen. Always targets whichever of MAG / ANG was last focused. */
+function _bpRenderKeypad(container) {
+  container.selectAll("*").remove();
+  const rows = [
+    ["7", "8", "9"],
+    ["4", "5", "6"],
+    ["1", "2", "3"],
+    ["sign", "0", "."],
+  ];
+  const grid = container
+    .append("div")
+    .style("display", "grid")
+    .style("grid-template-columns", "repeat(3, 1fr)")
+    .style("gap", "6px");
+  rows.forEach((row) => {
+    row.forEach((k) => {
+      grid
+        .append("button")
+        .text(k === "sign" ? "±" : k)
+        .style("padding", "16px 0")
+        .style("font-size", "20px")
+        .style("font-weight", "bold")
+        .style("background", "#111")
+        .style("color", "#0f0")
+        .style("border", "1px solid #333")
+        .style("border-radius", "4px")
+        .style("cursor", "pointer")
+        .on("click", () => _bpKeypadPress(k));
+    });
+  });
+  container
+    .append("button")
+    .text("⌫ BACKSPACE")
+    .style("width", "100%")
+    .style("margin-top", "6px")
+    .style("padding", "14px 0")
+    .style("font-size", "13px")
+    .style("letter-spacing", "1px")
+    .style("background", "#1a0a0a")
+    .style("color", "#c66")
+    .style("border", "1px solid #422")
+    .style("border-radius", "4px")
+    .style("cursor", "pointer")
+    .on("click", () => _bpKeypadPress("back"));
+}
+
+/**
+ * The one reading screen — replaces the old split between _bpRenderStep5
+ * (manual) and _bpRenderPMMStep5 (PMM-1 only). PMM-1, PMM-2, "manual", and
+ * whatever meter comes next are all the same operation: probe the point,
+ * confirm the value, log it, move on. This renders that operation once,
+ * branching only on whether *this* reading is coming off a live meter or a
+ * hand-read display (a digital relay's front panel, or the session's own
+ * "manual" choice) — never on which brand of meter it is.
+ */
+function _bpRenderReadingScreen() {
+  const live = _bpLiveInstrumentActive() && !_bpManualOverride;
+
   d3.select("#status-bar")
     .style("background", "#040")
     .style("color", "#0f0")
-    .text(`BRAIN POINT — ${_bpInstrumentType === "sim" ? "SIMULATION" : "PMM-1 LIVE"} · Single-Phase Mode`);
+    .text(
+      live
+        ? `MEASUREMENT — ${_bpInstrumentLabel()} LIVE`
+        : "MEASUREMENT — manual entry",
+    );
   d3.select("#brain-point-module")
     .style("width", "98vw")
     .style("height", "96vh")
@@ -1971,6 +2263,34 @@ function _bpRenderPMMStep5() {
     .html("")
     .style("height", "calc(100% - 120px)");
 
+  // Keyboard: Enter → log, arrows → navigate. Kept for anyone who prefers it;
+  // the on-screen controls never require it.
+  d3.select("body").on("keydown.bp", (e) => {
+    if (d3.select("#brain-point-module").style("display") === "none") return;
+    const magIn = document.getElementById("bp-mag-in");
+    if (e.key === "Enter") {
+      if (magIn && document.activeElement === magIn) {
+        const angIn = document.getElementById("bp-ang-in");
+        if (angIn) angIn.focus();
+      } else {
+        _bpLogCurrentPoint();
+      }
+      e.preventDefault();
+    } else if (e.key === "ArrowRight") {
+      _bpMoveToNextPhase();
+      e.preventDefault();
+    } else if (e.key === "ArrowLeft") {
+      _bpMoveToPrevPhase();
+      e.preventDefault();
+    } else if (e.key === "ArrowDown") {
+      _bpMoveToNextDevice();
+      e.preventDefault();
+    } else if (e.key === "ArrowUp") {
+      _bpMoveToPrevDevice();
+      e.preventDefault();
+    }
+  });
+
   if (_bpSelectedDevices.length === 0) {
     body
       .append("div")
@@ -1981,25 +2301,35 @@ function _bpRenderPMMStep5() {
   }
 
   const node =
-    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
-    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
+    ((currentData && currentData.nodes) &&
+      currentData.nodes.find((n) => n.id === _bpTargetDeviceId)) ||
+    ((currentData && currentData.nodes) &&
+      currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]));
   _bpTargetDeviceId = node.id;
-  const isNeutralPhase = _bpTargetPhase === "N";
-  const effectiveChan2 = isNeutralPhase
-    ? _bpChan2 // neutral: don't auto-switch, user physically moves probe
-    : _pmmChan2ForPhase(_bpChan2, _bpTargetPhase);
+  const refVT =
+    (currentData && currentData.nodes) &&
+    currentData.nodes.find((n) => n.id === _bpRefVTId);
 
-  // ── Top controls ──────────────────────────────────────────────────────────
+  const expectedType = _bpDeviceExpectedType(node.type);
+  const showsI = _deviceShowsCurrent(node.type);
+  const isNeutralPhase = _bpTargetPhase === "N";
+  const needsNeutral =
+    showsI && (_bpSelectedMode === "m3y" || _bpSelectedMode === "m1");
+  const phaseList = needsNeutral ? ["A", "B", "C", "N"] : ["A", "B", "C"];
+
+  // ── Top controls: device, phase, instrument status ─────────────────────────
   const controls = body
     .append("div")
     .style("display", "flex")
+    .style("flex-wrap", "wrap")
     .style("gap", "16px")
+    .style("align-items", "flex-end")
     .style("margin-bottom", "12px")
-    .style("background", "#111")
-    .style("padding", "10px")
+    .style("background", "#161616")
+    .style("padding", "12px")
     .style("border-radius", "4px");
 
-  const devGrp = controls.append("div").style("flex", 1);
+  const devGrp = controls.append("div").style("flex", "1 1 220px");
   devGrp
     .append("label")
     .text("TARGET DEVICE")
@@ -2009,12 +2339,15 @@ function _bpRenderPMMStep5() {
   const devSel = devGrp
     .append("select")
     .style("width", "100%")
+    .style("padding", "8px")
+    .style("font-size", "13px")
     .style("background", "#111")
     .style("color", "#eee")
     .style("border", "1px solid #444")
     .on("change", function () {
       _bpTargetDeviceId = this.value;
-      _bpRenderPMMStep5();
+      _bpManualOverride = false;
+      _bpRenderReadingScreen();
     });
   _bpSelectedDevices.forEach((id) => {
     devSel
@@ -2024,503 +2357,98 @@ function _bpRenderPMMStep5() {
       .property("selected", _bpTargetDeviceId === id);
   });
 
-  const phGrp = controls.append("div").style("width", "260px");
+  const phGrp = controls.append("div").style("flex", "1 1 260px");
   phGrp
     .append("label")
-    .text("ACTIVE PHASE")
+    .text("ACTIVE PHASE — tap or ← →")
     .style("font-size", "9px")
     .style("color", "#888")
-    .style("display", "block");
-  const phRow = phGrp
-    .append("div")
-    .style("display", "flex")
-    .style("gap", "5px")
-    .style("margin-top", "2px");
-  const showsI = _deviceShowsCurrent(node.type);
-  const needsN = showsI; // neutral always available for current devices
-  (needsN ? ["A", "B", "C", "N"] : ["A", "B", "C"]).forEach((p) => {
+    .style("display", "block")
+    .style("margin-bottom", "3px");
+  const phRow = phGrp.append("div").style("display", "flex").style("gap", "6px");
+  phaseList.forEach((p) => {
     const isN = p === "N";
     phRow
       .append("button")
       .text(p)
       .style("flex", 1)
-      .style("padding", "4px")
+      .style("padding", "12px 0")
+      .style("font-size", "16px")
+      .style("font-weight", "bold")
       .style(
         "background",
         _bpTargetPhase === p ? (isN ? "#a0a000" : "#0f0") : "#333",
       )
       .style("color", _bpTargetPhase === p ? "#000" : isN ? "#aa0" : "#eee")
       .style("border", isN ? "1px solid #660" : "none")
-      .style("border-radius", "2px")
+      .style("border-radius", "4px")
+      .style("cursor", "pointer")
       .on("click", () => {
         _bpTargetPhase = p;
-        _bpRenderPMMStep5();
+        _bpRenderReadingScreen();
       });
   });
 
-  // Device drawings reference strip (populated async)
-  _bpRenderDrawingsStrip(body, _bpTargetDeviceId);
-
-  // ── Main panel ────────────────────────────────────────────────────────────
-  const main = body
+  const instGrp = controls
     .append("div")
-    .style("display", "grid")
-    .style("grid-template-columns", "280px 1fr")
-    .style("gap", "14px");
-
-  // Left — channel info + last reading
-  const left = main
-    .append("div")
-    .style("background", "#000")
-    .style("border", "1px solid #030")
-    .style("padding", "14px")
-    .style("font-size", "10px");
-
-  left
-    .append("div")
-    .text(_bpInstrumentType === "sim" ? "SIMULATION FEED" : "PMM-1 LIVE FEED")
-    .style("color", "#0a0")
-    .style("font-size", "9px")
-    .style("letter-spacing", "1px")
-    .style("margin-bottom", "10px");
-
-  const chanLabel = PMM_SOURCES[_bpChan1]?.l || _bpChan1;
-  const measLabel = PMM_SOURCES[effectiveChan2]?.l || effectiveChan2;
-  left
+    .style("flex", "1 1 240px")
+    .style("display", "flex")
+    .style("flex-direction", "column")
+    .style("gap", "4px")
+    .style("align-items", "flex-start");
+  instGrp
     .append("div")
     .html(
-      `<span style="color:#555;">CHAN 1 (REF):</span> <span style="color:#3af;">${chanLabel}</span>`,
+      `<span style="color:#555;">◆ USING</span> <span style="color:${live ? "#0f0" : "#3af"};font-weight:bold;">${_bpInstrumentLabel()}</span>` +
+        (_bpManualOverride ? ' <span style="color:#aa0;">(override)</span>' : ""),
     )
-    .style("margin-bottom", "4px");
-  left
-    .append("div")
-    .html(
-      `<span style="color:#555;">CHAN 2 (MEAS):</span> <span style="color:#0f0;">${measLabel}</span>`,
-    )
-    .style("margin-bottom", "12px");
-
-  if (isNeutralPhase) {
-    left
-      .append("div")
-      .style("background", "#0a0a00")
-      .style("border", "1px solid #440")
-      .style("padding", "8px")
-      .style("color", "#aa0")
-      .style("font-size", "9px")
-      .style("margin-bottom", "10px")
+    .style("font-size", "11px");
+  if (_bpLiveInstrumentActive()) {
+    instGrp
+      .append("button")
       .text(
-        "RECONNECT CURRENT PROBE TO NEUTRAL TERMINAL (N), KEEP ON CURRENT CHANNEL",
-      );
-  }
-
-  const reading = _pmmLastReading;
-  if (reading && reading.ok) {
-    left
-      .append("div")
-      .style("margin-top", "8px")
-      .html(
-        `<div style="font-size:28px;color:#0f0;">${reading.chan2.toFixed(4)}<span style="font-size:10px;color:#555;"> ${showsI ? "A" : "V"}</span></div>` +
-          `<div style="font-size:18px;color:#0f0;">∠ ${_fmtAngle(reading.phase)}</div>`,
-      );
-    left
-      .append("div")
-      .style("margin-top", "10px")
-      .style("border-top", "1px solid #111")
-      .style("padding-top", "8px")
-      .html(
-        `<div style="color:#444;font-size:9px;">CHAN 1 REF: ${reading.chan1.toFixed(4)}</div>` +
-          `<div style="color:#444;font-size:9px;">WATTS: ${reading.watts.toFixed(3)} W</div>` +
-          `<div style="color:#444;font-size:9px;">VARS: ${reading.vars.toFixed(3)} var</div>` +
-          `<div style="color:#444;font-size:9px;">FREQ: ${reading.freq.toFixed(2)} Hz</div>`,
-      );
-  } else if (reading && !reading.ok) {
-    left
-      .append("div")
-      .style("color", "#f44")
-      .style("font-size", "9px")
-      .style("margin-top", "8px")
-      .text("⚠ " + (reading.error || "Query failed"));
-  } else {
-    left
-      .append("div")
-      .style("color", "#333")
-      .style("font-size", "9px")
-      .style("margin-top", "8px")
-      .text("Press QUERY PMM to read.");
-  }
-
-  // Right — query + log interface
-  const right = main
-    .append("div")
-    .style("background", "#000")
-    .style("border", "2px solid #111")
-    .style("border-radius", "6px")
-    .style("padding", "20px")
-    .style("position", "relative");
-
-  right
-    .append("div")
-    .style("position", "absolute")
-    .style("top", "6px")
-    .style("right", "10px")
-    .style("font-size", "9px")
-    .style("color", "#050")
-    .text((_bpInstrumentType === "sim" ? "SIM" : "PMM-1") + " · m1 · SINGLE PHASE");
-
-  right
-    .append("div")
-    .text(
-      `INSTRUMENT: ${node.id} — ${isNeutralPhase ? "NEUTRAL" : "PHASE " + _bpTargetPhase}`,
-    )
-    .style("font-size", "12px")
-    .style("color", "#0a0")
-    .style("margin-bottom", "16px");
-
-  // QUERY button
-  const queryBtn = right
-    .append("button")
-    .text(_bpInstrumentType === "sim" ? "▶ QUERY SIMULATOR" : "▶ QUERY PMM-1")
-    .style("width", "100%")
-    .style("padding", "14px")
-    .style("background", "#020a02")
-    .style("color", "#0f0")
-    .style("border", "2px solid #0a0")
-    .style("cursor", "pointer")
-    .style("font-size", "13px")
-    .style("font-weight", "bold")
-    .style("letter-spacing", "2px")
-    .style("margin-bottom", "14px")
-    .on("click", () => {
-      queryBtn.text("QUERYING...").property("disabled", true);
-      // Reconfigure channels if phase changed
-      fetch("/api/pmm/configure", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chan1: _bpChan1, chan2: effectiveChan2 }),
-      })
-        .then(() => fetch("/api/pmm/query"))
-        .then((r) => r.json())
-        .then((res) => {
-          _pmmLastReading = res;
-          _bpRenderPMMStep5();
-        })
-        .catch((e) => {
-          _pmmLastReading = { ok: false, error: String(e) };
-          _bpRenderPMMStep5();
-        });
-    });
-
-  // Log section — shows pre-filled values from last reading
-  const mag = reading?.ok ? reading.chan2 : null;
-  const ang = reading?.ok ? reading.phase : null;
-
-  const measBox = right
-    .append("div")
-    .style("border", "2px solid #1a1a1a")
-    .style("padding", "16px")
-    .style("background", "#050505");
-  measBox
-    .append("div")
-    .text("VALUES TO LOG")
-    .style("font-size", "9px")
-    .style("color", "#555")
-    .style("margin-bottom", "10px");
-
-  const r1 = measBox
-    .append("div")
-    .style("display", "flex")
-    .style("align-items", "center")
-    .style("gap", "20px")
-    .style("margin-bottom", "12px");
-  r1.append("span")
-    .text("MAG")
-    .style("font-size", "13px")
-    .style("color", "#0a0")
-    .style("font-weight", "bold")
-    .style("width", "44px");
-  r1.append("input")
-    .attr("type", "number")
-    .attr("id", "bp-mag-in")
-    .property("value", mag !== null ? mag.toFixed(5) : "")
-    .style("background", "#111")
-    .style("border", "2px solid #040")
-    .style("color", "#0f0")
-    .style("font-size", "36px")
-    .style("width", "220px")
-    .style("padding", "8px")
-    .style("text-align", "center")
-    .style("font-family", "'Courier New',monospace");
-  r1.append("span")
-    .text(showsI ? "A" : "V")
-    .style("color", "#0a0")
-    .style("font-size", "20px");
-
-  const r2 = measBox
-    .append("div")
-    .style("display", "flex")
-    .style("align-items", "center")
-    .style("gap", "20px");
-  r2.append("span")
-    .text("ANG")
-    .style("font-size", "13px")
-    .style("color", "#0a0")
-    .style("font-weight", "bold")
-    .style("width", "44px");
-  r2.append("input")
-    .attr("type", "number")
-    .attr("id", "bp-ang-in")
-    .property("value", ang !== null ? _lagAngle(ang).toFixed(2) : "")
-    .style("background", "#111")
-    .style("border", "2px solid #040")
-    .style("color", "#0f0")
-    .style("font-size", "28px")
-    .style("width", "180px")
-    .style("padding", "8px")
-    .style("text-align", "center")
-    .style("font-family", "'Courier New',monospace");
-  r2.append("span").text("°").style("color", "#0a0").style("font-size", "20px");
-
-  right
-    .append("button")
-    .text("ACCEPT & LOG POINT  (ENTER)")
-    .style("width", "100%")
-    .style("margin-top", "16px")
-    .style("padding", "14px")
-    .style("background", "#060")
-    .style("color", "#0f0")
-    .style("border", "2px solid #0a0")
-    .style("cursor", "pointer")
-    .style("font-weight", "bold")
-    .style("font-size", "13px")
-    .style("text-transform", "uppercase")
-    .style("letter-spacing", "2px")
-    .on("click", _bpLogCurrentPoint);
-
-  setTimeout(() => {
-    const el = document.getElementById("bp-mag-in");
-    if (el) el.focus();
-  }, 100);
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  const footer = d3.select("#brain-point-footer").html("");
-  footer
-    .append("button")
-    .attr("class", "wiz-secondary")
-    .text("BACK TO SELECTION")
-    .on("click", _bpRenderStep4);
-  footer.append("div").style("flex", 1);
-  footer
-    .append("button")
-    .attr("class", "wiz-secondary")
-    .style("border-color", _use360Lag ? "#3af" : "#444")
-    .style("color", _use360Lag ? "#3af" : "#555")
-    .style("font-size", "9px")
-    .text(_use360Lag ? "360° LAG ✓" : "±180°")
-    .on("click", () => {
-      _use360Lag = !_use360Lag;
-      _bpRenderPMMStep5();
-    });
-  if (!_bpInSIMode) {
-    footer
-      .append("button")
-      .attr("class", "wiz-secondary")
-      .style("border-color", "#f00")
-      .style("color", "#f00")
-      .text("SHORT & ISOLATE (S&I)")
-      .on("click", _bpStartSIWorkflow);
-  }
-  footer
-    .append("button")
-    .attr("class", "wiz-save")
-    .text("EXIT BRAIN POINT")
-    .on("click", () => {
-      _bpInSIMode = false;
-      d3.select("#brain-point-module").style("display", "none");
-      d3.select("#status-bar")
-        .style("background", "#111")
-        .style("color", "#0f0")
-        .text("Navigation System Standby.");
-      refreshData();
-    });
-
-  // Keyboard: Enter → log, arrows → navigate
-  d3.select("body").on("keydown.bp", (e) => {
-    if (d3.select("#brain-point-module").style("display") === "none") return;
-    if (e.key === "Enter") {
-      _bpLogCurrentPoint();
-      e.preventDefault();
-    } else if (e.key === "ArrowRight") {
-      _bpMoveToNextPhase();
-      e.preventDefault();
-    } else if (e.key === "ArrowLeft") {
-      _bpMoveToPrevPhase();
-      e.preventDefault();
-    } else if (e.key === "ArrowDown") {
-      _bpMoveToNextDevice();
-      e.preventDefault();
-    } else if (e.key === "ArrowUp") {
-      _bpMoveToPrevDevice();
-      e.preventDefault();
-    }
-  });
-}
-
-function _bpRenderStep5() {
-  d3.select("#status-bar")
-    .style("background", "#040")
-    .style("color", "#0f0")
-    .text("BRAIN POINT Module Active. Routing current through terminal blocks...");
-
-  d3.select("#brain-point-module")
-    .style("width", "98vw")
-    .style("height", "96vh")
-    .style("top", "2vh")
-    .style("left", "1vw")
-    .style("transform", "none");
-
-  const body = d3
-    .select("#brain-point-body")
-    .html("")
-    .style("height", "calc(100% - 120px)"); // Allow body to fill most of the space
-
-  // Add keyboard listener for this step
-  d3.select("body").on("keydown.bp", (e) => {
-    if (d3.select("#brain-point-module").style("display") === "none") return;
-
-    if (e.key === "Enter") {
-      const magIn = document.getElementById("bp-mag-in");
-      if (magIn && document.activeElement === magIn) {
-        // If focusing magnitude, move to angle
-        const angIn = document.getElementById("bp-ang-in");
-        if (angIn) angIn.focus();
-        e.preventDefault();
-      } else {
-        // Log if on angle or button
-        _bpLogCurrentPoint();
-        e.preventDefault();
-      }
-    } else if (e.key === "ArrowRight") {
-      _bpMoveToNextPhase();
-      e.preventDefault();
-    } else if (e.key === "ArrowLeft") {
-      _bpMoveToPrevPhase();
-      e.preventDefault();
-    } else if (e.key === "ArrowDown") {
-      _bpMoveToNextDevice();
-      e.preventDefault();
-    } else if (e.key === "ArrowUp") {
-      _bpMoveToPrevDevice();
-      e.preventDefault();
-    }
-  });
-
-  if (_bpSelectedDevices.length === 0) {
-    body
-      .append("div")
-      .text("NO DEVICES SELECTED.")
-      .style("padding", "20px")
-      .style("text-align", "center");
-    return;
-  }
-
-  const node =
-    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId) ||
-    (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpSelectedDevices[0]);
-  _bpTargetDeviceId = node.id;
-  const refVT = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpRefVTId);
-
-  const expectedType = _bpDeviceExpectedType(node.type);
-
-  // TOP CONTROLS: Device and Phase Selection
-  const controls = body
-    .append("div")
-    .style("display", "flex")
-    .style("gap", "20px")
-    .style("margin-bottom", "15px")
-    .style("background", "#222")
-    .style("padding", "10px")
-    .style("border-radius", "4px");
-
-  const devGroup = controls.append("div").style("flex", 1);
-  devGroup
-    .append("label")
-    .text("TARGET DEVICE")
-    .style("font-size", "9px")
-    .style("color", "#888")
-    .style("display", "block");
-  const devSel = devGroup
-    .append("select")
-    .style("width", "100%")
-    .style("background", "#111")
-    .style("color", "#eee")
-    .style("border", "1px solid #444")
-    .on("change", function () {
-      _bpTargetDeviceId = this.value;
-      _bpRenderStep5();
-    });
-  _bpSelectedDevices.forEach((id) => {
-    devSel
-      .append("option")
-      .attr("value", id)
-      .text(id)
-      .property("selected", _bpTargetDeviceId === id);
-  });
-
-  const phaseGroup = controls.append("div").style("width", "240px");
-  phaseGroup
-    .append("label")
-    .text("ACTIVE PHASE")
-    .style("font-size", "9px")
-    .style("color", "#888")
-    .style("display", "block");
-  const phaseRow = phaseGroup
-    .append("div")
-    .style("display", "flex")
-    .style("gap", "5px")
-    .style("margin-top", "2px");
-  const showsI = _deviceShowsCurrent(node.type);
-  const needsNeutral =
-    showsI && (_bpSelectedMode === "m3y" || _bpSelectedMode === "m1");
-  const phaseList = needsNeutral ? ["A", "B", "C", "N"] : ["A", "B", "C"];
-  phaseList.forEach((p) => {
-    const isNeutral = p === "N";
-    phaseRow
-      .append("button")
-      .text(p)
-      .style("flex", 1)
-      .style("padding", "4px")
-      .style(
-        "background",
-        _bpTargetPhase === p ? (isNeutral ? "#a0a000" : "#0f0") : "#333",
+        _bpManualOverride
+          ? "◀ USE " + (_bpInstrumentType === "pmm1" ? "PMM-1" : "PMM-2") + " AGAIN"
+          : "✎ ENTER THIS ONE BY HAND",
       )
-      .style(
-        "color",
-        _bpTargetPhase === p ? "#000" : isNeutral ? "#aa0" : "#eee",
-      )
-      .style("border", isNeutral ? "1px solid #660" : "none")
-      .style("border-radius", "2px")
+      .style("padding", "8px 12px")
+      .style("font-size", "10px")
+      .style("letter-spacing", "0.5px")
+      .style("background", _bpManualOverride ? "#001a0a" : "#1a1500")
+      .style("color", _bpManualOverride ? "#0f6" : "#fa0")
+      .style("border", "1px solid " + (_bpManualOverride ? "#0f6" : "#663"))
+      .style("border-radius", "4px")
+      .style("cursor", "pointer")
       .on("click", () => {
-        _bpTargetPhase = p;
-        _bpRenderStep5();
+        _bpManualOverride = !_bpManualOverride;
+        _pmmLastReading = null;
+        _bpRenderReadingScreen();
       });
-  });
+    instGrp
+      .append("div")
+      .text("for digital relays and anything else read off a display")
+      .style("font-size", "8px")
+      .style("color", "#444");
+  }
 
   // Device drawings reference strip (populated async)
   _bpRenderDrawingsStrip(body, _bpTargetDeviceId);
 
+  // ── Main panel ───────────────────────────────────────────────────────────
   const main = body
     .append("div")
     .style("display", "grid")
     .style("grid-template-columns", "260px 1fr")
-    .style("gap", "15px");
+    .style("gap", "14px");
 
-  // Left Side: Reference Monitor + Target Predicted
+  // Left — reference + predicted (context only, same for every instrument)
   const refCol = main
     .append("div")
     .style("background", "#111")
-    .style("padding", "15px")
-    .style("border", "1px solid #444")
-    .style("border-radius", "4px");
+    .style("padding", "14px")
+    .style("border", "1px solid #333")
+    .style("border-radius", "4px")
+    .style("font-size", "10px");
 
   if (refVT) {
     refCol
@@ -2533,267 +2461,223 @@ function _bpRenderStep5() {
     const aRefKey = _predKey(refVT, _bpTargetPhase, "v-angle");
     const vRef = refVT.summary?.[vRefKey] ?? 0;
     const aRef = refVT.summary?.[aRefKey] ?? 0;
-    refCol
-      .append("div")
-      .text(refVT.id)
-      .style("color", "#3af")
-      .style("font-weight", "bold")
-      .style("font-size", "11px");
-    refCol
-      .append("div")
-      .text(`PHASE ${_bpTargetPhase}`)
-      .style("font-size", "9px")
-      .style("color", "#555");
+    refCol.append("div").text(refVT.id).style("color", "#3af").style("font-weight", "bold").style("font-size", "11px");
+    refCol.append("div").text(`PHASE ${_bpTargetPhase}`).style("font-size", "9px").style("color", "#555");
     refCol
       .append("div")
       .style("margin-top", "8px")
       .html(
-        `<div style="font-size:22px;color:#3af;">${vRef.toFixed(1)} <span style="font-size:9px;color:#555;">V</span></div>` +
-          `<div style="font-size:15px;color:#3af;">∠ ${_fmtAngle(aRef)}</div>`,
+        `<div style="font-size:20px;color:#3af;">${vRef.toFixed(1)} <span style="font-size:9px;color:#555;">V</span></div>` +
+          `<div style="font-size:14px;color:#3af;">∠ ${_fmtAngle(aRef)}</div>`,
       );
   } else {
-    refCol
-      .append("div")
-      .text("NO REF VT SELECTED")
-      .style("color", "#555")
-      .style("font-size", "10px");
+    refCol.append("div").text("NO REF VT SELECTED").style("color", "#555").style("font-size", "10px");
   }
 
-  // Target device predicted values (use device-type-aware key)
   const predMagKey = _predKey(node, _bpTargetPhase, expectedType);
-  const predAngKey = _predKey(
-    node,
-    _bpTargetPhase,
-    expectedType === "current" ? "i-angle" : "v-angle",
-  );
+  const predAngKey = _predKey(node, _bpTargetPhase, expectedType === "current" ? "i-angle" : "v-angle");
   const predMag = node.summary?.[predMagKey];
   const predAng = node.summary?.[predAngKey];
-  refCol
-    .append("div")
-    .style("margin-top", "14px")
-    .style("padding-top", "10px")
-    .style("border-top", "1px solid #222");
-  refCol
-    .append("div")
-    .text("TARGET DEVICE PREDICTED")
-    .style("font-size", "9px")
-    .style("color", "#888")
-    .style("margin-bottom", "6px");
-  refCol
-    .append("div")
-    .text(node.id)
-    .style("color", "#fa0")
-    .style("font-size", "10px")
-    .style("font-weight", "bold");
+  refCol.append("div").style("margin-top", "14px").style("padding-top", "10px").style("border-top", "1px solid #222");
+  refCol.append("div").text("TARGET DEVICE PREDICTED").style("font-size", "9px").style("color", "#888").style("margin-bottom", "6px");
+  refCol.append("div").text(node.id).style("color", "#fa0").style("font-size", "10px").style("font-weight", "bold");
   if (predMag !== undefined && predMag !== null) {
     refCol
       .append("div")
       .style("margin-top", "6px")
       .html(
-        `<div style="font-size:20px;color:#fa0;">${predMag.toFixed(2)} <span style="font-size:9px;color:#555;">${expectedType === "current" ? "A" : "V"}</span></div>` +
-          `<div style="font-size:14px;color:#fa0;">∠ ${_fmtAngle(predAng ?? 0)}</div>`,
+        `<div style="font-size:18px;color:#fa0;">${predMag.toFixed(2)} <span style="font-size:9px;color:#555;">${expectedType === "current" ? "A" : "V"}</span></div>` +
+          `<div style="font-size:13px;color:#fa0;">∠ ${_fmtAngle(predAng ?? 0)}</div>`,
       );
   } else {
-    refCol
-      .append("div")
-      .text("No prediction available")
-      .style("color", "#333")
-      .style("font-size", "9px")
-      .style("margin-top", "6px");
+    refCol.append("div").text("No prediction available").style("color", "#333").style("font-size", "9px").style("margin-top", "6px");
   }
 
-  // Right Side: PMM Face
-  const plugDisplay = main
+  // Right — the actual reading interface
+  const right = main
     .append("div")
     .style("background", "#000")
-    .style("padding", "20px")
-    .style("border", "2px solid #333")
-    .style("border-radius", "8px")
-    .style("position", "relative");
-  plugDisplay
+    .style("border", "2px solid #111")
+    .style("border-radius", "6px")
+    .style("padding", "18px");
+
+  const qty = expectedType === "current" ? "Current" : "Voltage";
+  const unit = expectedType === "current" ? "A" : "V";
+  const storeKey = isNeutralPhase ? "Neutral Current" : `Phase ${_bpTargetPhase} ${qty}`;
+  const angKey = isNeutralPhase ? "Neutral I-Angle" : `Phase ${_bpTargetPhase} ${qty === "Voltage" ? "V-Angle" : "I-Angle"}`;
+  const phaseLabel = isNeutralPhase ? "NEUTRAL" : `PHASE ${_bpTargetPhase}`;
+
+  right
     .append("div")
-    .style("position", "absolute")
-    .style("top", "5px")
-    .style("right", "10px")
-    .style("font-size", "9px")
-    .style("color", "#050")
-    .text("BRAIN POINT MODE: " + _bpSelectedMode.toUpperCase());
-
-  {
-    // Channel type indicator banner
-    const isVoltage = expectedType === "voltage";
-    plugDisplay
+    .text(`${node.id} — ${phaseLabel}`)
+    .style("font-size", "13px")
+    .style("color", isNeutralPhase ? "#aa0" : "#0a0")
+    .style("font-weight", "bold")
+    .style("margin-bottom", "4px");
+  if (isNeutralPhase) {
+    right
       .append("div")
-      .style("margin-bottom", "14px")
-      .style("padding", "5px 10px")
-      .style("border-radius", "3px")
+      .text("RECONNECT PROBE TO NEUTRAL TERMINAL (N)")
       .style("font-size", "9px")
-      .style("text-align", "center")
+      .style("color", "#660")
       .style("letter-spacing", "1px")
-      .style("border", `1px solid ${isVoltage ? "#226" : "#060"}`)
-      .style("color", isVoltage ? "#66f" : "#0f0")
-      .style("background", isVoltage ? "#000011" : "#001100")
-      .text(
-        `CHAN 2: ${isVoltage ? "VOLTAGE (V) INPUT" : "CURRENT (A) INPUT"}` +
-          (_bpLastMeasType === null ? "  —  FIRST READING: CONNECT NOW" : ""),
-      );
+      .style("margin-bottom", "10px");
+  }
 
-    const qty = expectedType === "current" ? "Current" : "Voltage";
-    const unit = expectedType === "current" ? "A" : "V";
-    const isNeutralPhase = _bpTargetPhase === "N";
-    const storeKey = isNeutralPhase
-      ? "Neutral Current"
-      : `Phase ${_bpTargetPhase} ${qty}`;
-    const angKey = isNeutralPhase
-      ? "Neutral I-Angle"
-      : `Phase ${_bpTargetPhase} ${qty === "Voltage" ? "V-Angle" : "I-Angle"}`;
-    const phaseLabel = isNeutralPhase ? "NEUTRAL" : `PHASE ${_bpTargetPhase}`;
+  let mag = null,
+    ang = null;
 
-    const measBox = plugDisplay
-      .append("div")
-      .style("border", isNeutralPhase ? "2px solid #660" : "2px solid #1a1a1a")
-      .style("padding", "20px")
-      .style("background", isNeutralPhase ? "#0a0a00" : "#050505");
-    measBox
-      .append("div")
-      .text(`MEASUREMENT: ${node.id} — ${phaseLabel}`)
-      .style("font-size", "12px")
-      .style("color", isNeutralPhase ? "#aa0" : "#0a0")
-      .style("margin-bottom", "16px");
-    if (isNeutralPhase) {
-      measBox
-        .append("div")
-        .text("CONNECT PROBE TO NEUTRAL TERMINAL (N)")
-        .style("font-size", "9px")
-        .style("color", "#660")
-        .style("margin-bottom", "12px")
-        .style("letter-spacing", "1px");
+  if (live) {
+    const effectiveChan2 = isNeutralPhase ? _bpChan2 : _pmmChan2ForPhase(_bpChan2, _bpTargetPhase);
+    const reading = _pmmLastReading;
+    if (reading && reading.ok) {
+      mag = reading.chan2;
+      ang = reading.phase;
     }
 
-    const valRow = measBox
+    right
       .append("div")
-      .style("display", "flex")
-      .style("align-items", "center")
-      .style("gap", "25px")
-      .style("padding", "5px 0");
-    valRow
-      .append("span")
-      .text("MAG")
-      .style("font-size", "14px")
-      .style("color", "#0a0")
-      .style("font-weight", "bold")
-      .style("width", "50px");
-    valRow
-      .append("input")
-      .attr("type", "number")
-      .attr("id", "bp-mag-in")
-      .property("value", node.summary?.[`Manual ${storeKey}`] || "")
-      .style("background", "#111")
-      .style("border", "2px solid #040")
-      .style("color", "#0f0")
-      .style("font-size", "48px")
-      .style("width", "250px")
-      .style("padding", "10px")
-      .style("text-align", "center")
-      .style("font-family", "'Courier New', monospace")
-      .on("focus", function () {
-        d3.select(this)
-          .style("border-color", "#0f0")
-          .style("background", "#000");
-      })
-      .on("blur", function () {
-        d3.select(this)
-          .style("border-color", "#040")
-          .style("background", "#111");
-      });
-    valRow
-      .append("span")
-      .text(unit)
-      .style("color", "#0a0")
-      .style("font-size", "24px");
-
-    const angRow = measBox
-      .append("div")
-      .style("display", "flex")
-      .style("align-items", "center")
-      .style("gap", "25px")
-      .style("margin-top", "20px");
-    angRow
-      .append("span")
-      .text("ANG")
-      .style("font-size", "14px")
-      .style("color", "#0a0")
-      .style("font-weight", "bold")
-      .style("width", "50px");
-    angRow
-      .append("input")
-      .attr("type", "number")
-      .attr("id", "bp-ang-in")
-      .property("value", node.summary?.[`Manual ${angKey}`] || "")
-      .style("background", "#111")
-      .style("border", "2px solid #040")
-      .style("color", "#0f0")
-      .style("font-size", "36px")
-      .style("width", "200px")
-      .style("padding", "10px")
-      .style("text-align", "center")
-      .style("font-family", "'Courier New', monospace")
-      .on("focus", function () {
-        d3.select(this)
-          .style("border-color", "#0f0")
-          .style("background", "#000");
-      })
-      .on("blur", function () {
-        d3.select(this)
-          .style("border-color", "#040")
-          .style("background", "#111");
-      });
-    angRow
-      .append("span")
-      .text("°")
-      .style("color", "#0a0")
-      .style("font-size", "24px");
-
-    plugDisplay
-      .append("div")
-      .style("margin-top", "15px")
-      .style("color", "#444")
-      .style("font-size", "10px")
-      .style("text-align", "center")
       .html(
-        "ENTER: LOG & NEXT  ·  ARROWS: NAVIGATE  ·  MAG: " +
-          unit +
-          "  ANG: DEG",
-      );
+        `<span style="color:#555;">CHAN 1 REF:</span> <span style="color:#3af;">${PMM_SOURCES[_bpChan1]?.l || _bpChan1}</span>` +
+          ` &nbsp;·&nbsp; <span style="color:#555;">CHAN 2:</span> <span style="color:#0f0;">${PMM_SOURCES[effectiveChan2]?.l || effectiveChan2}</span>`,
+      )
+      .style("font-size", "9px")
+      .style("margin-bottom", "12px");
 
-    plugDisplay
+    const queryBtn = right
       .append("button")
-      .text("ACCEPT & LOG POINT (ENTER)")
+      .text("▶ QUERY METER")
       .style("width", "100%")
-      .style("margin-top", "25px")
-      .style("padding", "15px")
-      .style("background", "#060")
+      .style("padding", "20px")
+      .style("background", "#020a02")
       .style("color", "#0f0")
       .style("border", "2px solid #0a0")
+      .style("border-radius", "6px")
       .style("cursor", "pointer")
+      .style("font-size", "16px")
       .style("font-weight", "bold")
-      .style("font-size", "14px")
-      .style("text-transform", "uppercase")
       .style("letter-spacing", "2px")
-      .on("click", _bpLogCurrentPoint);
+      .style("margin-bottom", "14px")
+      .on("click", () => {
+        queryBtn.text("QUERYING…").property("disabled", true);
+        Promise.resolve(_pmmConfigure(_bpChan1, effectiveChan2))
+          .then(() => _pmmQuery())
+          .then((res) => {
+            _pmmLastReading = res;
+            _bpRenderReadingScreen();
+          })
+          .catch((e) => {
+            _pmmLastReading = { ok: false, error: String(e) };
+            _bpRenderReadingScreen();
+          });
+      });
 
-    setTimeout(() => {
-      const el = document.getElementById("bp-mag-in");
-      if (el) el.focus();
-    }, 100);
-  } // end channel measurement block
+    if (reading && !reading.ok) {
+      right
+        .append("div")
+        .style("color", "#f44")
+        .style("font-size", "10px")
+        .style("margin-bottom", "10px")
+        .text("⚠ " + (reading.error || "Query failed — check the connection."));
+    } else if (reading && reading.ok) {
+      right
+        .append("div")
+        .style("color", "#444")
+        .style("font-size", "9px")
+        .style("margin-bottom", "10px")
+        .text(
+          `watts ${reading.watts.toFixed(3)}  ·  vars ${reading.vars.toFixed(3)}  ·  freq ${reading.freq.toFixed(2)} Hz`,
+        );
+    }
+  }
 
-  const footer = d3.select("#brain-point-footer").html("");
-  footer
+  // MAG / ANG — always the source of truth _bpLogCurrentPoint reads from.
+  // Pre-filled by a query when live; blank and keypad-driven when manual.
+  const measBox = right
+    .append("div")
+    .style("border", isNeutralPhase ? "2px solid #660" : "2px solid #1a1a1a")
+    .style("border-radius", "6px")
+    .style("padding", "16px")
+    .style("background", isNeutralPhase ? "#0a0a00" : "#050505");
+
+  const valueRow = (label, id, val, decimals, fontSize, unitLabel) => {
+    const row = measBox
+      .append("div")
+      .attr("id", id + "-wrap")
+      .style("display", "flex")
+      .style("align-items", "center")
+      .style("gap", "18px")
+      .style("padding", "10px")
+      .style("margin-bottom", "10px")
+      .style("border", "2px solid #1a3a1a")
+      .style("border-radius", "6px")
+      .style("cursor", "text")
+      .on("click", () => {
+        document.getElementById(id).focus();
+      });
+    row.append("span").text(label).style("font-size", "13px").style("color", "#0a0").style("font-weight", "bold").style("width", "44px").style("flex-shrink", "0");
+    row
+      .append("input")
+      .attr("type", "text")
+      .attr("inputmode", "decimal")
+      .attr("id", id)
+      .property("value", val !== null ? val.toFixed(decimals) : "")
+      .style("background", "transparent")
+      .style("border", "none")
+      .style("outline", "none")
+      .style("color", "#0f0")
+      .style("font-size", fontSize)
+      .style("width", "100%")
+      .style("text-align", "center")
+      .style("font-family", "'Courier New',monospace")
+      .on("focus", () => _bpFocusKeypad(id));
+    row.append("span").text(unitLabel).style("color", "#0a0").style("font-size", "16px").style("flex-shrink", "0");
+    return row;
+  };
+
+  valueRow("MAG", "bp-mag-in", mag, 4, "34px", unit);
+  valueRow("ANG", "bp-ang-in", ang !== null ? _lagAngle(ang) : null, 2, "26px", "°");
+
+  const keypadWrap = measBox.append("div").style("margin-top", "6px");
+  _bpRenderKeypad(keypadWrap);
+  _bpFocusKeypad("bp-mag-in");
+
+  right
+    .append("div")
+    .attr("id", "bp-save-err")
+    .style("color", "#f44")
+    .style("font-size", "10px")
+    .style("margin-top", "10px")
+    .style("min-height", "14px");
+
+  right
     .append("button")
-    .attr("class", "wiz-secondary")
-    .text("BACK TO SELECTION")
-    .on("click", _bpRenderStep4);
+    .text("✓ ACCEPT & LOG POINT  (ENTER)")
+    .style("width", "100%")
+    .style("margin-top", "10px")
+    .style("padding", "18px")
+    .style("background", "#060")
+    .style("color", "#0f0")
+    .style("border", "2px solid #0a0")
+    .style("border-radius", "6px")
+    .style("cursor", "pointer")
+    .style("font-weight", "bold")
+    .style("font-size", "15px")
+    .style("text-transform", "uppercase")
+    .style("letter-spacing", "2px")
+    .on("click", _bpLogCurrentPoint);
+
+  right
+    .append("div")
+    .style("margin-top", "10px")
+    .style("color", "#444")
+    .style("font-size", "9px")
+    .style("text-align", "center")
+    .text("logging auto-advances to the next phase, then the next device");
+
+  // ── Footer ──────────────────────────────────────────────────────────────
+  const footer = d3.select("#brain-point-footer").html("");
+  footer.append("button").attr("class", "wiz-secondary").text("BACK TO SELECTION").on("click", _bpRenderStep4);
   footer.append("div").style("flex", 1);
   footer
     .append("button")
@@ -2804,9 +2688,8 @@ function _bpRenderStep5() {
     .text(_use360Lag ? "360° LAG ✓" : "±180°")
     .on("click", () => {
       _use360Lag = !_use360Lag;
-      _bpRenderStep5();
+      _bpRenderReadingScreen();
     });
-
   if (!_bpInSIMode) {
     footer
       .append("button")
@@ -2816,26 +2699,30 @@ function _bpRenderStep5() {
       .text("SHORT & ISOLATE (S&I)")
       .on("click", _bpStartSIWorkflow);
   }
-
   footer
     .append("button")
     .attr("class", "wiz-save")
-    .text("EXIT BRAIN POINT MODULE")
+    .text("EXIT MEASUREMENT")
     .on("click", () => {
       _bpInSIMode = false;
       d3.select("#brain-point-module").style("display", "none");
-      d3.select("body").on("keydown.bp", null); // Remove listener
-      d3.select("#status-bar")
-        .style("background", "#111")
-        .style("color", "#0f0")
-        .text("Navigation System Standby.");
+      d3.select("body").on("keydown.bp", null);
+      d3.select("#status-bar").style("background", "#111").style("color", "#0f0").text("Navigation System Standby.");
       refreshData();
     });
-}
 
+  setTimeout(() => {
+    const el = document.getElementById(live && mag !== null ? "bp-ang-in" : "bp-mag-in");
+    if (el) el.focus();
+  }, 100);
+}
 function _bpLogCurrentPoint() {
   const node = (currentData && currentData.nodes) && currentData.nodes.find((n) => n.id === _bpTargetDeviceId);
   if (!node) return;
+  const errEl = document.getElementById("bp-save-err");
+  const showErr = (msg) => { if (errEl) errEl.textContent = "⚠ " + msg; };
+  if (errEl) errEl.textContent = "";
+
   const expectedType = _bpDeviceExpectedType(node.type);
   const qty = expectedType === "current" ? "Current" : "Voltage";
   const isNeutralPhase = _bpTargetPhase === "N";
@@ -2846,8 +2733,14 @@ function _bpLogCurrentPoint() {
     ? "Neutral I-Angle"
     : `Phase ${_bpTargetPhase} ${qty === "Voltage" ? "V-Angle" : "I-Angle"}`;
 
-  const mag = parseFloat(document.getElementById("bp-mag-in").value);
-  const ang = parseFloat(document.getElementById("bp-ang-in").value);
+  const magInput = document.getElementById("bp-mag-in");
+  const angInput = document.getElementById("bp-ang-in");
+  const mag = parseFloat(magInput ? magInput.value : "");
+  const ang = parseFloat(angInput ? angInput.value : "");
+  if (isNaN(mag) && isNaN(ang)) {
+    showErr("Nothing to log — query the meter or enter a value first.");
+    return;
+  }
   const measurements = {};
   if (!isNaN(mag)) measurements[storeKey] = mag;
   if (!isNaN(ang)) measurements[angKey] = ang;
@@ -2857,24 +2750,32 @@ function _bpLogCurrentPoint() {
     _bpSessionMeasurements[node.id] = {};
   Object.assign(_bpSessionMeasurements[node.id], measurements);
 
-  reconfigureAPI(node.id, "record_measurement", { measurements }).then(() => {
-    _bpLastMeasType = expectedType;
+  reconfigureAPI(node.id, "record_measurement", { measurements })
+    .then((resp) => {
+      if (resp && resp.error) {
+        showErr(resp.error + " — try again before moving on.");
+        return;
+      }
+      _bpLastMeasType = expectedType;
 
-    // Success feedback (BIG FLASH)
-    d3.select("#brain-point-module")
-      .transition()
-      .duration(100)
-      .style("background", isNeutralPhase ? "#0a0a00" : "#040")
-      .transition()
-      .duration(300)
-      .style("background", "#0a0a0a");
+      // Success feedback (BIG FLASH)
+      d3.select("#brain-point-module")
+        .transition()
+        .duration(100)
+        .style("background", isNeutralPhase ? "#0a0a00" : "#040")
+        .transition()
+        .duration(300)
+        .style("background", "#0a0a0a");
 
-    if (isNeutralPhase) {
-      _bpCheckNeutralBalance(node);
-    } else {
-      _bpMoveToNextPhase();
-    }
-  });
+      if (isNeutralPhase) {
+        _bpCheckNeutralBalance(node);
+      } else {
+        _bpMoveToNextPhase();
+      }
+    })
+    .catch(() => {
+      showErr("Network error — reading was NOT saved. Try again.");
+    });
 }
 
 function _bpMoveToNextPhase() {
@@ -2896,20 +2797,20 @@ function _bpMoveToNextPhase() {
 
   if (idx < 2) {
     _bpTargetPhase = phases[idx + 1];
-    (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+    _bpRenderReadingScreen();
   } else if (isMultiAnalog && _bpDeviceMeasStep === "voltage") {
     // Done with voltage pass of multi-analog — switch to current
     _bpDeviceMeasStep = "current";
     _bpTargetPhase = "A";
     _bpShowChannelConfig("current", "voltage", () => {
-      (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+      _bpRenderReadingScreen();
     });
   } else {
     // At phase C — go to N for wye current devices, otherwise next device
     const inCurrentPass = _bpDeviceMeasStep === "current" || (!isMultiAnalog && showsI);
     if (wantsNeutral && inCurrentPass) {
       _bpTargetPhase = "N";
-      (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+      _bpRenderReadingScreen();
     } else {
       _bpTargetPhase = "A";
       _bpDeviceMeasStep = null;
@@ -2925,7 +2826,7 @@ function _bpMoveToPrevPhase() {
   const idx = phases.indexOf(_bpTargetPhase);
   if (idx > 0) {
     _bpTargetPhase = phases[idx - 1];
-    (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+    _bpRenderReadingScreen();
   }
 }
 
@@ -2933,6 +2834,7 @@ function _bpMoveToNextDevice() {
   const idx = _bpSelectedDevices.indexOf(_bpTargetDeviceId);
   _pmmLastReading = null;
   _bpDeviceMeasStep = null;
+  _bpManualOverride = false; // a fresh device may not be a digital-display case
 
   if (idx < _bpSelectedDevices.length - 1) {
     const nextId = _bpSelectedDevices[idx + 1];
@@ -2948,25 +2850,26 @@ function _bpMoveToNextDevice() {
 
     if (prevMeasType !== null && prevMeasType !== nextMeasType) {
       _bpShowChannelConfig(nextMeasType, prevMeasType, () => {
-        (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+        _bpRenderReadingScreen();
       });
     } else {
       _bpApplyChanConfig(nextMeasType);
-      (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+      _bpRenderReadingScreen();
     }
   } else {
-    (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+    _bpRenderReadingScreen();
   }
 }
 
 function _bpMoveToPrevDevice() {
   const idx = _bpSelectedDevices.indexOf(_bpTargetDeviceId);
   _pmmLastReading = null;
+  _bpManualOverride = false;
   if (idx > 0) {
     _bpTargetDeviceId = _bpSelectedDevices[idx - 1];
     _bpTargetPhase = "A";
   }
-  (_bpInstrumentType === "pmm1" || _bpInstrumentType === "sim") ? _bpRenderPMMStep5() : _bpRenderStep5();
+  _bpRenderReadingScreen();
 }
 
 // ── Neutral Balance Check & S&I Auto-Suggestion ───────────────────────────────
@@ -3223,7 +3126,7 @@ function _bpStartSIWorkflow() {
     .append("button")
     .attr("class", "wiz-secondary")
     .text("CANCEL / ABORT")
-    .on("click", _bpRenderStep5);
+    .on("click", _bpRenderReadingScreen);
 
   footer.append("div").style("flex", "1");
 
@@ -3385,7 +3288,7 @@ function _bpSIModeStep3() {
       // Also update the target phase in the BRAIN POINT logger
       _bpTargetPhase = _bpSISelectedPhase;
 
-      _bpRenderStep5();
+      _bpRenderReadingScreen();
     });
 }
 
